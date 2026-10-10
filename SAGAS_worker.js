@@ -614,8 +614,12 @@ async function currentCompany(request, env, auth) {
 async function listCompanies(env, auth) {
   const res = await env.DB.prepare(`
     SELECT c.id,c.code,c.legal_name,c.trade_name,c.tax_id,c.active,cm.status,cm.is_owner
-    FROM company_memberships cm JOIN companies c ON c.id=cm.company_id
-    WHERE cm.user_id=? ORDER BY c.code
+    FROM company_memberships cm
+    JOIN companies c ON c.id=cm.company_id
+    WHERE cm.user_id=?
+      AND cm.status='ACTIVE'
+      AND c.active=1
+    ORDER BY c.code
   `).bind(auth.user.id).all();
   return res.results || [];
 }
@@ -737,6 +741,14 @@ async function updateUser(env, request, auth, companyId, userId, body) {
       WHERE company_id=? AND user_id=?
     `).bind(requestedActive?'ACTIVE':'BLOCKED',companyId,userId)
   ];
+
+  if (!requestedActive) {
+    stmts.push(env.DB.prepare(`
+      UPDATE auth_sessions
+      SET revoked_at=CURRENT_TIMESTAMP
+      WHERE user_id=? AND revoked_at IS NULL
+    `).bind(userId));
+  }
 
   if (!target.is_owner && body.role_id!==undefined) {
     stmts.push(env.DB.prepare(`
@@ -881,9 +893,17 @@ async function route(request, env) {
   if (method==="POST" && path==="/api/auth/login") {
     const body=await readJson(request), email=String(body.email||"").trim().toLowerCase();
     const user=await env.DB.prepare(`SELECT id,name,email,password_hash,password_salt,password_iterations,active FROM users WHERE email=?`).bind(email).first();
-    if (!user || !user.active || !(await verifyPassword(String(body.password||""),user.password_hash,user.password_salt,user.password_iterations))) throw new HttpError(401,"E-mail ou senha inválidos.","INVALID_CREDENTIALS");
+    if (!user || !user.active || !(await verifyPassword(String(body.password||""),user.password_hash,user.password_salt,user.password_iterations))) {
+      throw new HttpError(401,"E-mail ou senha inválidos.","INVALID_CREDENTIALS");
+    }
+
+    const companies=await listCompanies(env,{user});
+    if (!companies.length) {
+      throw new HttpError(403,"Seu usuário não possui acesso ativo a nenhuma empresa.","NO_ACTIVE_COMPANY");
+    }
+
     await env.DB.prepare("UPDATE users SET last_login_at=CURRENT_TIMESTAMP WHERE id=?").bind(user.id).run();
-    const session=await createSession(env,user,request), companies=await listCompanies(env,{user});
+    const session=await createSession(env,user,request);
     return ok({user:{id:user.id,name:user.name,email:user.email},companies,...session});
   }
 
