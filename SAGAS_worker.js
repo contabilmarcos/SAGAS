@@ -722,6 +722,60 @@ async function updateAccount(env, request, auth, companyId, id, body) {
   return after;
 }
 
+async function deleteAccount(env, request, auth, companyId, id) {
+  await requirePermission(env, auth.user.id, companyId, "accounting.account.manage");
+
+  const account=await assertCompanyEntity(env,"accounts",id,companyId);
+
+  const child=await env.DB.prepare(`
+    SELECT id,code,name
+    FROM accounts
+    WHERE company_id=? AND parent_id=?
+    LIMIT 1
+  `).bind(companyId,id).first();
+
+  if (child) {
+    throw new HttpError(
+      409,
+      `A conta ${account.code} possui contas filhas. Exclua primeiro as contas abaixo dela.`,
+      "ACCOUNT_HAS_CHILDREN"
+    );
+  }
+
+  const movement=await env.DB.prepare(`
+    SELECT id
+    FROM journal_lines
+    WHERE company_id=? AND account_id=?
+    LIMIT 1
+  `).bind(companyId,id).first();
+
+  if (movement) {
+    throw new HttpError(
+      409,
+      `A conta ${account.code} já foi utilizada em lançamentos contábeis e não pode ser excluída. Inative a conta.`,
+      "ACCOUNT_HAS_ENTRIES"
+    );
+  }
+
+  await env.DB.prepare(`
+    DELETE FROM accounts
+    WHERE id=? AND company_id=?
+  `).bind(id,companyId).run();
+
+  await audit(env,{
+    companyId,
+    userId:auth.user.id,
+    action:"DELETE",
+    entity:"account",
+    entityId:id,
+    before:account,
+    request
+  });
+
+  return {deleted:true,id};
+}
+
+
 async function createCostCenter(env, request, auth, companyId, body) {
   await requirePermission(env, auth.user.id, companyId, "accounting.cost_center.manage");
   if (body.parent_id) await assertCompanyEntity(env,"cost_centers",body.parent_id,companyId);
@@ -1206,6 +1260,7 @@ async function route(request, env) {
   if (method==="POST" && path==="/api/accounts") return ok({account:await createAccount(env,request,auth,companyId,await readJson(request))},201);
   p=routeMatch(path,"/api/accounts/:id");
   if (p && method==="PATCH") return ok({account:await updateAccount(env,request,auth,companyId,p.id,await readJson(request))});
+  if (p && method==="DELETE") return ok(await deleteAccount(env,request,auth,companyId,p.id));
 
   if (method==="GET" && path==="/api/cost-centers") { await requirePermission(env,auth.user.id,companyId,"accounting.cost_center.read"); return ok({cost_centers:await listSimple(env,companyId,"cost_centers","id,code,name,parent_id,active")}); }
   if (method==="POST" && path==="/api/cost-centers") return ok({cost_center:await createCostCenter(env,request,auth,companyId,await readJson(request))},201);
