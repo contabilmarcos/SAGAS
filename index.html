@@ -278,7 +278,79 @@ function accountClass(v){return({ASSET:'Ativo',LIABILITY:'Passivo',EQUITY:'Patri
 async function load(k,path,key,force=false){if(!force&&S.cache[k])return S.cache[k];const d=await api(path);return S.cache[k]=d[key]||[]}
 const accounts=f=>load('accounts','/api/accounts','accounts',f), ccs=f=>load('ccs','/api/cost-centers','cost_centers',f), histories=f=>load('hist','/api/history-templates','history_templates',f), periods=f=>load('periods','/api/accounting-periods','periods',f), batches=f=>load('batches','/api/journal-batches','batches',f), branches=f=>load('branches','/api/branches','branches',f);
 async function renderAccounts(){const a=await accounts(true),manage=can('accounting.account.manage');tablePage({newLabel:manage?'Nova conta':null,onNew:manage?()=>accountForm():null,cols:['Código','Reduzido','Descrição','Natureza','Tipo','Situação',...(manage?['']:[])],rows:a.length?a.map(x=>`<tr><td class="code">${esc(x.code)}</td><td class="code">${esc(x.reduced_code||'')}</td><td>${esc(x.name)}</td><td>${esc(accountClass(x.account_class))}</td><td>${x.analytic?'<span class="badge blue">Analítica</span>':'<span class="badge gray">Sintética</span>'}</td><td>${x.active?'<span class="badge green">Ativa</span>':'<span class="badge red">Inativa</span>'}</td>${manage?`<td><div class="actions"><button class="btn secondary sm" data-edit="${x.id}">Editar</button></div></td>`:''}</tr>`).join(''):null,emptyTitle:'Nenhuma conta cadastrada',emptyText:manage?'Cadastre a primeira conta do plano de contas.':'Nenhuma conta disponível para consulta.',placeholder:'Pesquisar por código, reduzido ou descrição...'});if(manage)$$('[data-edit]').forEach(b=>b.onclick=()=>accountForm(a.find(x=>x.id===b.dataset.edit)))}
-async function accountForm(a=null){const list=await accounts();openModal(a?'Editar conta':'Nova conta','',`<form id="f"><div class="grid"><label class="field"><span>Código</span><input name="code" required value="${esc(a?.code||'')}"></label><label class="field"><span>Reduzido</span><input name="reduced_code" value="${esc(a?.reduced_code||'')}"></label><label class="field full"><span>Descrição</span><input name="name" required value="${esc(a?.name||'')}"></label><label class="field full"><span>Conta superior</span><select name="parent_id"><option value="">Sem superior</option>${list.filter(x=>x.id!==a?.id).map(x=>`<option value="${x.id}" ${x.id===a?.parent_id?'selected':''}>${esc(x.code)} - ${esc(x.name)}</option>`).join('')}</select></label><label class="field"><span>Natureza</span><select name="account_class">${['ASSET','LIABILITY','EQUITY','REVENUE','EXPENSE','RESULT','COMPENSATION','OTHER'].map(v=>`<option value="${v}" ${v===(a?.account_class||'OTHER')?'selected':''}>${accountClass(v)}</option>`).join('')}</select></label><label class="field"><span>Natureza do saldo</span><select name="normal_side"><option value="D" ${a?.normal_side!=='C'?'selected':''}>Devedora</option><option value="C" ${a?.normal_side==='C'?'selected':''}>Credora</option></select></label><label class="check"><input name="analytic" type="checkbox" ${a?.analytic!==0?'checked':''}> Analítica</label><label class="check"><input name="active" type="checkbox" ${a?.active!==0?'checked':''}> Ativa</label></div><div class="form-actions"><button type="button" class="btn secondary" data-close>Cancelar</button><button class="btn primary">Salvar</button></div></form>`);$('[data-close]').onclick=closeModal;$('#f').onsubmit=async e=>{e.preventDefault();const b=Object.fromEntries(new FormData(e.target));b.analytic=e.target.analytic.checked;b.active=e.target.active.checked;b.parent_id=b.parent_id||null;try{await api(a?`/api/accounts/${a.id}`:'/api/accounts',{method:a?'PATCH':'POST',body:b});closeModal();S.cache.accounts=null;toast('Conta salva.');renderAccounts()}catch(x){toast(x.message,'error')}}}
+async function accountForm(a=null){
+  const list=await accounts();
+  const children=a?list.filter(x=>x.parent_id===a.id):[];
+  const hasChildren=children.length>0;
+
+  openModal(a?'Editar conta':'Nova conta','',`<form id="f"><div class="grid">
+    <label class="field"><span>Código</span><input name="code" required value="${esc(a?.code||'')}"></label>
+    <label class="field"><span>Reduzido</span><input name="reduced_code" value="${esc(a?.reduced_code||'')}"></label>
+    <label class="field full"><span>Descrição</span><input name="name" required value="${esc(a?.name||'')}"></label>
+
+    <label class="field"><span>Natureza</span>
+      <select name="account_class">${['ASSET','LIABILITY','EQUITY','REVENUE','EXPENSE','RESULT','COMPENSATION','OTHER'].map(v=>`<option value="${v}" ${v===(a?.account_class||'OTHER')?'selected':''}>${accountClass(v)}</option>`).join('')}</select>
+    </label>
+    <label class="field"><span>Natureza do saldo</span>
+      <select name="normal_side">
+        <option value="D" ${a?.normal_side!=='C'?'selected':''}>Devedora</option>
+        <option value="C" ${a?.normal_side==='C'?'selected':''}>Credora</option>
+      </select>
+    </label>
+
+    <label class="field full"><span>Conta superior</span>
+      <select name="parent_id"></select>
+      <small style="display:block;margin-top:6px;color:var(--muted)">Somente contas sintéticas da mesma natureza podem ser superiores.</small>
+    </label>
+
+    <label class="check">
+      <input name="analytic" type="checkbox" ${a?.analytic!==0?'checked':''} ${hasChildren?'disabled':''}> Analítica
+    </label>
+    <label class="check"><input name="active" type="checkbox" ${a?.active!==0?'checked':''}> Ativa</label>
+
+    ${hasChildren?`<div class="field full" style="padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:#f8fafc;color:var(--muted)">
+      Esta conta possui ${children.length} conta(s) filha(s) e, por isso, deve permanecer <b>sintética</b>.
+    </div>`:''}
+  </div>
+  <div class="form-actions"><button type="button" class="btn secondary" data-close>Cancelar</button><button class="btn primary">Salvar</button></div></form>`);
+
+  $('[data-close]').onclick=closeModal;
+
+  const form=$('#f');
+  const parentSelect=form.parent_id;
+  const classSelect=form.account_class;
+
+  function refreshParents(){
+    const cls=classSelect.value;
+    const current=a?.parent_id||'';
+    const available=list.filter(x=>x.id!==a?.id && !x.analytic && x.account_class===cls);
+
+    parentSelect.innerHTML=
+      `<option value="">Sem superior</option>`+
+      available.map(x=>`<option value="${x.id}" ${x.id===current?'selected':''}>${esc(x.code)} - ${esc(x.name)}${x.active?'':' (inativa)'}</option>`).join('');
+
+    if(current && !available.some(x=>x.id===current)) parentSelect.value='';
+  }
+
+  refreshParents();
+  classSelect.onchange=refreshParents;
+
+  form.onsubmit=async e=>{
+    e.preventDefault();
+    const b=Object.fromEntries(new FormData(e.target));
+    b.analytic=hasChildren?false:e.target.analytic.checked;
+    b.active=e.target.active.checked;
+    b.parent_id=b.parent_id||null;
+
+    try{
+      await api(a?`/api/accounts/${a.id}`:'/api/accounts',{method:a?'PATCH':'POST',body:b});
+      closeModal();
+      S.cache.accounts=null;
+      toast('Conta salva.');
+      renderAccounts();
+    }catch(x){toast(x.message,'error')}
+  };
+}
 async function renderCC(){const a=await ccs(true),manage=can('accounting.cost_center.manage');tablePage({newLabel:manage?'Novo centro de custo':null,onNew:manage?ccForm:null,cols:['Código','Descrição','Superior','Situação'],rows:a.length?a.map(x=>`<tr><td class="code">${esc(x.code)}</td><td>${esc(x.name)}</td><td>${esc(a.find(y=>y.id===x.parent_id)?.name||'')}</td><td>${x.active?'<span class="badge green">Ativo</span>':'<span class="badge red">Inativo</span>'}</td></tr>`).join(''):null,emptyTitle:'Nenhum centro de custo',emptyText:manage?'Cadastre a estrutura gerencial para rateios.':'Nenhum centro de custo disponível para consulta.'})}
 async function ccForm(){const a=await ccs();openModal('Novo centro de custo','',`<form id="f"><div class="grid"><label class="field"><span>Código</span><input name="code" required></label><label class="field"><span>Descrição</span><input name="name" required></label><label class="field full"><span>Centro superior</span><select name="parent_id"><option value="">Sem superior</option>${a.map(x=>`<option value="${x.id}">${esc(x.code)} - ${esc(x.name)}</option>`).join('')}</select></label><label class="check"><input name="active" type="checkbox" checked> Ativo</label></div><div class="form-actions"><button type="button" class="btn secondary" data-close>Cancelar</button><button class="btn primary">Salvar</button></div></form>`);$('[data-close]').onclick=closeModal;$('#f').onsubmit=async e=>{e.preventDefault();const b=Object.fromEntries(new FormData(e.target));b.active=e.target.active.checked;b.parent_id=b.parent_id||null;try{await api('/api/cost-centers',{method:'POST',body:b});closeModal();S.cache.ccs=null;toast('Centro de custo salvo.');renderCC()}catch(x){toast(x.message,'error')}}}
 async function renderHistory(){const a=await histories(true),manage=can('accounting.history.manage');tablePage({newLabel:manage?'Novo histórico':null,onNew:manage?historyForm:null,cols:['Código','Descrição','Complemento','Situação'],rows:a.length?a.map(x=>`<tr><td class="code">${esc(x.code)}</td><td>${esc(x.description)}</td><td>${x.complement_required?'<span class="badge blue">Obrigatório</span>':'Opcional'}</td><td>${x.active?'<span class="badge green">Ativo</span>':'<span class="badge red">Inativo</span>'}</td></tr>`).join(''):null,emptyTitle:'Nenhum histórico padrão',emptyText:manage?'Cadastre históricos para padronizar a escrituração.':'Nenhum histórico disponível para consulta.'})}
