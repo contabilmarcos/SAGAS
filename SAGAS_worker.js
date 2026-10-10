@@ -650,6 +650,88 @@ async function createRole(env, request, auth, companyId, body) {
   return row;
 }
 
+async function getRoleDetails(env, auth, companyId, roleId) {
+  await requirePermission(env,auth.user.id,companyId,"core.role.manage");
+  const role=await env.DB.prepare(`
+    SELECT id,company_id,code,name,description,system_role,created_at,updated_at
+    FROM roles
+    WHERE id=? AND company_id=?
+  `).bind(roleId,companyId).first();
+  if (!role) throw new HttpError(404,"Perfil não encontrado.","NOT_FOUND");
+
+  const res=await env.DB.prepare(`
+    SELECT p.code
+    FROM role_permissions rp
+    JOIN permissions p ON p.id=rp.permission_id
+    WHERE rp.role_id=?
+    ORDER BY p.module,p.code
+  `).bind(roleId).all();
+
+  return {...role,permissions:(res.results||[]).map(x=>x.code)};
+}
+
+async function updateRole(env, request, auth, companyId, roleId, body) {
+  await requirePermission(env,auth.user.id,companyId,"core.role.manage");
+  const current=await getRoleDetails(env,auth,companyId,roleId);
+
+  if (current.system_role) {
+    throw new HttpError(400,"Perfis do sistema são protegidos e não podem ser alterados.","VALIDATION_ERROR");
+  }
+
+  const code=cleanText(required(body.code===undefined?current.code:body.code,"code"),50);
+  const name=cleanText(required(body.name===undefined?current.name:body.name,"name"),200);
+  const description=body.description===undefined?current.description:cleanText(body.description,1000);
+
+  let codes=current.permissions;
+  if (body.permissions!==undefined) {
+    if (!Array.isArray(body.permissions)) throw new HttpError(400,"Permissões inválidas.","VALIDATION_ERROR");
+    codes=[...new Set(body.permissions.map(x=>String(x)))];
+    if (!codes.length) throw new HttpError(400,"Selecione pelo menos uma permissão.","VALIDATION_ERROR");
+
+    const all=await env.DB.prepare(`SELECT code FROM permissions`).all();
+    const valid=new Set((all.results||[]).map(x=>x.code));
+    const invalid=codes.filter(x=>!valid.has(x));
+    if (invalid.length) throw new HttpError(400,`Permissão inválida: ${invalid[0]}.`,"VALIDATION_ERROR");
+  }
+
+  const stmts=[
+    env.DB.prepare(`
+      UPDATE roles
+      SET code=?,name=?,description=?,updated_at=CURRENT_TIMESTAMP
+      WHERE id=? AND company_id=?
+    `).bind(code,name,description,roleId,companyId),
+    env.DB.prepare(`DELETE FROM role_permissions WHERE role_id=?`).bind(roleId),
+    ...codes.map(code=>env.DB.prepare(`
+      INSERT INTO role_permissions (role_id,permission_id)
+      SELECT ?,id FROM permissions WHERE code=?
+    `).bind(roleId,code))
+  ];
+
+  try {
+    await env.DB.batch(stmts);
+  } catch (err) {
+    const msg=String(err?.message||err);
+    if (msg.includes("UNIQUE")) throw new HttpError(400,"Já existe um perfil com esse código nesta empresa.","VALIDATION_ERROR");
+    throw err;
+  }
+
+  const updated=await getRoleDetails(env,auth,companyId,roleId);
+
+  await audit(env,{
+    companyId,
+    userId:auth.user.id,
+    action:"UPDATE",
+    entity:"role",
+    entityId:roleId,
+    before:{code:current.code,name:current.name,description:current.description,permissions:current.permissions},
+    after:{code:updated.code,name:updated.name,description:updated.description,permissions:updated.permissions},
+    request
+  });
+
+  return updated;
+}
+
+
 async function route(request, env) {
   const url=new URL(request.url), path=url.pathname.replace(/\/+$/,"" )||"/", method=request.method.toUpperCase();
   if (method==="OPTIONS") return new Response(null,{status:204});
@@ -692,6 +774,9 @@ async function route(request, env) {
   if (method==="GET" && path==="/api/permissions") { await requirePermission(env,auth.user.id,companyId,"core.role.manage"); const r=await env.DB.prepare("SELECT id,code,module,description FROM permissions ORDER BY module,code").all(); return ok({permissions:r.results||[]}); }
   if (method==="GET" && path==="/api/roles") { await requirePermission(env,auth.user.id,companyId,"core.role.manage"); const r=await env.DB.prepare("SELECT * FROM roles WHERE company_id=? ORDER BY name").bind(companyId).all(); return ok({roles:r.results||[]}); }
   if (method==="POST" && path==="/api/roles") return ok({role:await createRole(env,request,auth,companyId,await readJson(request))},201);
+  p=routeMatch(path,"/api/roles/:id");
+  if (p && method==="GET") return ok({role:await getRoleDetails(env,auth,companyId,p.id)});
+  if (p && method==="PATCH") return ok({role:await updateRole(env,request,auth,companyId,p.id,await readJson(request))});
 
   if (method==="GET" && path==="/api/accounts") { await requirePermission(env,auth.user.id,companyId,"accounting.account.read"); return ok({accounts:await listSimple(env,companyId,"accounts","id,code,reduced_code,name,parent_id,account_class,normal_side,analytic,active")}); }
   if (method==="POST" && path==="/api/accounts") return ok({account:await createAccount(env,request,auth,companyId,await readJson(request))},201);
