@@ -277,76 +277,204 @@ function roleForm(p,role=null){
 function accountClass(v){return({ASSET:'Ativo',LIABILITY:'Passivo',EQUITY:'Patrimônio Líquido',REVENUE:'Receita',EXPENSE:'Despesa',RESULT:'Resultado',COMPENSATION:'Compensação',OTHER:'Outras'})[v]||v||'-'}
 async function load(k,path,key,force=false){if(!force&&S.cache[k])return S.cache[k];const d=await api(path);return S.cache[k]=d[key]||[]}
 const accounts=f=>load('accounts','/api/accounts','accounts',f), ccs=f=>load('ccs','/api/cost-centers','cost_centers',f), histories=f=>load('hist','/api/history-templates','history_templates',f), periods=f=>load('periods','/api/accounting-periods','periods',f), batches=f=>load('batches','/api/journal-batches','batches',f), branches=f=>load('branches','/api/branches','branches',f);
-async function renderAccounts(){const a=await accounts(true),manage=can('accounting.account.manage');tablePage({newLabel:manage?'Nova conta':null,onNew:manage?()=>accountForm():null,cols:['Código','Reduzido','Descrição','Natureza','Tipo','Situação',...(manage?['']:[])],rows:a.length?a.map(x=>`<tr><td class="code">${esc(x.code)}</td><td class="code">${esc(x.reduced_code||'')}</td><td>${esc(x.name)}</td><td>${esc(accountClass(x.account_class))}</td><td>${x.analytic?'<span class="badge blue">Analítica</span>':'<span class="badge gray">Sintética</span>'}</td><td>${x.active?'<span class="badge green">Ativa</span>':'<span class="badge red">Inativa</span>'}</td>${manage?`<td><div class="actions"><button class="btn secondary sm" data-edit="${x.id}">Editar</button></div></td>`:''}</tr>`).join(''):null,emptyTitle:'Nenhuma conta cadastrada',emptyText:manage?'Cadastre a primeira conta do plano de contas.':'Nenhuma conta disponível para consulta.',placeholder:'Pesquisar por código, reduzido ou descrição...'});if(manage)$$('[data-edit]').forEach(b=>b.onclick=()=>accountForm(a.find(x=>x.id===b.dataset.edit)))}
-async function accountForm(a=null){
-  const list=await accounts();
-  const children=a?list.filter(x=>x.parent_id===a.id):[];
-  const hasChildren=children.length>0;
 
-  openModal(a?'Editar conta':'Nova conta','',`<form id="f"><div class="grid">
-    <label class="field"><span>Código</span><input name="code" required value="${esc(a?.code||'')}"></label>
+const ACCOUNT_MASK_WIDTHS=[1,2,2,2,4];
+const ACCOUNT_MASK_CUMULATIVE=[1,3,5,7,11];
+
+function parseAccountMaskLocal(value){
+  const raw=String(value||'').replace(/\D/g,'');
+  const ix=ACCOUNT_MASK_CUMULATIVE.indexOf(raw.length);
+  if(ix<0)return null;
+  let pos=0,parts=[];
+  for(let i=0;i<=ix;i++){const w=ACCOUNT_MASK_WIDTHS[i];parts.push(raw.slice(pos,pos+w));pos+=w}
+  return {raw,code:parts.join('.'),level:ix+1,analytic:ix===4,parentCode:ix>0?parts.slice(0,-1).join('.'):null};
+}
+
+function accountSegmentNumber(code){
+  const p=parseAccountMaskLocal(code);
+  if(!p)return 0;
+  const part=p.code.split('.').at(-1);
+  return Number(part)||0;
+}
+
+function formatAccountSegment(n,width){
+  return String(n).padStart(width,'0');
+}
+
+function nextAccountFromBase(base,list){
+  const parsed=parseAccountMaskLocal(base.code);
+  if(!parsed)return '';
+
+  if(parsed.level<5){
+    const childWidth=ACCOUNT_MASK_WIDTHS[parsed.level];
+    const children=list.filter(x=>x.parent_id===base.id)
+      .map(x=>parseAccountMaskLocal(x.code))
+      .filter(Boolean)
+      .filter(x=>x.level===parsed.level+1);
+
+    const max=children.reduce((m,x)=>Math.max(m,Number(x.code.split('.').at(-1))||0),0);
+    return `${parsed.code}.${formatAccountSegment(max+1,childWidth)}`;
+  }
+
+  const siblings=list.filter(x=>x.parent_id===base.parent_id)
+    .map(x=>parseAccountMaskLocal(x.code))
+    .filter(Boolean)
+    .filter(x=>x.level===5);
+
+  const max=siblings.reduce((m,x)=>Math.max(m,Number(x.code.split('.').at(-1))||0),0);
+  const prefix=parsed.code.split('.').slice(0,-1).join('.');
+  return `${prefix}.${formatAccountSegment(max+1,4)}`;
+}
+
+function findParentByCode(code,list){
+  const parsed=parseAccountMaskLocal(code);
+  if(!parsed?.parentCode)return null;
+  return list.find(x=>x.code===parsed.parentCode)||null;
+}
+
+async function renderAccounts(){
+  const a=await accounts(true),manage=can('accounting.account.manage');
+  tablePage({
+    newLabel:manage?'Nova conta':null,
+    onNew:manage?()=>accountForm():null,
+    cols:['Código','Reduzido','Descrição','Natureza','Tipo','Situação',...(manage?['Ações']:[])],
+    rows:a.length?a.map(x=>`<tr>
+      <td class="code">${esc(x.code)}</td>
+      <td class="code">${esc(x.reduced_code||'')}</td>
+      <td>${esc(x.name)}</td>
+      <td>${esc(accountClass(x.account_class))}</td>
+      <td>${x.analytic?'<span class="badge blue">Analítica</span>':'<span class="badge gray">Sintética</span>'}</td>
+      <td>${x.active?'<span class="badge green">Ativa</span>':'<span class="badge red">Inativa</span>'}</td>
+      ${manage?`<td><div class="actions">
+        <button class="btn secondary sm" data-add-from="${x.id}" title="${x.analytic?'Adicionar próxima conta analítica':'Adicionar conta abaixo desta'}">+</button>
+        <button class="btn secondary sm" data-edit="${x.id}">Editar</button>
+      </div></td>`:''}
+    </tr>`).join(''):null,
+    emptyTitle:'Nenhuma conta cadastrada',
+    emptyText:manage?'Cadastre a primeira conta do plano de contas.':'Nenhuma conta disponível para consulta.',
+    placeholder:'Pesquisar por código, reduzido ou descrição...'
+  });
+
+  if(manage){
+    $$('[data-edit]').forEach(b=>b.onclick=()=>accountForm(a.find(x=>x.id===b.dataset.edit)));
+    $$('[data-add-from]').forEach(b=>{
+      b.onclick=()=>{
+        const base=a.find(x=>x.id===b.dataset.addFrom);
+        accountForm(null,base);
+      };
+    });
+  }
+}
+async function accountForm(a=null,base=null){
+  const list=await accounts();
+  const initialCode=base?nextAccountFromBase(base,list):(a?.code||'');
+
+  openModal(a?'Editar conta':base?(base.analytic?'Nova conta analítica':'Nova conta filha'):'Nova conta','A máscara é automática: 1.01.01.01.0001',`<form id="f"><div class="grid">
+    <label class="field"><span>Código / Máscara</span>
+      <input name="code" required value="${esc(initialCode)}" placeholder="Ex.: 10101010001">
+      <small style="display:block;margin-top:6px;color:var(--muted)">Não precisa digitar os pontos. Ao sair do campo, o SAGAS formata automaticamente.</small>
+    </label>
     <label class="field"><span>Reduzido</span><input name="reduced_code" value="${esc(a?.reduced_code||'')}"></label>
+
     <label class="field full"><span>Descrição</span><input name="name" required value="${esc(a?.name||'')}"></label>
 
     <label class="field"><span>Natureza</span>
-      <select name="account_class">${['ASSET','LIABILITY','EQUITY','REVENUE','EXPENSE','RESULT','COMPENSATION','OTHER'].map(v=>`<option value="${v}" ${v===(a?.account_class||'OTHER')?'selected':''}>${accountClass(v)}</option>`).join('')}</select>
+      <select name="account_class">${['ASSET','LIABILITY','EQUITY','REVENUE','EXPENSE','RESULT','COMPENSATION','OTHER'].map(v=>`<option value="${v}" ${v===(a?.account_class||base?.account_class||'OTHER')?'selected':''}>${accountClass(v)}</option>`).join('')}</select>
     </label>
+
     <label class="field"><span>Natureza do saldo</span>
       <select name="normal_side">
-        <option value="D" ${a?.normal_side!=='C'?'selected':''}>Devedora</option>
-        <option value="C" ${a?.normal_side==='C'?'selected':''}>Credora</option>
+        <option value="D" ${(a?.normal_side||base?.normal_side)!=='C'?'selected':''}>Devedora</option>
+        <option value="C" ${(a?.normal_side||base?.normal_side)==='C'?'selected':''}>Credora</option>
       </select>
     </label>
 
-    <label class="field full"><span>Conta superior</span>
-      <select name="parent_id"></select>
-      <small style="display:block;margin-top:6px;color:var(--muted)">Somente contas sintéticas da mesma natureza podem ser superiores.</small>
-    </label>
+    <div class="field"><span>Tipo da conta</span><div id="maskType" style="font-weight:700;padding-top:8px">—</div></div>
+    <div class="field"><span>Conta superior</span><div id="maskParent" style="padding-top:8px;color:var(--muted)">—</div></div>
 
-    <label class="check">
-      <input name="analytic" type="checkbox" ${a?.analytic!==0?'checked':''} ${hasChildren?'disabled':''}> Analítica
-    </label>
-    <label class="check"><input name="active" type="checkbox" ${a?.active!==0?'checked':''}> Ativa</label>
-
-    ${hasChildren?`<div class="field full" style="padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:#f8fafc;color:var(--muted)">
-      Esta conta possui ${children.length} conta(s) filha(s) e, por isso, deve permanecer <b>sintética</b>.
-    </div>`:''}
+    <label class="check full"><input name="active" type="checkbox" ${a?.active!==0?'checked':''}> Ativa</label>
   </div>
-  <div class="form-actions"><button type="button" class="btn secondary" data-close>Cancelar</button><button class="btn primary">Salvar</button></div></form>`);
+
+  <div style="margin-top:12px;padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:#f8fafc;color:var(--muted)">
+    <b>Padrão:</b> 1 → 1.01 → 1.01.01 → 1.01.01.01 → 1.01.01.01.0001.<br>
+    Somente o último nível é <b>analítico</b>; os anteriores são <b>sintéticos</b>.
+  </div>
+
+  <div class="form-actions">
+    <button type="button" class="btn secondary" data-close>Cancelar</button>
+    <button class="btn primary">Salvar</button>
+  </div></form>`);
 
   $('[data-close]').onclick=closeModal;
-
   const form=$('#f');
-  const parentSelect=form.parent_id;
-  const classSelect=form.account_class;
+  const codeInput=form.code;
 
-  function refreshParents(){
-    const cls=classSelect.value;
-    const current=a?.parent_id||'';
-    const available=list.filter(x=>x.id!==a?.id && !x.analytic && x.account_class===cls);
+  function showMaskInfo(){
+    const parsed=parseAccountMaskLocal(codeInput.value);
+    if(!parsed){
+      $('#maskType').textContent='Máscara incompleta';
+      $('#maskParent').textContent='—';
+      return;
+    }
 
-    parentSelect.innerHTML=
-      `<option value="">Sem superior</option>`+
-      available.map(x=>`<option value="${x.id}" ${x.id===current?'selected':''}>${esc(x.code)} - ${esc(x.name)}${x.active?'':' (inativa)'}</option>`).join('');
+    codeInput.value=parsed.code;
+    $('#maskType').innerHTML=parsed.analytic?'<span class="badge blue">Analítica</span>':'<span class="badge gray">Sintética</span>';
 
-    if(current && !available.some(x=>x.id===current)) parentSelect.value='';
+    const parent=findParentByCode(parsed.code,list);
+    if(parsed.parentCode){
+      $('#maskParent').textContent=parent?`${parent.code} - ${parent.name}`:`${parsed.parentCode} (ainda não cadastrada)`;
+      if(parent){
+        form.account_class.value=parent.account_class;
+        form.normal_side.value=parent.normal_side;
+      }
+    }else{
+      $('#maskParent').textContent='Sem superior';
+    }
   }
 
-  refreshParents();
-  classSelect.onchange=refreshParents;
+  function normalizeOrGenerate(){
+    if(a){showMaskInfo();return}
+
+    const parsed=parseAccountMaskLocal(codeInput.value);
+    if(!parsed){
+      showMaskInfo();
+      return;
+    }
+
+    const existing=list.find(x=>x.code===parsed.code);
+    if(existing){
+      const next=nextAccountFromBase(existing,list);
+      if(next)codeInput.value=next;
+    }else{
+      codeInput.value=parsed.code;
+    }
+    showMaskInfo();
+  }
+
+  codeInput.addEventListener('blur',normalizeOrGenerate);
+  codeInput.addEventListener('change',showMaskInfo);
+  showMaskInfo();
 
   form.onsubmit=async e=>{
     e.preventDefault();
+    normalizeOrGenerate();
+
+    const parsed=parseAccountMaskLocal(codeInput.value);
+    if(!parsed){
+      toast('Código inválido. O padrão é 1.01.01.01.0001.','error');
+      codeInput.focus();
+      return;
+    }
+
     const b=Object.fromEntries(new FormData(e.target));
-    b.analytic=hasChildren?false:e.target.analytic.checked;
+    b.code=parsed.code;
     b.active=e.target.active.checked;
-    b.parent_id=b.parent_id||null;
 
     try{
       await api(a?`/api/accounts/${a.id}`:'/api/accounts',{method:a?'PATCH':'POST',body:b});
       closeModal();
       S.cache.accounts=null;
-      toast('Conta salva.');
+      toast(`Conta ${parsed.code} salva.`);
       renderAccounts();
     }catch(x){toast(x.message,'error')}
   };
