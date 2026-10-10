@@ -229,6 +229,107 @@ async function changePassword(env, request, auth, body) {
   return { message: "Senha alterada com sucesso." };
 }
 
+
+async function updateOwnProfile(env, request, auth, body) {
+  const current=await env.DB.prepare(`
+    SELECT id,name,email
+    FROM users
+    WHERE id=? AND active=1
+  `).bind(auth.user.id).first();
+
+  if (!current) throw new HttpError(404,"Usuário não encontrado.","NOT_FOUND");
+
+  const name=cleanText(required(body.name===undefined?current.name:body.name,"name"),300);
+  const email=cleanText(required(body.email===undefined?current.email:body.email,"email"),320).toLowerCase();
+
+  const conflict=await env.DB.prepare(`
+    SELECT id FROM users WHERE email=? AND id<>?
+  `).bind(email,current.id).first();
+  if (conflict) throw new HttpError(400,"Este e-mail já está sendo usado por outro usuário.","VALIDATION_ERROR");
+
+  await env.DB.prepare(`
+    UPDATE users
+    SET name=?,email=?,updated_at=CURRENT_TIMESTAMP
+    WHERE id=?
+  `).bind(name,email,current.id).run();
+
+  const updated={id:current.id,name,email};
+
+  await audit(env,{
+    userId:auth.user.id,
+    action:"UPDATE_PROFILE",
+    entity:"user",
+    entityId:current.id,
+    before:{name:current.name,email:current.email},
+    after:{name,email},
+    request
+  });
+
+  return updated;
+}
+
+async function getCompanyUser(env, companyId, userId) {
+  return await env.DB.prepare(`
+    SELECT
+      u.id,u.name,u.email,u.active,cm.status,cm.is_owner,u.last_login_at,
+      (SELECT ur.role_id
+         FROM user_roles ur
+         JOIN roles r ON r.id=ur.role_id
+        WHERE ur.user_id=u.id AND ur.company_id=cm.company_id
+        ORDER BY r.system_role DESC,r.name
+        LIMIT 1) AS role_id,
+      (SELECT GROUP_CONCAT(r.name, ', ')
+         FROM user_roles ur
+         JOIN roles r ON r.id=ur.role_id
+        WHERE ur.user_id=u.id AND ur.company_id=cm.company_id) AS role_names
+    FROM company_memberships cm
+    JOIN users u ON u.id=cm.user_id
+    WHERE cm.company_id=? AND u.id=?
+  `).bind(companyId,userId).first();
+}
+
+async function adminResetPassword(env, request, auth, companyId, userId, body) {
+  await requirePermission(env,auth.user.id,companyId,"core.user.manage");
+
+  const target=await getCompanyUser(env,companyId,userId);
+  if (!target) throw new HttpError(404,"Usuário não encontrado nesta empresa.","NOT_FOUND");
+
+  if (userId===auth.user.id) {
+    throw new HttpError(400,"Para alterar sua própria senha, use a opção Alterar senha.","VALIDATION_ERROR");
+  }
+
+  if (Number(target.is_owner)===1) {
+    throw new HttpError(400,"A senha do proprietário não pode ser redefinida por outro usuário.","VALIDATION_ERROR");
+  }
+
+  const newPassword=String(required(body.new_password,"new_password"));
+  const pw=await hashPassword(newPassword);
+
+  await env.DB.batch([
+    env.DB.prepare(`
+      UPDATE users
+      SET password_hash=?,password_salt=?,password_iterations=?,updated_at=CURRENT_TIMESTAMP
+      WHERE id=?
+    `).bind(pw.hash,pw.salt,pw.iterations,userId),
+    env.DB.prepare(`
+      UPDATE auth_sessions
+      SET revoked_at=CURRENT_TIMESTAMP
+      WHERE user_id=? AND revoked_at IS NULL
+    `).bind(userId)
+  ]);
+
+  await audit(env,{
+    companyId,
+    userId:auth.user.id,
+    action:"RESET_PASSWORD",
+    entity:"user",
+    entityId:userId,
+    request
+  });
+
+  return {message:"Senha temporária definida. As sessões anteriores do usuário foram encerradas."};
+}
+
 async function companyAccess(env, userId, companyId) {
   if (!companyId) throw new HttpError(400, "Informe X-Company-Id.", "COMPANY_REQUIRED");
   const row = await env.DB.prepare(`SELECT status,is_owner FROM company_memberships WHERE company_id=? AND user_id=?`).bind(companyId, userId).first();
@@ -588,23 +689,18 @@ async function createUser(env, request, auth, companyId, body) {
 async function updateUser(env, request, auth, companyId, userId, body) {
   await requirePermission(env,auth.user.id,companyId,"core.user.manage");
 
-  const target=await env.DB.prepare(`
-    SELECT u.id,u.name,u.email,u.active,cm.status,cm.is_owner,
-      (SELECT ur.role_id
-         FROM user_roles ur
-         JOIN roles r ON r.id=ur.role_id
-        WHERE ur.user_id=u.id AND ur.company_id=cm.company_id
-        ORDER BY r.system_role DESC, r.name
-        LIMIT 1) AS role_id
-    FROM company_memberships cm
-    JOIN users u ON u.id=cm.user_id
-    WHERE cm.company_id=? AND u.id=?
-  `).bind(companyId,userId).first();
-
+  const target=await getCompanyUser(env,companyId,userId);
   if (!target) throw new HttpError(404,"Usuário não encontrado nesta empresa.","NOT_FOUND");
 
+  const requestedName=body.name===undefined ? target.name : cleanText(required(body.name,"name"),300);
+  const requestedEmail=body.email===undefined ? target.email : cleanText(required(body.email,"email"),320).toLowerCase();
   const requestedActive=body.active===undefined ? target.status==='ACTIVE' : bool01(body.active,1)===1;
   const requestedRoleId=body.role_id===undefined ? target.role_id : (body.role_id ? String(body.role_id) : null);
+
+  const emailConflict=await env.DB.prepare(`
+    SELECT id FROM users WHERE email=? AND id<>?
+  `).bind(requestedEmail,userId).first();
+  if (emailConflict) throw new HttpError(400,"Este e-mail já está sendo usado por outro usuário.","VALIDATION_ERROR");
 
   if (target.is_owner) {
     if (!requestedActive) throw new HttpError(400,"O proprietário da empresa não pode ser bloqueado.","VALIDATION_ERROR");
@@ -613,30 +709,70 @@ async function updateUser(env, request, auth, companyId, userId, body) {
     }
   }
 
+  if (userId===auth.user.id && !requestedActive) {
+    throw new HttpError(400,"Você não pode bloquear o seu próprio acesso à empresa.","VALIDATION_ERROR");
+  }
+
   if (requestedRoleId) {
     const role=await env.DB.prepare("SELECT id FROM roles WHERE id=? AND company_id=?").bind(requestedRoleId,companyId).first();
     if (!role) throw new HttpError(400,"Perfil inválido.","VALIDATION_ERROR");
   }
 
-  const before={status:target.status,role_id:target.role_id};
-  const stmts=[];
+  const before={
+    name:target.name,
+    email:target.email,
+    status:target.status,
+    role_id:target.role_id
+  };
 
-  stmts.push(env.DB.prepare(`UPDATE company_memberships SET status=? WHERE company_id=? AND user_id=?`).bind(requestedActive?'ACTIVE':'BLOCKED',companyId,userId));
+  const stmts=[
+    env.DB.prepare(`
+      UPDATE users
+      SET name=?,email=?,updated_at=CURRENT_TIMESTAMP
+      WHERE id=?
+    `).bind(requestedName,requestedEmail,userId),
+    env.DB.prepare(`
+      UPDATE company_memberships
+      SET status=?
+      WHERE company_id=? AND user_id=?
+    `).bind(requestedActive?'ACTIVE':'BLOCKED',companyId,userId)
+  ];
 
   if (!target.is_owner && body.role_id!==undefined) {
-    stmts.push(env.DB.prepare(`DELETE FROM user_roles WHERE company_id=? AND user_id=?`).bind(companyId,userId));
+    stmts.push(env.DB.prepare(`
+      DELETE FROM user_roles
+      WHERE company_id=? AND user_id=?
+    `).bind(companyId,userId));
+
     if (requestedRoleId) {
-      stmts.push(env.DB.prepare(`INSERT INTO user_roles (company_id,user_id,role_id) VALUES (?,?,?)`).bind(companyId,userId,requestedRoleId));
+      stmts.push(env.DB.prepare(`
+        INSERT INTO user_roles (company_id,user_id,role_id)
+        VALUES (?,?,?)
+      `).bind(companyId,userId,requestedRoleId));
     }
   }
 
   await env.DB.batch(stmts);
 
-  const after={status:requestedActive?'ACTIVE':'BLOCKED',role_id:target.is_owner?target.role_id:requestedRoleId};
-  await audit(env,{companyId,userId:auth.user.id,action:"UPDATE",entity:"company_user",entityId:userId,before,after,request});
+  const updated=await getCompanyUser(env,companyId,userId);
 
-  const rows=await listUsers(env,auth,companyId);
-  return rows.find(x=>x.id===userId)||null;
+  await audit(env,{
+    companyId,
+    userId:auth.user.id,
+    action:"UPDATE",
+    entity:"company_user",
+    entityId:userId,
+    before,
+    after:{
+      name:updated.name,
+      email:updated.email,
+      status:updated.status,
+      role_id:updated.role_id
+    },
+    request
+  });
+
+  return updated;
 }
 
 async function createRole(env, request, auth, companyId, body) {
@@ -754,6 +890,7 @@ async function route(request, env) {
   const auth=await authenticate(request,env);
   if (method==="POST" && path==="/api/auth/logout") { await logout(auth,env); return ok(); }
   if (method==="POST" && path==="/api/auth/change-password") return ok(await changePassword(env,request,auth,await readJson(request)));
+  if (method==="PATCH" && path==="/api/auth/profile") return ok({user:await updateOwnProfile(env,request,auth,await readJson(request))});
   if (method==="GET" && path==="/api/auth/me") return ok({user:auth.user,companies:await listCompanies(env,auth)});
   if (method==="GET" && path==="/api/companies") return ok({companies:await listCompanies(env,auth)});
   if (method==="POST" && path==="/api/companies") return ok({company:await createCompany(env,request,auth,await readJson(request))},201);
@@ -768,6 +905,8 @@ async function route(request, env) {
   let p;
   if (method==="GET" && path==="/api/users") return ok({users:await listUsers(env,auth,companyId)});
   if (method==="POST" && path==="/api/users") return ok({user:await createUser(env,request,auth,companyId,await readJson(request))},201);
+  p=routeMatch(path,"/api/users/:id/reset-password");
+  if (p && method==="POST") return ok(await adminResetPassword(env,request,auth,companyId,p.id,await readJson(request)));
   p=routeMatch(path,"/api/users/:id");
   if (p && method==="PATCH") return ok({user:await updateUser(env,request,auth,companyId,p.id,await readJson(request))});
 
