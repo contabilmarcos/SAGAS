@@ -249,6 +249,29 @@ async function requirePermission(env, userId, companyId, code) {
   if (!row) throw new HttpError(403, `Permissão necessária: ${code}`, "FORBIDDEN");
 }
 
+async function getEffectivePermissions(env, userId, companyId) {
+  const membership = await companyAccess(env, userId, companyId);
+
+  if (membership.is_owner) {
+    const all = await env.DB.prepare(`
+      SELECT code FROM permissions ORDER BY code
+    `).all();
+    return (all.results || []).map(x => x.code);
+  }
+
+  const result = await env.DB.prepare(`
+    SELECT DISTINCT p.code
+    FROM user_roles ur
+    JOIN role_permissions rp ON rp.role_id = ur.role_id
+    JOIN permissions p ON p.id = rp.permission_id
+    WHERE ur.user_id = ? AND ur.company_id = ?
+    ORDER BY p.code
+  `).bind(userId, companyId).all();
+
+  return (result.results || []).map(x => x.code);
+}
+
+
 async function audit(env, { companyId=null, userId=null, action, entity, entityId=null, before=null, after=null, request=null }) {
   await env.DB.prepare(`
     INSERT INTO audit_logs (id,company_id,user_id,action,entity,entity_id,before_json,after_json,request_id,ip_address)
@@ -584,6 +607,8 @@ async function route(request, env) {
 
   const companyId=await currentCompany(request,env,auth);
 
+  if (method==="GET" && path==="/api/auth/permissions") return ok({permissions:await getEffectivePermissions(env,auth.user.id,companyId)});
+
   if (method==="GET" && path==="/api/branches") { await requirePermission(env,auth.user.id,companyId,"core.branch.read"); return ok({branches:await listSimple(env,companyId,"branches","id,code,name,tax_id,active,created_at")}); }
   if (method==="POST" && path==="/api/branches") return ok({branch:await createBranch(env,request,auth,companyId,await readJson(request))},201);
 
@@ -648,3 +673,4 @@ export default {
     }
   }
 };
+
