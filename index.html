@@ -96,7 +96,7 @@ function openModal(t,sub,html,large=false){$('#modalTitle').textContent=t;$('#mo
 function closeModal(){$('#modalBackdrop').classList.add('hidden')}
 function badge(s){const m={OPEN:['Aberto','green'],CLOSED:['Fechado','gray'],LOCKED:['Bloqueado','red'],DRAFT:['Rascunho','yellow'],POSTED:['Contabilizado','green'],VOID:['Anulado','red']};const x=m[s]||[s||'-','gray'];return`<span class="badge ${x[1]}">${esc(x[0])}</span>`}
 function empty(cols,t,x){return`<tr><td colspan="${cols}"><div class="empty"><b>${esc(t)}</b>${esc(x)}</div></td></tr>`}
-function tablePage({newLabel,onNew,cols,rows,emptyTitle,emptyText,placeholder='Pesquisar...'}){$('#content').innerHTML=`<div class="toolbar"><input id="search" class="search" placeholder="${esc(placeholder)}"><button id="newBtn" class="btn primary">+ ${esc(newLabel)}</button></div><div class="table-wrap"><table class="table"><thead><tr>${cols.map(x=>`<th>${esc(x)}</th>`).join('')}</tr></thead><tbody id="tbody">${rows||empty(cols.length,emptyTitle,emptyText)}</tbody></table></div>`;$('#newBtn').onclick=onNew;$('#search').oninput=e=>{const q=e.target.value.toLowerCase().trim();$$('#tbody tr').forEach(r=>r.style.display=!q||r.innerText.toLowerCase().includes(q)?'':'none')}}
+function tablePage({newLabel,onNew,cols,rows,emptyTitle,emptyText,placeholder='Pesquisar...'}){const newButton=newLabel&&onNew?`<button id="newBtn" class="btn primary">+ ${esc(newLabel)}</button>`:'';$('#content').innerHTML=`<div class="toolbar"><input id="search" class="search" placeholder="${esc(placeholder)}">${newButton}</div><div class="table-wrap"><table class="table"><thead><tr>${cols.map(x=>`<th>${esc(x)}</th>`).join('')}</tr></thead><tbody id="tbody">${rows||empty(cols.length,emptyTitle,emptyText)}</tbody></table></div>`;if($('#newBtn'))$('#newBtn').onclick=onNew;$('#search').oninput=e=>{const q=e.target.value.toLowerCase().trim();$$('#tbody tr').forEach(r=>r.style.display=!q||r.innerText.toLowerCase().includes(q)?'':'none')}}
 
 const pagePermission={companies:'core.company.manage','branches-admin':'core.branch.read',users:'core.user.read',roles:'core.role.manage',accounts:'accounting.account.read','cost-centers':'accounting.cost_center.read',history:'accounting.history.read',periods:'accounting.period.read',batches:'accounting.batch.read',entries:'accounting.entry.read'};
 const navGroups={admin:['companies','branches-admin','users','roles'],accounting:['accounts','cost-centers','history','periods','batches','entries']};
@@ -123,8 +123,65 @@ function companyForm(){openModal('Nova empresa','O usuário atual será propriet
 async function renderBranchesAdmin(){const a=await branches(true);tablePage({newLabel:'Nova filial',onNew:branchForm,cols:['Código','Nome','CNPJ','Situação'],rows:a.length?a.map(x=>`<tr><td class="code">${esc(x.code)}</td><td>${esc(x.name)}</td><td class="code">${esc(x.tax_id||'')}</td><td>${x.active?'<span class="badge green">Ativa</span>':'<span class="badge red">Inativa</span>'}</td></tr>`).join(''):null,emptyTitle:'Nenhuma filial cadastrada',emptyText:'Cadastre uma filial para a empresa selecionada.',placeholder:'Pesquisar filial...'})}
 function branchForm(){openModal('Nova filial','Será criada na empresa atualmente selecionada.',`<form id="branchForm"><div class="grid"><label class="field"><span>Código</span><input name="code" required></label><label class="field"><span>CNPJ</span><input name="tax_id" inputmode="numeric"></label><label class="field full"><span>Nome</span><input name="name" required></label><label class="check"><input name="active" type="checkbox" checked> Filial ativa</label></div><div class="form-actions"><button type="button" class="btn secondary" data-close>Cancelar</button><button class="btn primary">Salvar</button></div></form>`);$('[data-close]').onclick=closeModal;$('#branchForm').onsubmit=async e=>{e.preventDefault();const b=Object.fromEntries(new FormData(e.target));b.tax_id=String(b.tax_id||'').replace(/\D/g,'');b.active=e.target.active.checked;try{await api('/api/branches',{method:'POST',body:b});closeModal();S.cache.branches=null;toast('Filial cadastrada.');renderBranchesAdmin()}catch(x){toast(x.message,'error')}}}
 
-async function renderUsers(){const d=await api('/api/users'),a=d.users||[];tablePage({newLabel:'Novo usuário',onNew:userForm,cols:['Nome','E-mail','Último acesso','Proprietário','Situação'],rows:a.length?a.map(x=>`<tr><td>${esc(x.name)}</td><td>${esc(x.email)}</td><td>${x.last_login_at?esc(new Date(x.last_login_at).toLocaleString('pt-BR')):''}</td><td>${x.is_owner?'<span class="badge blue">Sim</span>':'Não'}</td><td>${x.active&&x.status==='ACTIVE'?'<span class="badge green">Ativo</span>':'<span class="badge red">Bloqueado</span>'}</td></tr>`).join(''):null,emptyTitle:'Nenhum usuário cadastrado',emptyText:'Adicione usuários à empresa selecionada.',placeholder:'Pesquisar usuário...'})}
+async function renderUsers(){
+  const d=await api('/api/users'),a=d.users||[],manage=can('core.user.manage');
+  const rows=a.length?a.map(x=>`<tr>
+    <td>${esc(x.name)}</td>
+    <td>${esc(x.email)}</td>
+    <td>${esc(x.role_names||'Sem perfil')}</td>
+    <td>${x.last_login_at?esc(new Date(x.last_login_at).toLocaleString('pt-BR')):''}</td>
+    <td>${x.is_owner?'<span class="badge blue">Sim</span>':'Não'}</td>
+    <td>${x.active&&x.status==='ACTIVE'?'<span class="badge green">Ativo</span>':'<span class="badge red">Bloqueado</span>'}</td>
+    <td>${manage?`<button class="btn secondary sm edit-user" data-user-id="${esc(x.id)}">Editar</button>`:''}</td>
+  </tr>`).join(''):null;
+
+  tablePage({
+    newLabel:manage?'Novo usuário':null,
+    onNew:manage?userForm:null,
+    cols:['Nome','E-mail','Perfil','Último acesso','Proprietário','Situação','Ações'],
+    rows,
+    emptyTitle:'Nenhum usuário cadastrado',
+    emptyText:'Adicione usuários à empresa selecionada.',
+    placeholder:'Pesquisar usuário...'
+  });
+
+  if(manage){
+    $$('.edit-user').forEach(btn=>{
+      btn.onclick=()=>{
+        const u=a.find(x=>x.id===btn.dataset.userId);
+        if(u) editUserForm(u);
+      };
+    });
+  }
+}
+
 async function userForm(){const r=await roleList();openModal('Novo usuário','Se o e-mail já existir no SAGAS, ele será apenas vinculado à empresa.',`<form id="userForm"><div class="grid"><label class="field"><span>Nome</span><input name="name" required></label><label class="field"><span>E-mail</span><input name="email" type="email" required></label><label class="field"><span>Senha inicial</span><input name="password" type="password" minlength="8"></label><label class="field"><span>Perfil</span><select name="role_id"><option value="">Sem perfil</option>${r.map(x=>`<option value="${x.id}">${esc(x.name)}</option>`).join('')}</select></label></div><div class="help">Para um e-mail novo, informe uma senha inicial com pelo menos 8 caracteres.</div><div class="form-actions"><button type="button" class="btn secondary" data-close>Cancelar</button><button class="btn primary">Adicionar usuário</button></div></form>`);$('[data-close]').onclick=closeModal;$('#userForm').onsubmit=async e=>{e.preventDefault();const b=Object.fromEntries(new FormData(e.target));if(!b.password)delete b.password;if(!b.role_id)delete b.role_id;try{await api('/api/users',{method:'POST',body:b});closeModal();toast('Usuário adicionado.');renderUsers()}catch(x){toast(x.message,'error')}}}
+
+async function editUserForm(u){
+  const r=await roleList(true),owner=!!u.is_owner;
+  openModal('Editar usuário','Altere o perfil e o acesso deste usuário na empresa selecionada.',`<form id="editUserForm"><div class="grid">
+    <label class="field"><span>Nome</span><input value="${esc(u.name)}" disabled></label>
+    <label class="field"><span>E-mail</span><input value="${esc(u.email)}" disabled></label>
+    <label class="field full"><span>Perfil</span><select name="role_id" ${owner?'disabled':''}><option value="">Sem perfil</option>${r.map(x=>`<option value="${x.id}" ${x.id===u.role_id?'selected':''}>${esc(x.name)}</option>`).join('')}</select></label>
+    <label class="check full"><input name="active" type="checkbox" ${u.status==='ACTIVE'?'checked':''} ${owner?'disabled':''}> Usuário ativo nesta empresa</label>
+  </div>
+  <div class="help">${owner?'O proprietário da empresa não pode ter o perfil alterado nem ser bloqueado.':'Nome, e-mail e senha são dados da conta. Nesta tela você altera o perfil e o acesso à empresa.'}</div>
+  <div class="form-actions"><button type="button" class="btn secondary" data-close>Cancelar</button>${owner?'':'<button class="btn primary">Salvar alterações</button>'}</div></form>`);
+  $('[data-close]').onclick=closeModal;
+  if(owner)return;
+  $('#editUserForm').onsubmit=async e=>{
+    e.preventDefault();
+    const roleId=e.target.role_id.value||null;
+    const body={role_id:roleId,active:e.target.active.checked};
+    try{
+      await api(`/api/users/${u.id}`,{method:'PATCH',body});
+      closeModal();
+      toast('Usuário atualizado.');
+      if(u.id===S.user?.id){await loadPermissions();if(!canPage(S.page))S.page=firstAllowedPage()}
+      renderUsers();
+    }catch(x){toast(x.message,'error')}
+  };
+}
 
 function permLabel(c){return({'core.company.manage':'Gerenciar empresa','core.branch.read':'Consultar filiais','core.branch.manage':'Gerenciar filiais','core.user.read':'Consultar usuários','core.user.manage':'Gerenciar usuários','core.role.manage':'Gerenciar perfis e permissões','core.audit.read':'Consultar auditoria','accounting.period.read':'Consultar períodos contábeis','accounting.period.manage':'Gerenciar períodos contábeis','accounting.account.read':'Consultar plano de contas','accounting.account.manage':'Gerenciar plano de contas','accounting.cost_center.read':'Consultar centros de custo','accounting.cost_center.manage':'Gerenciar centros de custo','accounting.history.read':'Consultar históricos padrão','accounting.history.manage':'Gerenciar históricos padrão','accounting.batch.read':'Consultar lotes','accounting.batch.manage':'Gerenciar lotes','accounting.entry.read':'Consultar lançamentos','accounting.entry.create':'Criar lançamentos','accounting.entry.post':'Contabilizar lançamentos','accounting.entry.void':'Anular lançamentos'})[c]||c}
 async function renderRoles(){const [a,p]=await Promise.all([roleList(true),permissionList(true)]);tablePage({newLabel:'Novo perfil',onNew:()=>roleForm(p),cols:['Código','Perfil','Descrição','Tipo'],rows:a.length?a.map(x=>`<tr><td class="code">${esc(x.code)}</td><td>${esc(x.name)}</td><td>${esc(x.description||'')}</td><td>${x.system_role?'<span class="badge blue">Sistema</span>':'<span class="badge gray">Personalizado</span>'}</td></tr>`).join(''):null,emptyTitle:'Nenhum perfil cadastrado',emptyText:'Crie perfis para controlar o acesso dos usuários.',placeholder:'Pesquisar perfil...'})}
