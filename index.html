@@ -332,14 +332,84 @@ function findParentByCode(code,list){
   return list.find(x=>x.code===parsed.parentCode)||null;
 }
 
+
+const collapsedAccountTree=new Set();
+
+function accountDepth(a,list){
+  let depth=0,current=a,seen=new Set();
+  while(current?.parent_id && depth<20){
+    if(seen.has(current.id))break;
+    seen.add(current.id);
+    current=list.find(x=>x.id===current.parent_id);
+    if(!current)break;
+    depth++;
+  }
+  return depth;
+}
+
+function orderedAccountTree(list){
+  const byParent=new Map();
+  list.forEach(x=>{
+    const k=x.parent_id||'__root__';
+    if(!byParent.has(k))byParent.set(k,[]);
+    byParent.get(k).push(x);
+  });
+  byParent.forEach(arr=>arr.sort((a,b)=>String(a.code).localeCompare(String(b.code),'pt-BR',{numeric:true})));
+
+  const out=[];
+  const seen=new Set();
+
+  function walk(parentId,depth){
+    const rows=byParent.get(parentId||'__root__')||[];
+    for(const x of rows){
+      if(seen.has(x.id))continue;
+      seen.add(x.id);
+      out.push({...x,_depth:depth});
+      walk(x.id,depth+1);
+    }
+  }
+
+  walk(null,0);
+
+  // Segurança para contas órfãs
+  list.filter(x=>!seen.has(x.id))
+      .sort((a,b)=>String(a.code).localeCompare(String(b.code),'pt-BR',{numeric:true}))
+      .forEach(x=>out.push({...x,_depth:0}));
+
+  return out;
+}
+
+function accountDescendantIds(id,list){
+  const out=[];
+  const stack=[id];
+  while(stack.length){
+    const p=stack.pop();
+    list.filter(x=>x.parent_id===p).forEach(x=>{
+      out.push(x.id);
+      stack.push(x.id);
+    });
+  }
+  return out;
+}
+
 async function renderAccounts(){
   const a=await accounts(true),manage=can('accounting.account.manage');
-  tablePage({
-    newLabel:manage?'Nova conta':null,
-    onNew:manage?()=>accountForm():null,
-    cols:['Código','Reduzido','Descrição','Natureza','Tipo','Situação',...(manage?['Ações']:[])],
-    rows:a.length?a.map(x=>`<tr>
-      <td class="code">${esc(x.code)}</td>
+  const ordered=orderedAccountTree(a);
+
+  const rows=ordered.length?ordered.map(x=>{
+    const hasChildren=a.some(y=>y.parent_id===x.id);
+    const isCollapsed=collapsedAccountTree.has(x.id);
+    const indent=x._depth*24;
+
+    return `<tr data-account-row="${x.id}" data-parent-id="${esc(x.parent_id||'')}" data-depth="${x._depth}">
+      <td class="code">
+        <div style="display:flex;align-items:center;gap:6px;padding-left:${indent}px">
+          ${hasChildren
+            ? `<button class="btn secondary sm" data-tree-toggle="${x.id}" title="${isCollapsed?'Expandir':'Recolher'}" style="padding:2px 7px;min-width:28px">${isCollapsed?'▶':'▼'}</button>`
+            : `<span style="display:inline-block;width:28px"></span>`}
+          <span>${esc(x.code)}</span>
+        </div>
+      </td>
       <td class="code">${esc(x.reduced_code||'')}</td>
       <td>${esc(x.name)}</td>
       <td>${esc(accountClass(x.account_class))}</td>
@@ -348,23 +418,114 @@ async function renderAccounts(){
       ${manage?`<td><div class="actions">
         <button class="btn secondary sm" data-add-from="${x.id}" title="${x.analytic?'Adicionar próxima conta analítica':'Adicionar conta abaixo desta'}">+</button>
         <button class="btn secondary sm" data-edit="${x.id}">Editar</button>
+        <button class="btn danger sm" data-delete-account="${x.id}">Excluir</button>
       </div></td>`:''}
-    </tr>`).join(''):null,
+    </tr>`;
+  }).join(''):null;
+
+  tablePage({
+    newLabel:manage?'Nova conta':null,
+    onNew:manage?()=>accountForm():null,
+    cols:['Código','Reduzido','Descrição','Natureza','Tipo','Situação',...(manage?['Ações']:[])],
+    rows,
     emptyTitle:'Nenhuma conta cadastrada',
     emptyText:manage?'Cadastre a primeira conta do plano de contas.':'Nenhuma conta disponível para consulta.',
     placeholder:'Pesquisar por código, reduzido ou descrição...'
   });
 
+  function applyTreeVisibility(){
+    const q=($('#search')?.value||'').toLowerCase().trim();
+
+    if(q){
+      $$('[data-account-row]').forEach(r=>{
+        r.style.display=r.innerText.toLowerCase().includes(q)?'':'none';
+      });
+      return;
+    }
+
+    const hiddenIds=new Set();
+    collapsedAccountTree.forEach(id=>{
+      accountDescendantIds(id,a).forEach(x=>hiddenIds.add(x));
+    });
+
+    $$('[data-account-row]').forEach(r=>{
+      r.style.display=hiddenIds.has(r.dataset.accountRow)?'none':'';
+    });
+  }
+
+  if($('#search')) $('#search').oninput=applyTreeVisibility;
+
+  $$('[data-tree-toggle]').forEach(b=>b.onclick=()=>{
+    const id=b.dataset.treeToggle;
+    if(collapsedAccountTree.has(id))collapsedAccountTree.delete(id);
+    else collapsedAccountTree.add(id);
+    renderAccounts();
+  });
+
   if(manage){
     $$('[data-edit]').forEach(b=>b.onclick=()=>accountForm(a.find(x=>x.id===b.dataset.edit)));
+
     $$('[data-add-from]').forEach(b=>{
       b.onclick=()=>{
         const base=a.find(x=>x.id===b.dataset.addFrom);
         accountForm(null,base);
       };
     });
+
+    $$('[data-delete-account]').forEach(b=>{
+      b.onclick=()=>{
+        const account=a.find(x=>x.id===b.dataset.deleteAccount);
+        deleteAccountModal(account,a);
+      };
+    });
   }
+
+  applyTreeVisibility();
 }
+function deleteAccountModal(account,list){
+  const children=list.filter(x=>x.parent_id===account.id);
+
+  if(children.length){
+    openModal('Excluir conta','Esta conta não pode ser excluída enquanto possuir contas abaixo dela.',`
+      <div style="padding:12px 0">
+        <div style="font-size:14px;margin-bottom:12px"><b>${esc(account.code)} - ${esc(account.name)}</b></div>
+        <div style="padding:12px;border:1px solid var(--line);border-radius:8px;background:#f8fafc">
+          Existem ${children.length} conta(s) filha(s). Exclua primeiro as contas abaixo desta.
+        </div>
+        <div class="form-actions"><button type="button" class="btn secondary" data-close>Fechar</button></div>
+      </div>`);
+    $('[data-close]').onclick=closeModal;
+    return;
+  }
+
+  openModal('Excluir conta','Esta ação só é permitida para contas sem filhas e sem lançamentos contábeis.',`
+    <div style="padding:8px 0">
+      <div style="padding:12px;border:1px solid var(--line);border-radius:8px;background:#f8fafc;margin-bottom:14px">
+        <div><b>${esc(account.code)} - ${esc(account.name)}</b></div>
+        <div style="margin-top:6px;color:var(--muted)">Reduzido: ${esc(account.reduced_code||'-')}</div>
+      </div>
+      <div style="color:var(--muted)">Se a conta já tiver sido usada em algum lançamento, o SAGAS não permitirá a exclusão. Nesse caso, deixe a conta inativa.</div>
+      <div class="form-actions">
+        <button type="button" class="btn secondary" data-close>Cancelar</button>
+        <button type="button" id="confirmDeleteAccount" class="btn danger">Excluir conta</button>
+      </div>
+    </div>`);
+
+  $('[data-close]').onclick=closeModal;
+
+  $('#confirmDeleteAccount').onclick=async()=>{
+    try{
+      await api(`/api/accounts/${account.id}`,{method:'DELETE'});
+      closeModal();
+      collapsedAccountTree.delete(account.id);
+      S.cache.accounts=null;
+      toast(`Conta ${account.code} excluída.`);
+      renderAccounts();
+    }catch(x){toast(x.message,'error')}
+  };
+}
+
+
 async function accountForm(a=null,base=null){
   const list=await accounts();
   const initialCode=base?nextAccountFromBase(base,list):(a?.code||'');
