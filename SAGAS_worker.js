@@ -426,14 +426,123 @@ async function listSimple(env, companyId, table, columns) {
   return res.results || [];
 }
 
+
+async function validateAccountHierarchy(env, companyId, accountId, parentId, accountClass) {
+  if (!parentId) return null;
+
+  if (accountId && parentId===accountId) {
+    throw new HttpError(400,"Uma conta não pode ser superior dela mesma.","INVALID_ACCOUNT_HIERARCHY");
+  }
+
+  const parent=await assertCompanyEntity(env,"accounts",parentId,companyId);
+
+  if (Number(parent.analytic)===1) {
+    throw new HttpError(400,`A conta superior ${parent.code} é analítica. Somente contas sintéticas podem possuir contas filhas.`,"INVALID_ACCOUNT_HIERARCHY");
+  }
+
+  if (parent.account_class!==accountClass) {
+    throw new HttpError(400,`A conta superior ${parent.code} possui natureza diferente. Conta superior e conta filha devem ter a mesma natureza.`,"INVALID_ACCOUNT_HIERARCHY");
+  }
+
+  if (accountId) {
+    let cursor=parent;
+    const visited=new Set();
+    for (let depth=0; depth<200 && cursor; depth++) {
+      if (cursor.id===accountId) {
+        throw new HttpError(400,"A hierarquia criaria um ciclo entre as contas.","INVALID_ACCOUNT_HIERARCHY");
+      }
+      if (!cursor.parent_id) break;
+      if (visited.has(cursor.id)) {
+        throw new HttpError(400,"Foi detectada uma hierarquia circular no plano de contas.","INVALID_ACCOUNT_HIERARCHY");
+      }
+      visited.add(cursor.id);
+      cursor=await assertCompanyEntity(env,"accounts",cursor.parent_id,companyId);
+    }
+  }
+
+  return parent;
+}
+
+async function ensureAccountCanBeAnalytic(env, companyId, accountId) {
+  if (!accountId) return;
+
+  const child=await env.DB.prepare(`
+    SELECT id,code,name
+    FROM accounts
+    WHERE company_id=? AND parent_id=?
+    LIMIT 1
+  `).bind(companyId,accountId).first();
+
+  if (child) {
+    throw new HttpError(400,`Esta conta possui conta filha (${child.code}). Uma conta com filhas deve permanecer sintética.`,"ACCOUNT_HAS_CHILDREN");
+  }
+}
+
+async function ensureAccountCanBeSynthetic(env, companyId, accountId) {
+  if (!accountId) return;
+
+  const used=await env.DB.prepare(`
+    SELECT jl.id
+    FROM journal_lines jl
+    WHERE jl.company_id=? AND jl.account_id=?
+    LIMIT 1
+  `).bind(companyId,accountId).first();
+
+  if (used) {
+    throw new HttpError(400,"Esta conta já possui lançamentos contábeis e não pode ser transformada em sintética.","ACCOUNT_HAS_ENTRIES");
+  }
+}
+
+async function validatePostedEntryAccounts(env, companyId, entryId) {
+  const invalid=await env.DB.prepare(`
+    SELECT a.code,a.name,a.active,a.analytic
+    FROM journal_lines jl
+    JOIN accounts a ON a.id=jl.account_id
+    WHERE jl.company_id=?
+      AND jl.entry_id=?
+      AND (a.active<>1 OR a.analytic<>1)
+    LIMIT 1
+  `).bind(companyId,entryId).first();
+
+  if (invalid) {
+    throw new HttpError(
+      409,
+      `A conta ${invalid.code} não está apta para contabilização. Somente contas analíticas e ativas podem receber lançamentos.`,
+      "INVALID_ACCOUNT"
+    );
+  }
+}
+
 async function createAccount(env, request, auth, companyId, body) {
   await requirePermission(env, auth.user.id, companyId, "accounting.account.manage");
-  const side = String(required(body.normal_side,"normal_side")).toUpperCase();
+
+  const side=String(required(body.normal_side,"normal_side")).toUpperCase();
   if (!["D","C"].includes(side)) throw new HttpError(400,"normal_side deve ser D ou C.","VALIDATION_ERROR");
-  if (body.parent_id) await assertCompanyEntity(env,"accounts",body.parent_id,companyId);
+
+  const accountClass=String(body.account_class||"OTHER").toUpperCase();
+  const analytic=bool01(body.analytic,1);
+  const parentId=body.parent_id||null;
+
+  await validateAccountHierarchy(env,companyId,null,parentId,accountClass);
+
   const id=uuid();
-  await env.DB.prepare(`INSERT INTO accounts (id,company_id,code,reduced_code,name,parent_id,account_class,normal_side,analytic,active) VALUES (?,?,?,?,?,?,?,?,?,?)`)
-    .bind(id,companyId,cleanText(required(body.code,"code"),80),cleanText(body.reduced_code,80),cleanText(required(body.name,"name"),300),body.parent_id||null,body.account_class||"OTHER",side,bool01(body.analytic,1),bool01(body.active,1)).run();
+  await env.DB.prepare(`
+    INSERT INTO accounts
+      (id,company_id,code,reduced_code,name,parent_id,account_class,normal_side,analytic,active)
+    VALUES (?,?,?,?,?,?,?,?,?,?)
+  `).bind(
+    id,
+    companyId,
+    cleanText(required(body.code,"code"),80),
+    cleanText(body.reduced_code,80),
+    cleanText(required(body.name,"name"),300),
+    parentId,
+    accountClass,
+    side,
+    analytic,
+    bool01(body.active,1)
+  ).run();
+
   const row=await env.DB.prepare("SELECT * FROM accounts WHERE id=?").bind(id).first();
   await audit(env,{companyId,userId:auth.user.id,action:"CREATE",entity:"account",entityId:id,after:row,request});
   return row;
@@ -441,18 +550,60 @@ async function createAccount(env, request, auth, companyId, body) {
 
 async function updateAccount(env, request, auth, companyId, id, body) {
   await requirePermission(env, auth.user.id, companyId, "accounting.account.manage");
+
   const before=await assertCompanyEntity(env,"accounts",id,companyId);
-  if (body.parent_id===id) throw new HttpError(400,"Uma conta não pode ser pai dela mesma.","VALIDATION_ERROR");
-  if (body.parent_id) await assertCompanyEntity(env,"accounts",body.parent_id,companyId);
+
   const next={
-    code:cleanText(body.code ?? before.code,80), reduced_code:cleanText(body.reduced_code ?? before.reduced_code,80),
-    name:cleanText(body.name ?? before.name,300), parent_id:body.parent_id===undefined?before.parent_id:(body.parent_id||null),
-    account_class:body.account_class ?? before.account_class, normal_side:String(body.normal_side ?? before.normal_side).toUpperCase(),
-    analytic:bool01(body.analytic,before.analytic), active:bool01(body.active,before.active)
+    code:cleanText(body.code ?? before.code,80),
+    reduced_code:cleanText(body.reduced_code ?? before.reduced_code,80),
+    name:cleanText(body.name ?? before.name,300),
+    parent_id:body.parent_id===undefined?before.parent_id:(body.parent_id||null),
+    account_class:String(body.account_class ?? before.account_class).toUpperCase(),
+    normal_side:String(body.normal_side ?? before.normal_side).toUpperCase(),
+    analytic:bool01(body.analytic,before.analytic),
+    active:bool01(body.active,before.active)
   };
-  if (!["D","C"].includes(next.normal_side)) throw new HttpError(400,"normal_side deve ser D ou C.","VALIDATION_ERROR");
-  await env.DB.prepare(`UPDATE accounts SET code=?,reduced_code=?,name=?,parent_id=?,account_class=?,normal_side=?,analytic=?,active=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND company_id=?`)
-    .bind(next.code,next.reduced_code,next.name,next.parent_id,next.account_class,next.normal_side,next.analytic,next.active,id,companyId).run();
+
+  if (!["D","C"].includes(next.normal_side)) {
+    throw new HttpError(400,"normal_side deve ser D ou C.","VALIDATION_ERROR");
+  }
+
+  await validateAccountHierarchy(env,companyId,id,next.parent_id,next.account_class);
+
+  if (next.analytic===1) {
+    await ensureAccountCanBeAnalytic(env,companyId,id);
+  }
+
+  if (Number(before.analytic)===1 && next.analytic===0) {
+    await ensureAccountCanBeSynthetic(env,companyId,id);
+  }
+
+  if (before.account_class!==next.account_class) {
+    const incompatibleChild=await env.DB.prepare(`
+      SELECT code,name
+      FROM accounts
+      WHERE company_id=? AND parent_id=? AND account_class<>?
+      LIMIT 1
+    `).bind(companyId,id,next.account_class).first();
+
+    if (incompatibleChild) {
+      throw new HttpError(
+        400,
+        `Não é possível alterar a natureza desta conta enquanto existir a conta filha ${incompatibleChild.code} com natureza diferente.`,
+        "INVALID_ACCOUNT_HIERARCHY"
+      );
+    }
+  }
+
+  await env.DB.prepare(`
+    UPDATE accounts
+    SET code=?,reduced_code=?,name=?,parent_id=?,account_class=?,normal_side=?,analytic=?,active=?,updated_at=CURRENT_TIMESTAMP
+    WHERE id=? AND company_id=?
+  `).bind(
+    next.code,next.reduced_code,next.name,next.parent_id,next.account_class,next.normal_side,
+    next.analytic,next.active,id,companyId
+  ).run();
+
   const after=await env.DB.prepare("SELECT * FROM accounts WHERE id=?").bind(id).first();
   await audit(env,{companyId,userId:auth.user.id,action:"UPDATE",entity:"account",entityId:id,before,after,request});
   return after;
@@ -586,6 +737,7 @@ async function postEntry(env, request, auth, companyId, id) {
   const entry=await getEntry(env,companyId,id);
   if (entry.status!=="DRAFT") throw new HttpError(409,"Somente lançamentos em rascunho podem ser contabilizados.","INVALID_STATUS");
   if (entry.total_debit_cents!==entry.total_credit_cents || entry.total_debit_cents<=0) throw new HttpError(409,"O lançamento não está balanceado.","UNBALANCED_ENTRY");
+  await validatePostedEntryAccounts(env,companyId,id);
   const batch=await assertCompanyEntity(env,"journal_batches",entry.batch_id,companyId), period=await assertCompanyEntity(env,"accounting_periods",batch.period_id,companyId);
   if (batch.status!=="OPEN" || period.status!=="OPEN") throw new HttpError(409,"Lote ou período não está aberto.","PERIOD_CLOSED");
   await env.DB.prepare(`UPDATE journal_entries SET status='POSTED',posted_by=?,posted_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=? AND company_id=? AND status='DRAFT'`).bind(auth.user.id,id,companyId).run();
