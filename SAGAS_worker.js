@@ -427,6 +427,64 @@ async function listSimple(env, companyId, table, columns) {
 }
 
 
+
+const ACCOUNT_MASK_WIDTHS=[1,2,2,2,4];
+const ACCOUNT_MASK_CUMULATIVE=[1,3,5,7,11];
+
+function parseAccountCodeMask(value) {
+  const raw=String(value??"").trim().replace(/\D/g,"");
+  const levelIndex=ACCOUNT_MASK_CUMULATIVE.indexOf(raw.length);
+
+  if (levelIndex<0) {
+    throw new HttpError(
+      400,
+      "Código inválido. Use a máscara 1.01.01.01.0001. Você pode digitar somente os números; os pontos são automáticos.",
+      "INVALID_ACCOUNT_MASK"
+    );
+  }
+
+  let pos=0;
+  const parts=[];
+  for (let i=0;i<=levelIndex;i++) {
+    const width=ACCOUNT_MASK_WIDTHS[i];
+    parts.push(raw.slice(pos,pos+width));
+    pos+=width;
+  }
+
+  const code=parts.join(".");
+  const level=levelIndex+1;
+  const analytic=level===ACCOUNT_MASK_WIDTHS.length ? 1 : 0;
+
+  let parentCode=null;
+  if (level>1) {
+    parentCode=parts.slice(0,-1).join(".");
+  }
+
+  return {raw,code,level,analytic,parentCode};
+}
+
+async function resolveAccountParentFromMask(env, companyId, accountId, parsed, accountClass) {
+  if (!parsed.parentCode) return null;
+
+  const parent=await env.DB.prepare(`
+    SELECT *
+    FROM accounts
+    WHERE company_id=? AND code=?
+    LIMIT 1
+  `).bind(companyId,parsed.parentCode).first();
+
+  if (!parent) {
+    throw new HttpError(
+      400,
+      `Cadastre primeiro a conta superior ${parsed.parentCode}.`,
+      "MISSING_PARENT_ACCOUNT"
+    );
+  }
+
+  await validateAccountHierarchy(env,companyId,accountId,parent.id,accountClass);
+  return parent;
+}
+
 async function validateAccountHierarchy(env, companyId, accountId, parentId, accountClass) {
   if (!parentId) return null;
 
@@ -520,10 +578,19 @@ async function createAccount(env, request, auth, companyId, body) {
   if (!["D","C"].includes(side)) throw new HttpError(400,"normal_side deve ser D ou C.","VALIDATION_ERROR");
 
   const accountClass=String(body.account_class||"OTHER").toUpperCase();
-  const analytic=bool01(body.analytic,1);
-  const parentId=body.parent_id||null;
+  const parsed=parseAccountCodeMask(required(body.code,"code"));
+  const parent=await resolveAccountParentFromMask(env,companyId,null,parsed,accountClass);
 
-  await validateAccountHierarchy(env,companyId,null,parentId,accountClass);
+  const duplicate=await env.DB.prepare(`
+    SELECT id
+    FROM accounts
+    WHERE company_id=? AND code=?
+    LIMIT 1
+  `).bind(companyId,parsed.code).first();
+
+  if (duplicate) {
+    throw new HttpError(400,`A conta ${parsed.code} já existe.`,"DUPLICATE_ACCOUNT_CODE");
+  }
 
   const id=uuid();
   await env.DB.prepare(`
@@ -533,13 +600,13 @@ async function createAccount(env, request, auth, companyId, body) {
   `).bind(
     id,
     companyId,
-    cleanText(required(body.code,"code"),80),
+    parsed.code,
     cleanText(body.reduced_code,80),
     cleanText(required(body.name,"name"),300),
-    parentId,
+    parent?.id||null,
     accountClass,
     side,
-    analytic,
+    parsed.analytic,
     bool01(body.active,1)
   ).run();
 
@@ -552,15 +619,15 @@ async function updateAccount(env, request, auth, companyId, id, body) {
   await requirePermission(env, auth.user.id, companyId, "accounting.account.manage");
 
   const before=await assertCompanyEntity(env,"accounts",id,companyId);
+  const parsed=parseAccountCodeMask(body.code ?? before.code);
 
   const next={
-    code:cleanText(body.code ?? before.code,80),
+    code:parsed.code,
     reduced_code:cleanText(body.reduced_code ?? before.reduced_code,80),
     name:cleanText(body.name ?? before.name,300),
-    parent_id:body.parent_id===undefined?before.parent_id:(body.parent_id||null),
     account_class:String(body.account_class ?? before.account_class).toUpperCase(),
     normal_side:String(body.normal_side ?? before.normal_side).toUpperCase(),
-    analytic:bool01(body.analytic,before.analytic),
+    analytic:parsed.analytic,
     active:bool01(body.active,before.active)
   };
 
@@ -568,10 +635,41 @@ async function updateAccount(env, request, auth, companyId, id, body) {
     throw new HttpError(400,"normal_side deve ser D ou C.","VALIDATION_ERROR");
   }
 
-  await validateAccountHierarchy(env,companyId,id,next.parent_id,next.account_class);
+  const parent=await resolveAccountParentFromMask(env,companyId,id,parsed,next.account_class);
+  next.parent_id=parent?.id||null;
 
-  if (next.analytic===1) {
-    await ensureAccountCanBeAnalytic(env,companyId,id);
+  const duplicate=await env.DB.prepare(`
+    SELECT id
+    FROM accounts
+    WHERE company_id=? AND code=? AND id<>?
+    LIMIT 1
+  `).bind(companyId,next.code,id).first();
+
+  if (duplicate) {
+    throw new HttpError(400,`A conta ${next.code} já existe.`,"DUPLICATE_ACCOUNT_CODE");
+  }
+
+  const child=await env.DB.prepare(`
+    SELECT id,code,name
+    FROM accounts
+    WHERE company_id=? AND parent_id=?
+    LIMIT 1
+  `).bind(companyId,id).first();
+
+  if (child && next.analytic===1) {
+    throw new HttpError(
+      400,
+      `Esta conta possui conta filha (${child.code}) e deve permanecer sintética.`,
+      "ACCOUNT_HAS_CHILDREN"
+    );
+  }
+
+  if (child && next.code!==before.code) {
+    throw new HttpError(
+      400,
+      "Uma conta que possui contas filhas não pode ter o código alterado. Ajuste primeiro a estrutura abaixo dela.",
+      "ACCOUNT_CODE_HAS_CHILDREN"
+    );
   }
 
   if (Number(before.analytic)===1 && next.analytic===0) {
