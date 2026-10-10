@@ -374,7 +374,7 @@ async function accountForm(a=null,base=null){
       <input name="code" required value="${esc(initialCode)}" placeholder="Ex.: 10101010001">
       <small style="display:block;margin-top:6px;color:var(--muted)">Não precisa digitar os pontos. Ao sair do campo, o SAGAS formata automaticamente.</small>
     </label>
-    <label class="field"><span>Reduzido</span><input name="reduced_code" value="${esc(a?.reduced_code||'')}"></label>
+    <label class="field"><span>Reduzido</span><input name="reduced_code" value="${esc(a?.reduced_code||'Automático')}" readonly style="background:#f3f4f6;color:var(--muted)"><small style="display:block;margin-top:6px;color:var(--muted)">Gerado automaticamente pelo SAGAS.</small></label>
 
     <label class="field full"><span>Descrição</span><input name="name" required value="${esc(a?.name||'')}"></label>
 
@@ -467,6 +467,7 @@ async function accountForm(a=null,base=null){
     }
 
     const b=Object.fromEntries(new FormData(e.target));
+    delete b.reduced_code;
     b.code=parsed.code;
     b.active=e.target.active.checked;
 
