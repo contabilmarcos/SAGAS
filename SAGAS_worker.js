@@ -571,6 +571,20 @@ async function validatePostedEntryAccounts(env, companyId, entryId) {
   }
 }
 
+
+async function nextReducedAccountCode(env, companyId) {
+  const row=await env.DB.prepare(`
+    SELECT MAX(CAST(reduced_code AS INTEGER)) AS max_reduced
+    FROM accounts
+    WHERE company_id=?
+      AND reduced_code IS NOT NULL
+      AND TRIM(reduced_code)<>''
+      AND reduced_code NOT GLOB '*[^0-9]*'
+  `).bind(companyId).first();
+
+  return String((Number(row?.max_reduced)||0)+1);
+}
+
 async function createAccount(env, request, auth, companyId, body) {
   await requirePermission(env, auth.user.id, companyId, "accounting.account.manage");
 
@@ -592,6 +606,7 @@ async function createAccount(env, request, auth, companyId, body) {
     throw new HttpError(400,`A conta ${parsed.code} já existe.`,"DUPLICATE_ACCOUNT_CODE");
   }
 
+  const reducedCode=await nextReducedAccountCode(env,companyId);
   const id=uuid();
   await env.DB.prepare(`
     INSERT INTO accounts
@@ -601,7 +616,7 @@ async function createAccount(env, request, auth, companyId, body) {
     id,
     companyId,
     parsed.code,
-    cleanText(body.reduced_code,80),
+    reducedCode,
     cleanText(required(body.name,"name"),300),
     parent?.id||null,
     accountClass,
@@ -623,7 +638,7 @@ async function updateAccount(env, request, auth, companyId, id, body) {
 
   const next={
     code:parsed.code,
-    reduced_code:cleanText(body.reduced_code ?? before.reduced_code,80),
+    reduced_code:before.reduced_code ? String(before.reduced_code) : await nextReducedAccountCode(env,companyId),
     name:cleanText(body.name ?? before.name,300),
     account_class:String(body.account_class ?? before.account_class).toUpperCase(),
     normal_side:String(body.normal_side ?? before.normal_side).toUpperCase(),
