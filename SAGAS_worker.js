@@ -545,7 +545,24 @@ async function createBranch(env, request, auth, companyId, body) {
 
 async function listUsers(env, auth, companyId) {
   await requirePermission(env,auth.user.id,companyId,"core.user.read");
-  const res=await env.DB.prepare(`SELECT u.id,u.name,u.email,u.active,cm.status,cm.is_owner,u.last_login_at FROM company_memberships cm JOIN users u ON u.id=cm.user_id WHERE cm.company_id=? ORDER BY u.name`).bind(companyId).all();
+  const res=await env.DB.prepare(`
+    SELECT
+      u.id,u.name,u.email,u.active,cm.status,cm.is_owner,u.last_login_at,
+      (SELECT ur.role_id
+         FROM user_roles ur
+         JOIN roles r ON r.id=ur.role_id
+        WHERE ur.user_id=u.id AND ur.company_id=cm.company_id
+        ORDER BY r.system_role DESC, r.name
+        LIMIT 1) AS role_id,
+      (SELECT GROUP_CONCAT(r.name, ', ')
+         FROM user_roles ur
+         JOIN roles r ON r.id=ur.role_id
+        WHERE ur.user_id=u.id AND ur.company_id=cm.company_id) AS role_names
+    FROM company_memberships cm
+    JOIN users u ON u.id=cm.user_id
+    WHERE cm.company_id=?
+    ORDER BY u.name
+  `).bind(companyId).all();
   return res.results||[];
 }
 
@@ -566,6 +583,60 @@ async function createUser(env, request, auth, companyId, body) {
   }
   await audit(env,{companyId,userId:auth.user.id,action:"ADD_USER",entity:"user",entityId:user.id,after:{email,role_id:body.role_id||null},request});
   return user;
+}
+
+async function updateUser(env, request, auth, companyId, userId, body) {
+  await requirePermission(env,auth.user.id,companyId,"core.user.manage");
+
+  const target=await env.DB.prepare(`
+    SELECT u.id,u.name,u.email,u.active,cm.status,cm.is_owner,
+      (SELECT ur.role_id
+         FROM user_roles ur
+         JOIN roles r ON r.id=ur.role_id
+        WHERE ur.user_id=u.id AND ur.company_id=cm.company_id
+        ORDER BY r.system_role DESC, r.name
+        LIMIT 1) AS role_id
+    FROM company_memberships cm
+    JOIN users u ON u.id=cm.user_id
+    WHERE cm.company_id=? AND u.id=?
+  `).bind(companyId,userId).first();
+
+  if (!target) throw new HttpError(404,"Usuário não encontrado nesta empresa.","NOT_FOUND");
+
+  const requestedActive=body.active===undefined ? target.status==='ACTIVE' : bool01(body.active,1)===1;
+  const requestedRoleId=body.role_id===undefined ? target.role_id : (body.role_id ? String(body.role_id) : null);
+
+  if (target.is_owner) {
+    if (!requestedActive) throw new HttpError(400,"O proprietário da empresa não pode ser bloqueado.","VALIDATION_ERROR");
+    if (body.role_id!==undefined && requestedRoleId!==target.role_id) {
+      throw new HttpError(400,"O perfil do proprietário não pode ser alterado.","VALIDATION_ERROR");
+    }
+  }
+
+  if (requestedRoleId) {
+    const role=await env.DB.prepare("SELECT id FROM roles WHERE id=? AND company_id=?").bind(requestedRoleId,companyId).first();
+    if (!role) throw new HttpError(400,"Perfil inválido.","VALIDATION_ERROR");
+  }
+
+  const before={status:target.status,role_id:target.role_id};
+  const stmts=[];
+
+  stmts.push(env.DB.prepare(`UPDATE company_memberships SET status=? WHERE company_id=? AND user_id=?`).bind(requestedActive?'ACTIVE':'BLOCKED',companyId,userId));
+
+  if (!target.is_owner && body.role_id!==undefined) {
+    stmts.push(env.DB.prepare(`DELETE FROM user_roles WHERE company_id=? AND user_id=?`).bind(companyId,userId));
+    if (requestedRoleId) {
+      stmts.push(env.DB.prepare(`INSERT INTO user_roles (company_id,user_id,role_id) VALUES (?,?,?)`).bind(companyId,userId,requestedRoleId));
+    }
+  }
+
+  await env.DB.batch(stmts);
+
+  const after={status:requestedActive?'ACTIVE':'BLOCKED',role_id:target.is_owner?target.role_id:requestedRoleId};
+  await audit(env,{companyId,userId:auth.user.id,action:"UPDATE",entity:"company_user",entityId:userId,before,after,request});
+
+  const rows=await listUsers(env,auth,companyId);
+  return rows.find(x=>x.id===userId)||null;
 }
 
 async function createRole(env, request, auth, companyId, body) {
@@ -612,8 +683,11 @@ async function route(request, env) {
   if (method==="GET" && path==="/api/branches") { await requirePermission(env,auth.user.id,companyId,"core.branch.read"); return ok({branches:await listSimple(env,companyId,"branches","id,code,name,tax_id,active,created_at")}); }
   if (method==="POST" && path==="/api/branches") return ok({branch:await createBranch(env,request,auth,companyId,await readJson(request))},201);
 
+  let p;
   if (method==="GET" && path==="/api/users") return ok({users:await listUsers(env,auth,companyId)});
   if (method==="POST" && path==="/api/users") return ok({user:await createUser(env,request,auth,companyId,await readJson(request))},201);
+  p=routeMatch(path,"/api/users/:id");
+  if (p && method==="PATCH") return ok({user:await updateUser(env,request,auth,companyId,p.id,await readJson(request))});
 
   if (method==="GET" && path==="/api/permissions") { await requirePermission(env,auth.user.id,companyId,"core.role.manage"); const r=await env.DB.prepare("SELECT id,code,module,description FROM permissions ORDER BY module,code").all(); return ok({permissions:r.results||[]}); }
   if (method==="GET" && path==="/api/roles") { await requirePermission(env,auth.user.id,companyId,"core.role.manage"); const r=await env.DB.prepare("SELECT * FROM roles WHERE company_id=? ORDER BY name").bind(companyId).all(); return ok({roles:r.results||[]}); }
@@ -621,7 +695,7 @@ async function route(request, env) {
 
   if (method==="GET" && path==="/api/accounts") { await requirePermission(env,auth.user.id,companyId,"accounting.account.read"); return ok({accounts:await listSimple(env,companyId,"accounts","id,code,reduced_code,name,parent_id,account_class,normal_side,analytic,active")}); }
   if (method==="POST" && path==="/api/accounts") return ok({account:await createAccount(env,request,auth,companyId,await readJson(request))},201);
-  let p=routeMatch(path,"/api/accounts/:id");
+  p=routeMatch(path,"/api/accounts/:id");
   if (p && method==="PATCH") return ok({account:await updateAccount(env,request,auth,companyId,p.id,await readJson(request))});
 
   if (method==="GET" && path==="/api/cost-centers") { await requirePermission(env,auth.user.id,companyId,"accounting.cost_center.read"); return ok({cost_centers:await listSimple(env,companyId,"cost_centers","id,code,name,parent_id,active")}); }
