@@ -1085,7 +1085,7 @@ async function renderBatches(){
 
   tablePage({
     newLabel:manage?'Novo lote':null,
-    onNew:manage?batchForm:null,
+    onNew:manage?()=>batchForm():null,
     cols:['Código','Descrição','Período','Capa','Início','Fim','Lançamentos','Situação','Ações'],
     rows:officialRow+rows,
     emptyTitle:'Nenhum lote contábil',
