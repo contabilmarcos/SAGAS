@@ -90,6 +90,9 @@ const meta={companies:['Empresas','Empresas disponíveis para o usuário'], 'bra
 function toast(m,t='success'){const e=document.createElement('div');e.className='toast '+t;e.textContent=m;$('#toasts').appendChild(e);setTimeout(()=>e.remove(),4200)}
 function money(v){return new Intl.NumberFormat('pt-BR',{style:'currency',currency:'BRL'}).format(Number(v||0))}
 function dateBR(v){if(!v)return'';const p=String(v).slice(0,10).split('-');return p.length===3?`${p[2]}/${p[1]}/${p[0]}`:v}
+function nextDateLocal(value){if(!value)return'';const d=new Date(`${value}T00:00:00Z`);d.setUTCDate(d.getUTCDate()+1);return d.toISOString().slice(0,10)}
+function officialState(x){return x==='INTEGRATED'?badge('INTEGRATED'):badge('PENDING')}
+
 function save(){localStorage.setItem('erp_token',S.token||'');localStorage.setItem('erp_user',JSON.stringify(S.user));localStorage.setItem('erp_companies',JSON.stringify(S.companies));localStorage.setItem('erp_company',S.companyId||'')}
 function clear(){S.token='';S.user=null;S.companies=[];S.companyId='';S.cache={};['erp_token','erp_user','erp_companies','erp_company'].forEach(localStorage.removeItem.bind(localStorage))}
 let sessionCheckBusy=false;
@@ -98,7 +101,7 @@ async function api(path,opt={}){if(!S.api)throw Error('Configure a URL da API.')
 async function checkSessionAccess(){if(sessionCheckBusy||!S.token||!S.api)return;sessionCheckBusy=true;try{const d=await api('/api/auth/me',{company:false,authRedirect:false});S.user=d.user;S.companies=d.companies||[];if(!S.companies.length){loseSession('Seu usuário não possui mais acesso ativo a nenhuma empresa.');return}if(!S.companies.some(c=>c.id===S.companyId)){S.companyId=S.companies[0].id;S.cache={};save();chrome();await loadPermissions();if(!canPage(S.page))S.page=firstAllowedPage();await nav(S.page)}}catch(e){if(e.status===401)loseSession('Seu acesso foi encerrado. Entre novamente.')}finally{sessionCheckBusy=false}}
 function openModal(t,sub,html,large=false){$('#modalTitle').textContent=t;$('#modalSub').textContent=sub||'';$('#modalBody').innerHTML=html;$('#modal').classList.toggle('large',large);$('#modalBackdrop').classList.remove('hidden')}
 function closeModal(){$('#modalBackdrop').classList.add('hidden')}
-function badge(s){const m={OPEN:['Aberto','green'],CLOSED:['Fechado','gray'],LOCKED:['Bloqueado','red'],DRAFT:['Rascunho','yellow'],POSTED:['Contabilizado','green'],VOID:['Anulado','red']};const x=m[s]||[s||'-','gray'];return`<span class="badge ${x[1]}">${esc(x[0])}</span>`}
+function badge(s){const m={OPEN:['Aberto','green'],CLOSED:['Fechado','gray'],LOCKED:['Bloqueado','red'],DRAFT:['Rascunho','yellow'],POSTED:['Contabilizado','green'],VOID:['Anulado','red'],OFFICIAL:['Oficial','blue'],INTEGRATED:['Lote 0','blue'],PENDING:['Pendente','yellow']};const x=m[s]||[s||'-','gray'];return`<span class="badge ${x[1]}">${esc(x[0])}</span>`}
 function empty(cols,t,x){return`<tr><td colspan="${cols}"><div class="empty"><b>${esc(t)}</b>${esc(x)}</div></td></tr>`}
 function tablePage({newLabel,onNew,cols,rows,emptyTitle,emptyText,placeholder='Pesquisar...'}){const newButton=newLabel&&onNew?`<button id="newBtn" class="btn primary">+ ${esc(newLabel)}</button>`:'';$('#content').innerHTML=`<div class="toolbar"><input id="search" class="search" placeholder="${esc(placeholder)}">${newButton}</div><div class="table-wrap"><table class="table"><thead><tr>${cols.map(x=>`<th>${esc(x)}</th>`).join('')}</tr></thead><tbody id="tbody">${rows||empty(cols.length,emptyTitle,emptyText)}</tbody></table></div>`;if($('#newBtn'))$('#newBtn').onclick=onNew;$('#search').oninput=e=>{const q=e.target.value.toLowerCase().trim();$$('#tbody tr').forEach(r=>r.style.display=!q||r.innerText.toLowerCase().includes(q)?'':'none')}}
 
@@ -1047,9 +1050,310 @@ function deletePeriodModal(item){
   };
 }
 
-async function renderBatches(){const a=await batches(true),p=await periods(),manage=can('accounting.batch.manage');tablePage({newLabel:manage?'Novo lote':null,onNew:manage?batchForm:null,cols:['Código','Descrição','Período','Início','Fim','Situação'],rows:a.length?a.map(x=>`<tr><td class="code">${esc(x.code)}</td><td>${esc(x.description)}</td><td>${esc(p.find(y=>y.id===x.period_id)?.code||'')}</td><td>${dateBR(x.start_date)}</td><td>${dateBR(x.end_date)}</td><td>${badge(x.status)}</td></tr>`).join(''):null,emptyTitle:'Nenhum lote contábil',emptyText:manage?'Crie um lote para começar a movimentação.':'Nenhum lote disponível para consulta.'})}
-async function batchForm(){const p=(await periods()).filter(x=>x.status==='OPEN');openModal('Novo lote','O lote deve estar dentro de um período que ainda possua datas abertas.',`<form id="f"><div class="grid"><label class="field"><span>Código</span><input name="code" required></label><label class="field"><span>Período</span><select name="period_id" required><option value="">Selecione</option>${p.map(x=>`<option value="${x.id}">${esc(x.code)} - ${dateBR(x.start_date)} a ${dateBR(x.end_date)}${x.closed_until?` | fechado até ${dateBR(x.closed_until)}`:''}</option>`).join('')}</select></label><label class="field full"><span>Descrição</span><input name="description" required></label><label class="field"><span>Data inicial</span><input name="start_date" type="date"></label><label class="field"><span>Data final</span><input name="end_date" type="date"></label></div><div class="form-actions"><button type="button" class="btn secondary" data-close>Cancelar</button><button class="btn primary">Salvar</button></div></form>`);$('[data-close]').onclick=closeModal;$('#f').onsubmit=async e=>{e.preventDefault();const b=Object.fromEntries(new FormData(e.target));if(!b.start_date)delete b.start_date;if(!b.end_date)delete b.end_date;try{await api('/api/journal-batches',{method:'POST',body:b});closeModal();S.cache.batches=null;toast('Lote criado.');renderBatches()}catch(x){toast(x.message,'error')}}}
-async function renderEntries(){const d=await api('/api/journal-entries?limit=300'),a=d.entries||[],create=can('accounting.entry.create');tablePage({newLabel:create?'Novo lançamento':null,onNew:create?entryForm:null,cols:['Data','Lote','Documento','Descrição','Débito','Crédito','Situação',''],rows:a.length?a.map(x=>`<tr><td>${dateBR(x.entry_date)}</td><td class="code">${esc(x.batch_code||'')}</td><td>${esc(x.document_number||'')}</td><td>${esc(x.description||'')}</td><td>${money(x.total_debit)}</td><td>${money(x.total_credit)}</td><td>${badge(x.status)}</td><td><div class="actions"><button class="btn secondary sm" data-open="${x.id}">Abrir</button></div></td></tr>`).join(''):null,emptyTitle:'Nenhum lançamento',emptyText:create?'Inclua o primeiro lançamento contábil.':'Nenhum lançamento disponível para consulta.'});$$('[data-open]').forEach(b=>b.onclick=()=>entryView(b.dataset.open))}
+async function renderBatches(){
+  const [data,p]=await Promise.all([api('/api/journal-batches'),periods()]);
+  const a=data.batches||[],official=data.official||{},manage=can('accounting.batch.manage');
+
+  const officialRow=`<tr style="background:#f8fbff">
+    <td class="code"><b>0</b></td>
+    <td><b>LOTE OFICIAL</b></td>
+    <td>—</td>
+    <td>Automática</td>
+    <td>${official.start_date?dateBR(official.start_date):'—'}</td>
+    <td>${official.end_date?dateBR(official.end_date):'—'}</td>
+    <td>${official.total_entries||0}</td>
+    <td>${badge('OFFICIAL')}</td>
+    <td><div class="actions"><button class="btn secondary sm" id="openOfficialBatch">Abrir oficial</button></div></td>
+  </tr>`;
+
+  const rows=a.map(x=>`<tr>
+    <td class="code">${esc(x.code)}</td>
+    <td>${esc(x.description)}</td>
+    <td>${esc(x.period_code||p.find(y=>y.id===x.period_id)?.code||'')}</td>
+    <td>${x.cover_mode==='MANUAL'?'<span class="badge yellow">Manual</span>':'<span class="badge gray">Automática</span>'}</td>
+    <td>${dateBR(x.start_date)}</td>
+    <td>${dateBR(x.end_date)}</td>
+    <td>${x.total_entries||0} <span style="color:var(--muted)">(${x.integrated_entries||0} oficial)</span></td>
+    <td>${badge(x.status)}</td>
+    <td><div class="actions">
+      <button class="btn secondary sm" data-open-batch="${x.id}">Abrir</button>
+      ${manage?`<button class="btn secondary sm" data-edit-batch="${x.id}">Editar</button>
+      <button class="btn secondary sm" data-lock-batch="${x.id}">${x.status==='LOCKED'?'Desbloquear':'Bloquear'}</button>
+      <button class="btn danger sm" data-delete-batch="${x.id}">Excluir</button>`:''}
+    </div></td>
+  </tr>`).join('');
+
+  tablePage({
+    newLabel:manage?'Novo lote':null,
+    onNew:manage?batchForm:null,
+    cols:['Código','Descrição','Período','Capa','Início','Fim','Lançamentos','Situação','Ações'],
+    rows:officialRow+rows,
+    emptyTitle:'Nenhum lote contábil',
+    emptyText:'O Lote 0 Oficial é criado automaticamente.',
+    placeholder:'Pesquisar lote...'
+  });
+
+  $('#openOfficialBatch').onclick=officialBatchView;
+  $$('[data-open-batch]').forEach(b=>b.onclick=()=>batchView(b.dataset.openBatch));
+
+  if(manage){
+    $$('[data-edit-batch]').forEach(b=>b.onclick=()=>{
+      const x=a.find(y=>y.id===b.dataset.editBatch);
+      batchForm(x);
+    });
+
+    $$('[data-lock-batch]').forEach(b=>b.onclick=async()=>{
+      const x=a.find(y=>y.id===b.dataset.lockBatch);
+      try{
+        await api(`/api/journal-batches/${x.id}/${x.status==='LOCKED'?'unlock':'lock'}`,{method:'POST',body:{}});
+        S.cache.batches=null;
+        toast(x.status==='LOCKED'?'Lote desbloqueado.':'Lote bloqueado.');
+        renderBatches();
+      }catch(e){toast(e.message,'error')}
+    });
+
+    $$('[data-delete-batch]').forEach(b=>b.onclick=()=>{
+      const x=a.find(y=>y.id===b.dataset.deleteBatch);
+      deleteBatchModal(x);
+    });
+  }
+}
+
+async function batchForm(item=null){
+  const p=(await periods()).filter(x=>x.status==='OPEN');
+  const selectedPeriod=item?p.find(x=>x.id===item.period_id):null;
+
+  openModal(
+    item?'Editar lote':'Novo lote',
+    'Lotes N são áreas de trabalho. Os lançamentos contabilizados podem ser integrados posteriormente ao Lote 0 Oficial.',
+    `<form id="batchForm">
+      <div class="grid">
+        <label class="field"><span>Código</span><input value="${esc(item?.code||'Automático')}" readonly style="background:#f3f4f6;color:var(--muted)"></label>
+
+        <label class="field"><span>Período</span>
+          <select name="period_id" required ${item?'disabled':''}>
+            <option value="">Selecione</option>
+            ${p.map(x=>`<option value="${x.id}" ${x.id===item?.period_id?'selected':''}>${esc(x.code)} - ${dateBR(x.start_date)} a ${dateBR(x.end_date)}${x.closed_until?` | fechado até ${dateBR(x.closed_until)}`:''}</option>`).join('')}
+          </select>
+        </label>
+
+        <label class="field full"><span>Descrição</span><input name="description" value="${esc(item?.description||'')}" required></label>
+
+        <label class="check full"><input name="manual_cover" type="checkbox" ${item?.cover_mode==='MANUAL'?'checked':''}> Digitar capa do lote</label>
+
+        <div id="manualCoverFields" class="full" style="display:none">
+          <div class="grid">
+            <label class="field"><span>Data inicial da capa</span><input name="start_date" type="date" value="${esc(item?.start_date||'')}"></label>
+            <label class="field"><span>Data final da capa</span><input name="end_date" type="date" value="${esc(item?.end_date||'')}"></label>
+            <label class="field full"><span>Valor total da capa</span><input name="cover_amount" inputmode="decimal" value="${item?.cover_amount!=null?String(item.cover_amount).replace('.',','):''}" placeholder="0,00"></label>
+          </div>
+        </div>
+
+        <div id="autoCoverInfo" class="field full" style="padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:#f8fafc;color:var(--muted)">
+          Na capa automática, o SAGAS usa o intervalo disponível do período contábil.
+        </div>
+      </div>
+
+      <div class="form-actions">
+        <button type="button" class="btn secondary" data-close>Cancelar</button>
+        <button class="btn primary">${item?'Salvar alterações':'Criar lote'}</button>
+      </div>
+    </form>`
+  );
+
+  $('[data-close]').onclick=closeModal;
+  const form=$('#batchForm'),manual=form.manual_cover,manualFields=$('#manualCoverFields'),autoInfo=$('#autoCoverInfo');
+
+  function selected(){return p.find(x=>x.id===form.period_id.value)||selectedPeriod}
+
+  function fillAutomaticInfo(){
+    const per=selected();
+    if(!per){autoInfo.innerHTML='Selecione o período contábil.';return}
+    const start=per.closed_until?nextDateLocal(per.closed_until):per.start_date;
+    autoInfo.innerHTML=`Capa automática: <b>${dateBR(start)} a ${dateBR(per.end_date)}</b>.`;
+  }
+
+  function toggleCover(){
+    manualFields.style.display=manual.checked?'block':'none';
+    autoInfo.style.display=manual.checked?'none':'block';
+
+    if(!manual.checked){
+      fillAutomaticInfo();
+    }else{
+      const per=selected();
+      if(per&&!form.start_date.value)form.start_date.value=per.closed_until?nextDateLocal(per.closed_until):per.start_date;
+      if(per&&!form.end_date.value)form.end_date.value=per.end_date;
+    }
+  }
+
+  manual.onchange=toggleCover;
+  form.period_id.onchange=toggleCover;
+  toggleCover();
+
+  form.onsubmit=async e=>{
+    e.preventDefault();
+
+    const body={description:e.target.description.value.trim(),cover_mode:e.target.manual_cover.checked?'MANUAL':'AUTO'};
+    if(!item)body.period_id=e.target.period_id.value;
+
+    if(e.target.manual_cover.checked){
+      body.start_date=e.target.start_date.value;
+      body.end_date=e.target.end_date.value;
+      body.cover_amount=e.target.cover_amount.value;
+    }
+
+    try{
+      await api(item?`/api/journal-batches/${item.id}`:'/api/journal-batches',{method:item?'PATCH':'POST',body});
+      closeModal();
+      S.cache.batches=null;
+      toast(item?'Lote atualizado.':'Lote criado.');
+      renderBatches();
+    }catch(x){toast(x.message,'error')}
+  };
+}
+
+async function batchView(id){
+  try{
+    const b=(await api(`/api/journal-batches/${id}`)).batch,entries=b.entries||[];
+
+    openModal(
+      `Lote ${b.code} - ${b.description}`,
+      `${b.period_code} • ${dateBR(b.start_date)} a ${dateBR(b.end_date)} • ${b.cover_mode==='MANUAL'?'Capa manual':'Capa automática'}`,
+      `<div class="grid three">
+        <div class="field"><span>Situação</span><div>${badge(b.status)}</div></div>
+        <div class="field"><span>Lançamentos</span><b>${b.summary?.total_entries||0}</b></div>
+        <div class="field"><span>No Lote 0</span><b>${b.summary?.integrated_entries||0}</b></div>
+        ${b.cover_mode==='MANUAL'?`<div class="field"><span>Valor da capa</span><b>${money(b.cover_amount||0)}</b></div><div class="field"><span>Total do lote</span><b>${money(b.summary?.total_debit||0)}</b></div>`:''}
+      </div>
+
+      <div class="section-title">Lançamentos do lote</div>
+
+      <div class="table-wrap"><table class="table">
+        <thead><tr><th></th><th>Data</th><th>Documento</th><th>Descrição</th><th>Valor</th><th>Situação</th><th>Oficial</th></tr></thead>
+        <tbody>
+          ${entries.length?entries.map(e=>`<tr>
+            <td><input type="checkbox" class="batch-entry-check" value="${e.id}" ${e.status==='POSTED'?'':'disabled'}></td>
+            <td>${dateBR(e.entry_date)}</td>
+            <td>${esc(e.document_number||'')}</td>
+            <td>${esc(e.description||'')}</td>
+            <td>${money(e.total_debit)}</td>
+            <td>${badge(e.status)}</td>
+            <td>${officialState(e.official_status)}</td>
+          </tr>`).join(''):`<tr><td colspan="7" style="text-align:center;padding:24px;color:var(--muted)">Nenhum lançamento neste lote.</td></tr>`}
+        </tbody>
+      </table></div>
+
+      <div class="form-actions">
+        ${can('accounting.batch.manage')?'<button id="unintegrateSelected" class="btn secondary">Desfazer integração</button><button id="integrateSelected" class="btn success">Integrar ao Lote 0</button>':''}
+        <button class="btn secondary" data-close>Fechar</button>
+      </div>`,
+      true
+    );
+
+    $('[data-close]').onclick=closeModal;
+    const selectedIds=()=>$$('.batch-entry-check:checked').map(x=>x.value);
+
+    if($('#integrateSelected'))$('#integrateSelected').onclick=async()=>{
+      const ids=selectedIds();
+      try{
+        const r=await api(`/api/journal-batches/${id}/integrate`,{method:'POST',body:{entry_ids:ids}});
+        closeModal();
+        toast(`${r.integrated_count} lançamento(s) integrado(s) ao Lote 0.`);
+        S.cache.batches=null;
+        renderBatches();
+      }catch(x){toast(x.message,'error')}
+    };
+
+    if($('#unintegrateSelected'))$('#unintegrateSelected').onclick=async()=>{
+      const ids=selectedIds();
+      if(!ids.length)return toast('Selecione os lançamentos que deseja retirar do Lote 0.','error');
+
+      try{
+        const r=await api(`/api/journal-batches/${id}/unintegrate`,{method:'POST',body:{entry_ids:ids}});
+        closeModal();
+        toast(`${r.unintegrated_count} lançamento(s) retirado(s) do Lote 0.`);
+        S.cache.batches=null;
+        renderBatches();
+      }catch(x){toast(x.message,'error')}
+    };
+  }catch(x){toast(x.message,'error')}
+}
+
+async function officialBatchView(){
+  try{
+    const d=await api('/api/official-entries?limit=500'),a=d.entries||[];
+
+    openModal(
+      'Lote 0 - Oficial',
+      'Escrituração oficial formada pelos lançamentos integrados dos Lotes N.',
+      `<div class="table-wrap"><table class="table">
+        <thead><tr><th>Data</th><th>Lote origem</th><th>Documento</th><th>Descrição</th><th>Débito</th><th>Integrado em</th></tr></thead>
+        <tbody>
+          ${a.length?a.map(e=>`<tr>
+            <td>${dateBR(e.entry_date)}</td>
+            <td class="code">${esc(e.origin_batch_code)}</td>
+            <td>${esc(e.document_number||'')}</td>
+            <td>${esc(e.description||'')}</td>
+            <td>${money(e.total_debit)}</td>
+            <td>${e.integrated_at?new Date(e.integrated_at+'Z').toLocaleString('pt-BR'):''}</td>
+          </tr>`).join(''):`<tr><td colspan="6" style="text-align:center;padding:26px;color:var(--muted)">Nenhum lançamento integrado ao Lote 0.</td></tr>`}
+        </tbody>
+      </table></div>
+      <div class="form-actions"><button class="btn secondary" data-close>Fechar</button></div>`,
+      true
+    );
+
+    $('[data-close]').onclick=closeModal;
+  }catch(x){toast(x.message,'error')}
+}
+
+function deleteBatchModal(item){
+  openModal(
+    `Excluir lote ${item.code}`,
+    'Lotes que possuem lançamentos não podem ser excluídos.',
+    `<div style="padding:8px 0">
+      <div style="padding:12px;border:1px solid var(--line);border-radius:8px;background:#f8fafc;margin-bottom:14px"><b>${esc(item.code)} - ${esc(item.description)}</b></div>
+      <div style="color:var(--muted)">Se o lote já possuir movimentação, ele deve permanecer no histórico.</div>
+      <div class="form-actions"><button class="btn secondary" data-close>Cancelar</button><button id="confirmDeleteBatch" class="btn danger">Excluir lote</button></div>
+    </div>`
+  );
+
+  $('[data-close]').onclick=closeModal;
+  $('#confirmDeleteBatch').onclick=async()=>{
+    try{
+      await api(`/api/journal-batches/${item.id}`,{method:'DELETE'});
+      closeModal();
+      S.cache.batches=null;
+      toast(`Lote ${item.code} excluído.`);
+      renderBatches();
+    }catch(x){toast(x.message,'error')}
+  };
+}
+
+async function renderEntries(){
+  const d=await api('/api/journal-entries?limit=300'),a=d.entries||[],create=can('accounting.entry.create');
+
+  tablePage({
+    newLabel:create?'Novo lançamento':null,
+    onNew:create?entryForm:null,
+    cols:['Data','Lote','Documento','Descrição','Débito','Crédito','Situação','Oficial',''],
+    rows:a.length?a.map(x=>`<tr>
+      <td>${dateBR(x.entry_date)}</td>
+      <td class="code">${esc(x.batch_code||'')}</td>
+      <td>${esc(x.document_number||'')}</td>
+      <td>${esc(x.description||'')}</td>
+      <td>${money(x.total_debit)}</td>
+      <td>${money(x.total_credit)}</td>
+      <td>${badge(x.status)}</td>
+      <td>${x.status==='POSTED'?officialState(x.official_status):'<span class="badge gray">—</span>'}</td>
+      <td><div class="actions"><button class="btn secondary sm" data-open="${x.id}">Abrir</button></div></td>
+    </tr>`).join(''):null,
+    emptyTitle:'Nenhum lançamento',
+    emptyText:create?'Inclua o primeiro lançamento contábil.':'Nenhum lançamento disponível para consulta.'
+  });
+
+  $$('[data-open]').forEach(b=>b.onclick=()=>entryView(b.dataset.open));
+}
 async function entryForm(){
   const [a,c,h,b,br]=await Promise.all([accounts(),ccs(),histories(),batches(),branches()]);
   const oa=a.filter(x=>x.active&&x.analytic),ob=b.filter(x=>x.status==='OPEN');
@@ -1237,7 +1541,68 @@ async function entryForm(){
     }
   };
 }
-async function entryView(id){try{const e=(await api('/api/journal-entries/'+id)).entry;openModal('Lançamento contábil',`${dateBR(e.entry_date)} • ${e.document_number||'Sem documento'}`,`<div class="grid three"><div class="field"><span>Situação</span><div>${badge(e.status)}</div></div><div class="field"><span>Débito</span><b>${money(e.total_debit)}</b></div><div class="field"><span>Crédito</span><b>${money(e.total_credit)}</b></div><div class="field full"><span>Descrição</span><div>${esc(e.description||'')}</div></div></div><div class="section-title">Partidas</div><div class="table-wrap"><table class="table"><thead><tr><th>#</th><th>D/C</th><th>Conta</th><th>Valor</th><th>Centro de custo</th><th>Histórico</th></tr></thead><tbody>${(e.lines||[]).map(l=>`<tr><td>${l.line_no}</td><td>${l.side}</td><td>${esc(l.account_code)} - ${esc(l.account_name)}</td><td>${money(l.amount)}</td><td>${esc(l.cost_center_code||'')} ${esc(l.cost_center_name||'')}</td><td>${esc(l.history_description ? (l.history_complement ? `${l.history_description} - ${l.history_complement}` : l.history_description) : (l.history_complement||''))}</td></tr>`).join('')}</tbody></table></div><div class="form-actions">${e.status==='POSTED'&&can('accounting.entry.void')?'<button id="voidBtn" class="btn danger">Anular</button>':''}<button class="btn secondary" data-close>Fechar</button>${e.status==='DRAFT'&&can('accounting.entry.post')?'<button id="postBtn" class="btn success">Contabilizar</button>':''}</div>`,true);$('[data-close]').onclick=closeModal;if($('#postBtn'))$('#postBtn').onclick=async()=>{try{await api(`/api/journal-entries/${id}/post`,{method:'POST',body:{}});closeModal();toast('Lançamento contabilizado.');renderEntries()}catch(x){toast(x.message,'error')}};if($('#voidBtn'))$('#voidBtn').onclick=async()=>{const reason=prompt('Informe o motivo da anulação:');if(!reason)return;try{await api(`/api/journal-entries/${id}/void`,{method:'POST',body:{reason}});closeModal();toast('Lançamento anulado.');renderEntries()}catch(x){toast(x.message,'error')}}}catch(x){toast(x.message,'error')}}
+async function entryView(id){
+  try{
+    const e=(await api('/api/journal-entries/'+id)).entry;
+
+    openModal(
+      'Lançamento contábil',
+      `${dateBR(e.entry_date)} • ${e.document_number||'Sem documento'}`,
+      `<div class="grid three">
+        <div class="field"><span>Situação</span><div>${badge(e.status)}</div></div>
+        <div class="field"><span>Oficial</span><div>${e.status==='POSTED'?officialState(e.official_status):'<span class="badge gray">—</span>'}</div></div>
+        <div class="field"><span>Débito</span><b>${money(e.total_debit)}</b></div>
+        <div class="field"><span>Crédito</span><b>${money(e.total_credit)}</b></div>
+        <div class="field full"><span>Descrição</span><div>${esc(e.description||'')}</div></div>
+      </div>
+
+      ${e.official_status==='INTEGRATED'?`<div style="margin:12px 0;padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:#f8fbff;color:var(--muted)">
+        Este lançamento faz parte do <b>Lote 0 Oficial</b>. Para anulá-lo, desfaça primeiro a integração no lote de origem.
+      </div>`:''}
+
+      <div class="section-title">Partidas</div>
+      <div class="table-wrap"><table class="table">
+        <thead><tr><th>#</th><th>D/C</th><th>Conta</th><th>Valor</th><th>Centro de custo</th><th>Histórico</th></tr></thead>
+        <tbody>${(e.lines||[]).map(l=>`<tr>
+          <td>${l.line_no}</td><td>${l.side}</td>
+          <td>${esc(l.account_code)} - ${esc(l.account_name)}</td>
+          <td>${money(l.amount)}</td>
+          <td>${esc(l.cost_center_code||'')} ${esc(l.cost_center_name||'')}</td>
+          <td>${esc(l.history_description ? (l.history_complement ? `${l.history_description} - ${l.history_complement}` : l.history_description) : (l.history_complement||''))}</td>
+        </tr>`).join('')}</tbody>
+      </table></div>
+
+      <div class="form-actions">
+        ${e.status==='POSTED'&&e.official_status!=='INTEGRATED'&&can('accounting.entry.void')?'<button id="voidBtn" class="btn danger">Anular</button>':''}
+        <button class="btn secondary" data-close>Fechar</button>
+        ${e.status==='DRAFT'&&can('accounting.entry.post')?'<button id="postBtn" class="btn success">Contabilizar</button>':''}
+      </div>`,
+      true
+    );
+
+    $('[data-close]').onclick=closeModal;
+
+    if($('#postBtn'))$('#postBtn').onclick=async()=>{
+      try{
+        await api(`/api/journal-entries/${id}/post`,{method:'POST',body:{}});
+        closeModal();
+        toast('Lançamento contabilizado no lote de trabalho.');
+        renderEntries();
+      }catch(x){toast(x.message,'error')}
+    };
+
+    if($('#voidBtn'))$('#voidBtn').onclick=async()=>{
+      const reason=prompt('Informe o motivo da anulação:');
+      if(!reason)return;
+      try{
+        await api(`/api/journal-entries/${id}/void`,{method:'POST',body:{reason}});
+        closeModal();
+        toast('Lançamento anulado.');
+        renderEntries();
+      }catch(x){toast(x.message,'error')}
+    };
+  }catch(x){toast(x.message,'error')}
+}
 
 function myAccount(){
   openModal('Minha conta','Altere seu nome e e-mail de acesso ao SAGAS.',`<form id="myAccountForm">
