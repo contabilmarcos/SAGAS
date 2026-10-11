@@ -101,7 +101,7 @@ async function api(path,opt={}){if(!S.api)throw Error('Configure a URL da API.')
 async function checkSessionAccess(){if(sessionCheckBusy||!S.token||!S.api)return;sessionCheckBusy=true;try{const d=await api('/api/auth/me',{company:false,authRedirect:false});S.user=d.user;S.companies=d.companies||[];if(!S.companies.length){loseSession('Seu usuário não possui mais acesso ativo a nenhuma empresa.');return}if(!S.companies.some(c=>c.id===S.companyId)){S.companyId=S.companies[0].id;S.cache={};save();chrome();await loadPermissions();if(!canPage(S.page))S.page=firstAllowedPage();await nav(S.page)}}catch(e){if(e.status===401)loseSession('Seu acesso foi encerrado. Entre novamente.')}finally{sessionCheckBusy=false}}
 function openModal(t,sub,html,large=false){$('#modalTitle').textContent=t;$('#modalSub').textContent=sub||'';$('#modalBody').innerHTML=html;$('#modal').classList.toggle('large',large);$('#modalBackdrop').classList.remove('hidden')}
 function closeModal(){$('#modalBackdrop').classList.add('hidden')}
-function badge(s){const m={OPEN:['Aberto','green'],CLOSED:['Fechado','gray'],LOCKED:['Bloqueado','red'],DRAFT:['Rascunho','yellow'],POSTED:['Contabilizado','green'],VOID:['Anulado','red'],OFFICIAL:['Oficial','blue'],INTEGRATED:['Lote 0','blue'],PENDING:['Pendente','yellow']};const x=m[s]||[s||'-','gray'];return`<span class="badge ${x[1]}">${esc(x[0])}</span>`}
+function badge(s){const m={OPEN:['Aberto','green'],CLOSED:['Fechado','gray'],LOCKED:['Bloqueado','red'],POSTED:['Contabilizado','green'],VOID:['Anulado','red'],OFFICIAL:['Oficial','blue'],INTEGRATED:['Lote 0','blue'],PENDING:['Pendente','yellow']};const x=m[s]||[s||'-','gray'];return`<span class="badge ${x[1]}">${esc(x[0])}</span>`}
 function empty(cols,t,x){return`<tr><td colspan="${cols}"><div class="empty"><b>${esc(t)}</b>${esc(x)}</div></td></tr>`}
 function tablePage({newLabel,onNew,cols,rows,emptyTitle,emptyText,placeholder='Pesquisar...'}){const newButton=newLabel&&onNew?`<button id="newBtn" class="btn primary">+ ${esc(newLabel)}</button>`:'';$('#content').innerHTML=`<div class="toolbar"><input id="search" class="search" placeholder="${esc(placeholder)}">${newButton}</div><div class="table-wrap"><table class="table"><thead><tr>${cols.map(x=>`<th>${esc(x)}</th>`).join('')}</tr></thead><tbody id="tbody">${rows||empty(cols.length,emptyTitle,emptyText)}</tbody></table></div>`;if($('#newBtn'))$('#newBtn').onclick=onNew;$('#search').oninput=e=>{const q=e.target.value.toLowerCase().trim();$$('#tbody tr').forEach(r=>r.style.display=!q||r.innerText.toLowerCase().includes(q)?'':'none')}}
 
@@ -1367,7 +1367,7 @@ async function entryForm(){
   const ho=activeHist.map(x=>`<option value="${x.id}" data-required="${x.complement_required?1:0}">${esc(x.code)} - ${esc(x.description)}</option>`).join('');
   const bro=br.filter(x=>x.active).map(x=>`<option value="${x.id}">${esc(x.code)} - ${esc(x.name)}</option>`).join('');
 
-  openModal('Novo lançamento','O lançamento será salvo como rascunho.',`
+  openModal('Novo lançamento','Ao salvar, o lançamento será contabilizado imediatamente no lote selecionado.',`
     <form id="entryForm">
       <div class="grid three">
         <label class="field"><span>Lote</span><select name="batch_id" required><option value="">Selecione</option>${ob.map(x=>`<option value="${x.id}">${esc(x.code)} - ${esc(x.description)}</option>`).join('')}</select></label>
@@ -1408,7 +1408,7 @@ async function entryForm(){
 
       <div class="form-actions">
         <button type="button" class="btn secondary" data-close>Cancelar</button>
-        <button class="btn primary">Salvar rascunho</button>
+        <button class="btn primary">Salvar lançamento</button>
       </div>
     </form>`,true);
 
@@ -1534,7 +1534,7 @@ async function entryForm(){
     try{
       await api('/api/journal-entries',{method:'POST',body:payload});
       closeModal();
-      toast('Lançamento salvo em rascunho.');
+      toast('Lançamento contabilizado com sucesso.');
       renderEntries();
     }catch(x){
       toast(x.message,'error');
@@ -1575,21 +1575,11 @@ async function entryView(id){
       <div class="form-actions">
         ${e.status==='POSTED'&&e.official_status!=='INTEGRATED'&&can('accounting.entry.void')?'<button id="voidBtn" class="btn danger">Anular</button>':''}
         <button class="btn secondary" data-close>Fechar</button>
-        ${e.status==='DRAFT'&&can('accounting.entry.post')?'<button id="postBtn" class="btn success">Contabilizar</button>':''}
       </div>`,
       true
     );
 
     $('[data-close]').onclick=closeModal;
-
-    if($('#postBtn'))$('#postBtn').onclick=async()=>{
-      try{
-        await api(`/api/journal-entries/${id}/post`,{method:'POST',body:{}});
-        closeModal();
-        toast('Lançamento contabilizado no lote de trabalho.');
-        renderEntries();
-      }catch(x){toast(x.message,'error')}
-    };
 
     if($('#voidBtn'))$('#voidBtn').onclick=async()=>{
       const reason=prompt('Informe o motivo da anulação:');
