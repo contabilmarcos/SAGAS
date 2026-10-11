@@ -858,10 +858,197 @@ function deleteHistoryModal(item){
   };
 }
 
-async function renderPeriods(){const a=await periods(true),manage=can('accounting.period.manage');tablePage({newLabel:manage?'Novo período':null,onNew:manage?periodForm:null,cols:['Código','Início','Fim','Situação'],rows:a.length?a.map(x=>`<tr><td class="code">${esc(x.code)}</td><td>${dateBR(x.start_date)}</td><td>${dateBR(x.end_date)}</td><td>${badge(x.status)}</td></tr>`).join(''):null,emptyTitle:'Nenhum período contábil',emptyText:manage?'Crie um período antes de abrir lotes.':'Nenhum período contábil disponível para consulta.'})}
-function periodForm(){const d=new Date(),y=d.getFullYear(),m=String(d.getMonth()+1).padStart(2,'0'),last=String(new Date(y,d.getMonth()+1,0).getDate()).padStart(2,'0');openModal('Novo período contábil','',`<form id="f"><div class="grid"><label class="field"><span>Código</span><input name="code" required value="${y}-${m}"></label><label class="field"><span>Situação</span><select name="status"><option value="OPEN">Aberto</option><option value="CLOSED">Fechado</option><option value="LOCKED">Bloqueado</option></select></label><label class="field"><span>Data inicial</span><input name="start_date" type="date" required value="${y}-${m}-01"></label><label class="field"><span>Data final</span><input name="end_date" type="date" required value="${y}-${m}-${last}"></label></div><div class="form-actions"><button type="button" class="btn secondary" data-close>Cancelar</button><button class="btn primary">Salvar</button></div></form>`);$('[data-close]').onclick=closeModal;$('#f').onsubmit=async e=>{e.preventDefault();try{await api('/api/accounting-periods',{method:'POST',body:Object.fromEntries(new FormData(e.target))});closeModal();S.cache.periods=null;toast('Período criado.');renderPeriods()}catch(x){toast(x.message,'error')}}}
+function periodCodeLocal(start,end){
+  if(!start||!end)return 'Automático';
+  const sy=start.slice(0,4),ey=end.slice(0,4);
+  if(sy===ey&&start===`${sy}-01-01`&&end===`${sy}-12-31`)return sy;
+  return `${start.replaceAll('-','')}-${end.replaceAll('-','')}`;
+}
+
+function periodStateBadge(p){
+  if(p.status==='LOCKED')return badge('LOCKED');
+  if(p.closed_until&&p.closed_until>=p.end_date)return badge('CLOSED');
+  return badge('OPEN');
+}
+
+async function renderPeriods(){
+  const a=await periods(true),manage=can('accounting.period.manage');
+
+  tablePage({
+    newLabel:manage?'Novo período':null,
+    onNew:manage?()=>periodForm():null,
+    cols:['Código','Início','Fim','Fechado até','Situação',...(manage?['Ações']:[])],
+    rows:a.length?a.map(x=>`<tr>
+      <td class="code">${esc(x.code)}</td>
+      <td>${dateBR(x.start_date)}</td>
+      <td>${dateBR(x.end_date)}</td>
+      <td>${x.closed_until?dateBR(x.closed_until):'<span class="badge green">Nenhum fechamento</span>'}</td>
+      <td>${periodStateBadge(x)}</td>
+      ${manage?`<td><div class="actions">
+        <button class="btn secondary sm" data-edit-period="${x.id}">Editar</button>
+        <button class="btn secondary sm" data-close-period="${x.id}">${x.closed_until?'Alterar fechamento':'Fechamento'}</button>
+        <button class="btn danger sm" data-delete-period="${x.id}">Excluir</button>
+      </div></td>`:''}
+    </tr>`).join(''):null,
+    emptyTitle:'Nenhum período contábil',
+    emptyText:manage?'Crie o intervalo contábil da empresa.':'Nenhum período contábil disponível para consulta.',
+    placeholder:'Pesquisar período...'
+  });
+
+  if(manage){
+    $$('[data-edit-period]').forEach(b=>b.onclick=()=>periodForm(a.find(x=>x.id===b.dataset.editPeriod)));
+    $$('[data-close-period]').forEach(b=>b.onclick=()=>periodClosingForm(a.find(x=>x.id===b.dataset.closePeriod)));
+    $$('[data-delete-period]').forEach(b=>b.onclick=()=>deletePeriodModal(a.find(x=>x.id===b.dataset.deletePeriod)));
+  }
+}
+
+function periodForm(item=null){
+  const now=new Date(),y=now.getFullYear();
+  const start=item?.start_date||`${y}-01-01`;
+  const end=item?.end_date||`${y}-12-31`;
+
+  openModal(
+    item?'Editar período contábil':'Novo período contábil',
+    item?'As datas só podem ser alteradas enquanto o período não possuir lotes.':'Defina o intervalo de datas permitido para a contabilidade.',
+    `<form id="periodForm">
+      <div class="grid">
+        <label class="field">
+          <span>Código</span>
+          <input id="periodCodePreview" value="${esc(item?.code||periodCodeLocal(start,end))}" readonly style="background:#f3f4f6;color:var(--muted)">
+          <small style="display:block;margin-top:6px;color:var(--muted)">Gerado automaticamente pelo intervalo.</small>
+        </label>
+
+        <div class="field">
+          <span>Situação</span>
+          <div style="padding-top:9px">${item?periodStateBadge(item):badge('OPEN')}</div>
+        </div>
+
+        <label class="field"><span>Data inicial</span><input name="start_date" type="date" required value="${start}"></label>
+        <label class="field"><span>Data final</span><input name="end_date" type="date" required value="${end}"></label>
+      </div>
+
+      <div style="margin-top:12px;padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:#f8fafc;color:var(--muted)">
+        Exemplo: <b>01/01/2026 a 31/12/2026</b>. O fechamento por data é controlado separadamente pelo botão <b>Fechamento</b>.
+      </div>
+
+      <div class="form-actions">
+        <button type="button" class="btn secondary" data-close>Cancelar</button>
+        <button class="btn primary">${item?'Salvar alterações':'Criar período'}</button>
+      </div>
+    </form>`
+  );
+
+  $('[data-close]').onclick=closeModal;
+  const form=$('#periodForm');
+
+  function updateCode(){
+    $('#periodCodePreview').value=periodCodeLocal(form.start_date.value,form.end_date.value);
+  }
+
+  form.start_date.onchange=updateCode;
+  form.end_date.onchange=updateCode;
+
+  form.onsubmit=async e=>{
+    e.preventDefault();
+
+    try{
+      await api(item?`/api/accounting-periods/${item.id}`:'/api/accounting-periods',{
+        method:item?'PATCH':'POST',
+        body:{start_date:e.target.start_date.value,end_date:e.target.end_date.value}
+      });
+
+      closeModal();
+      S.cache.periods=null;
+      toast(item?'Período atualizado.':'Período criado.');
+      renderPeriods();
+    }catch(x){toast(x.message,'error')}
+  };
+}
+
+function periodClosingForm(item){
+  openModal(
+    'Fechamento contábil',
+    `Período ${item.code}: ${dateBR(item.start_date)} a ${dateBR(item.end_date)}.`,
+    `<form id="periodClosingForm">
+      <div class="grid">
+        <label class="field full">
+          <span>Fechado até</span>
+          <input name="closed_until" type="date" min="${item.start_date}" max="${item.end_date}" value="${esc(item.closed_until||'')}">
+          <small style="display:block;margin-top:6px;color:var(--muted)">
+            Datas iguais ou anteriores ficarão bloqueadas para inclusão, contabilização e anulação.
+          </small>
+        </label>
+      </div>
+
+      <div style="margin-top:12px;padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:#f8fafc;color:var(--muted)">
+        Exemplo: <b>30/09/2026</b> fecha janeiro a setembro e mantém outubro a dezembro disponíveis.
+        Para reabrir todo o período, limpe a data.
+      </div>
+
+      <div class="form-actions">
+        ${item.closed_until?'<button type="button" id="reopenPeriodBtn" class="btn secondary">Reabrir tudo</button>':''}
+        <button type="button" class="btn secondary" data-close>Cancelar</button>
+        <button class="btn primary">Salvar fechamento</button>
+      </div>
+    </form>`
+  );
+
+  $('[data-close]').onclick=closeModal;
+  const form=$('#periodClosingForm');
+
+  if($('#reopenPeriodBtn'))$('#reopenPeriodBtn').onclick=()=>form.closed_until.value='';
+
+  form.onsubmit=async e=>{
+    e.preventDefault();
+
+    try{
+      await api(`/api/accounting-periods/${item.id}`,{
+        method:'PATCH',
+        body:{closed_until:e.target.closed_until.value||null}
+      });
+
+      closeModal();
+      S.cache.periods=null;
+      toast(e.target.closed_until.value?'Fechamento atualizado.':'Período reaberto.');
+      renderPeriods();
+    }catch(x){toast(x.message,'error')}
+  };
+}
+
+function deletePeriodModal(item){
+  openModal(
+    'Excluir período contábil',
+    'A exclusão somente será permitida se o período não possuir lote contábil.',
+    `<div style="padding:8px 0">
+      <div style="padding:12px;border:1px solid var(--line);border-radius:8px;background:#f8fafc;margin-bottom:14px">
+        <div><b>${esc(item.code)}</b></div>
+        <div style="margin-top:6px;color:var(--muted)">${dateBR(item.start_date)} a ${dateBR(item.end_date)}</div>
+      </div>
+
+      <div style="color:var(--muted)">Períodos que já possuem lotes devem permanecer no histórico contábil.</div>
+
+      <div class="form-actions">
+        <button type="button" class="btn secondary" data-close>Cancelar</button>
+        <button type="button" id="confirmDeletePeriod" class="btn danger">Excluir período</button>
+      </div>
+    </div>`
+  );
+
+  $('[data-close]').onclick=closeModal;
+
+  $('#confirmDeletePeriod').onclick=async()=>{
+    try{
+      await api(`/api/accounting-periods/${item.id}`,{method:'DELETE'});
+      closeModal();
+      S.cache.periods=null;
+      toast(`Período ${item.code} excluído.`);
+      renderPeriods();
+    }catch(x){toast(x.message,'error')}
+  };
+}
+
 async function renderBatches(){const a=await batches(true),p=await periods(),manage=can('accounting.batch.manage');tablePage({newLabel:manage?'Novo lote':null,onNew:manage?batchForm:null,cols:['Código','Descrição','Período','Início','Fim','Situação'],rows:a.length?a.map(x=>`<tr><td class="code">${esc(x.code)}</td><td>${esc(x.description)}</td><td>${esc(p.find(y=>y.id===x.period_id)?.code||'')}</td><td>${dateBR(x.start_date)}</td><td>${dateBR(x.end_date)}</td><td>${badge(x.status)}</td></tr>`).join(''):null,emptyTitle:'Nenhum lote contábil',emptyText:manage?'Crie um lote para começar a movimentação.':'Nenhum lote disponível para consulta.'})}
-async function batchForm(){const p=(await periods()).filter(x=>x.status==='OPEN');openModal('Novo lote','O lote deve estar dentro de um período aberto.',`<form id="f"><div class="grid"><label class="field"><span>Código</span><input name="code" required></label><label class="field"><span>Período</span><select name="period_id" required><option value="">Selecione</option>${p.map(x=>`<option value="${x.id}">${esc(x.code)} - ${dateBR(x.start_date)} a ${dateBR(x.end_date)}</option>`).join('')}</select></label><label class="field full"><span>Descrição</span><input name="description" required></label><label class="field"><span>Data inicial</span><input name="start_date" type="date"></label><label class="field"><span>Data final</span><input name="end_date" type="date"></label></div><div class="form-actions"><button type="button" class="btn secondary" data-close>Cancelar</button><button class="btn primary">Salvar</button></div></form>`);$('[data-close]').onclick=closeModal;$('#f').onsubmit=async e=>{e.preventDefault();const b=Object.fromEntries(new FormData(e.target));if(!b.start_date)delete b.start_date;if(!b.end_date)delete b.end_date;try{await api('/api/journal-batches',{method:'POST',body:b});closeModal();S.cache.batches=null;toast('Lote criado.');renderBatches()}catch(x){toast(x.message,'error')}}}
+async function batchForm(){const p=(await periods()).filter(x=>x.status==='OPEN');openModal('Novo lote','O lote deve estar dentro de um período que ainda possua datas abertas.',`<form id="f"><div class="grid"><label class="field"><span>Código</span><input name="code" required></label><label class="field"><span>Período</span><select name="period_id" required><option value="">Selecione</option>${p.map(x=>`<option value="${x.id}">${esc(x.code)} - ${dateBR(x.start_date)} a ${dateBR(x.end_date)}${x.closed_until?` | fechado até ${dateBR(x.closed_until)}`:''}</option>`).join('')}</select></label><label class="field full"><span>Descrição</span><input name="description" required></label><label class="field"><span>Data inicial</span><input name="start_date" type="date"></label><label class="field"><span>Data final</span><input name="end_date" type="date"></label></div><div class="form-actions"><button type="button" class="btn secondary" data-close>Cancelar</button><button class="btn primary">Salvar</button></div></form>`);$('[data-close]').onclick=closeModal;$('#f').onsubmit=async e=>{e.preventDefault();const b=Object.fromEntries(new FormData(e.target));if(!b.start_date)delete b.start_date;if(!b.end_date)delete b.end_date;try{await api('/api/journal-batches',{method:'POST',body:b});closeModal();S.cache.batches=null;toast('Lote criado.');renderBatches()}catch(x){toast(x.message,'error')}}}
 async function renderEntries(){const d=await api('/api/journal-entries?limit=300'),a=d.entries||[],create=can('accounting.entry.create');tablePage({newLabel:create?'Novo lançamento':null,onNew:create?entryForm:null,cols:['Data','Lote','Documento','Descrição','Débito','Crédito','Situação',''],rows:a.length?a.map(x=>`<tr><td>${dateBR(x.entry_date)}</td><td class="code">${esc(x.batch_code||'')}</td><td>${esc(x.document_number||'')}</td><td>${esc(x.description||'')}</td><td>${money(x.total_debit)}</td><td>${money(x.total_credit)}</td><td>${badge(x.status)}</td><td><div class="actions"><button class="btn secondary sm" data-open="${x.id}">Abrir</button></div></td></tr>`).join(''):null,emptyTitle:'Nenhum lançamento',emptyText:create?'Inclua o primeiro lançamento contábil.':'Nenhum lançamento disponível para consulta.'});$$('[data-open]').forEach(b=>b.onclick=()=>entryView(b.dataset.open))}
 async function entryForm(){
   const [a,c,h,b,br]=await Promise.all([accounts(),ccs(),histories(),batches(),branches()]);
