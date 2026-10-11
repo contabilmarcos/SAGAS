@@ -855,14 +855,137 @@ async function deleteCostCenter(env, request, auth, companyId, id) {
   return {deleted:true,id};
 }
 
+
+async function nextHistoryCode(env, companyId) {
+  const row=await env.DB.prepare(`
+    SELECT MAX(CAST(code AS INTEGER)) AS max_code
+    FROM history_templates
+    WHERE company_id=?
+      AND code IS NOT NULL
+      AND TRIM(code)<>''
+      AND code NOT GLOB '*[^0-9]*'
+  `).bind(companyId).first();
+
+  const next=(Number(row?.max_code)||0)+1;
+  return String(next).padStart(3,"0");
+}
+
+async function historyInUse(env, companyId, id) {
+  const row=await env.DB.prepare(`
+    SELECT id
+    FROM journal_lines
+    WHERE company_id=? AND history_template_id=?
+    LIMIT 1
+  `).bind(companyId,id).first();
+
+  return !!row;
+}
+
 async function createHistory(env, request, auth, companyId, body) {
   await requirePermission(env, auth.user.id, companyId, "accounting.history.manage");
+
+  const code=await nextHistoryCode(env,companyId);
   const id=uuid();
-  await env.DB.prepare(`INSERT INTO history_templates (id,company_id,code,description,complement_required,active) VALUES (?,?,?,?,?,?)`)
-    .bind(id,companyId,cleanText(required(body.code,"code"),80),cleanText(required(body.description,"description"),1000),bool01(body.complement_required,0),bool01(body.active,1)).run();
+
+  await env.DB.prepare(`
+    INSERT INTO history_templates
+      (id,company_id,code,description,complement_required,active)
+    VALUES (?,?,?,?,?,?)
+  `).bind(
+    id,
+    companyId,
+    code,
+    cleanText(required(body.description,"description"),1000),
+    bool01(body.complement_required,0),
+    bool01(body.active,1)
+  ).run();
+
   const row=await env.DB.prepare("SELECT * FROM history_templates WHERE id=?").bind(id).first();
-  await audit(env,{companyId,userId:auth.user.id,action:"CREATE",entity:"history_template",entityId:id,after:row,request});
+
+  await audit(env,{
+    companyId,
+    userId:auth.user.id,
+    action:"CREATE",
+    entity:"history_template",
+    entityId:id,
+    after:row,
+    request
+  });
+
   return row;
+}
+
+async function updateHistory(env, request, auth, companyId, id, body) {
+  await requirePermission(env, auth.user.id, companyId, "accounting.history.manage");
+
+  const before=await assertCompanyEntity(env,"history_templates",id,companyId);
+
+  const code=before.code && String(before.code).trim()
+    ? String(before.code)
+    : await nextHistoryCode(env,companyId);
+
+  await env.DB.prepare(`
+    UPDATE history_templates
+    SET code=?,
+        description=?,
+        complement_required=?,
+        active=?,
+        updated_at=CURRENT_TIMESTAMP
+    WHERE id=? AND company_id=?
+  `).bind(
+    code,
+    cleanText(body.description ?? before.description,1000),
+    bool01(body.complement_required,before.complement_required),
+    bool01(body.active,before.active),
+    id,
+    companyId
+  ).run();
+
+  const after=await env.DB.prepare("SELECT * FROM history_templates WHERE id=?").bind(id).first();
+
+  await audit(env,{
+    companyId,
+    userId:auth.user.id,
+    action:"UPDATE",
+    entity:"history_template",
+    entityId:id,
+    before,
+    after,
+    request
+  });
+
+  return after;
+}
+
+async function deleteHistory(env, request, auth, companyId, id) {
+  await requirePermission(env, auth.user.id, companyId, "accounting.history.manage");
+
+  const history=await assertCompanyEntity(env,"history_templates",id,companyId);
+
+  if (await historyInUse(env,companyId,id)) {
+    throw new HttpError(
+      409,
+      `O histórico ${history.code} já foi utilizado em lançamento contábil e não pode ser excluído. Inative-o.`,
+      "HISTORY_IN_USE"
+    );
+  }
+
+  await env.DB.prepare(`
+    DELETE FROM history_templates
+    WHERE id=? AND company_id=?
+  `).bind(id,companyId).run();
+
+  await audit(env,{
+    companyId,
+    userId:auth.user.id,
+    action:"DELETE",
+    entity:"history_template",
+    entityId:id,
+    before:history,
+    request
+  });
+
+  return {deleted:true,id};
 }
 
 async function createPeriod(env, request, auth, companyId, body) {
@@ -1338,6 +1461,9 @@ async function route(request, env) {
 
   if (method==="GET" && path==="/api/history-templates") { await requirePermission(env,auth.user.id,companyId,"accounting.history.read"); return ok({history_templates:await listSimple(env,companyId,"history_templates","id,code,description,complement_required,active")}); }
   if (method==="POST" && path==="/api/history-templates") return ok({history_template:await createHistory(env,request,auth,companyId,await readJson(request))},201);
+  p=routeMatch(path,"/api/history-templates/:id");
+  if (p && method==="PATCH") return ok({history_template:await updateHistory(env,request,auth,companyId,p.id,await readJson(request))});
+  if (p && method==="DELETE") return ok(await deleteHistory(env,request,auth,companyId,p.id));
 
   if (method==="GET" && path==="/api/accounting-periods") { await requirePermission(env,auth.user.id,companyId,"accounting.period.read"); return ok({periods:await listSimple(env,companyId,"accounting_periods","id,code,start_date,end_date,status")}); }
   if (method==="POST" && path==="/api/accounting-periods") return ok({period:await createPeriod(env,request,auth,companyId,await readJson(request))},201);
