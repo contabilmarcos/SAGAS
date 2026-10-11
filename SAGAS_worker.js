@@ -1763,6 +1763,21 @@ async function listOfficialEntries(env, companyId, limit=300) {
   }));
 }
 
+
+async function migrateLegacyDraftEntries(env, companyId) {
+  await env.DB.prepare(`
+    UPDATE journal_entries
+    SET status='POSTED',
+        posted_by=COALESCE(posted_by,created_by),
+        posted_at=COALESCE(posted_at,created_at,CURRENT_TIMESTAMP),
+        updated_at=CURRENT_TIMESTAMP
+    WHERE company_id=?
+      AND status='DRAFT'
+      AND total_debit_cents=total_credit_cents
+      AND total_debit_cents>0
+  `).bind(companyId).run();
+}
+
 async function validateEntry(env, companyId, body) {
   await ensureBatchIntegrationSchema(env);
   const batch=await assertCompanyEntity(env,"journal_batches",required(body.batch_id,"batch_id"),companyId);
@@ -1812,22 +1827,84 @@ async function validateEntry(env, companyId, body) {
 
 async function createEntry(env, request, auth, companyId, body) {
   await requirePermission(env, auth.user.id, companyId, "accounting.entry.create");
+
   const v=await validateEntry(env,companyId,body), entryId=uuid();
-  const stmts=[env.DB.prepare(`INSERT INTO journal_entries (id,company_id,batch_id,branch_id,entry_date,document_number,description,source_module,source_reference,status,total_debit_cents,total_credit_cents,created_by) VALUES (?,?,?,?,?,?,?,?,?,'DRAFT',?,?,?)`)
-    .bind(entryId,companyId,v.batch.id,body.branch_id||null,v.date,cleanText(body.document_number,120),cleanText(body.description,1000),cleanText(body.source_module||"ACCOUNTING",50),cleanText(body.source_reference,200),v.debit,v.credit,auth.user.id)];
+
+  const stmts=[
+    env.DB.prepare(`
+      INSERT INTO journal_entries
+        (id,company_id,batch_id,branch_id,entry_date,document_number,description,source_module,source_reference,
+         status,total_debit_cents,total_credit_cents,created_by,posted_by,posted_at)
+      VALUES (?,?,?,?,?,?,?,?,?,'POSTED',?,?,?,?,CURRENT_TIMESTAMP)
+    `).bind(
+      entryId,
+      companyId,
+      v.batch.id,
+      body.branch_id||null,
+      v.date,
+      cleanText(body.document_number,120),
+      cleanText(body.description,1000),
+      cleanText(body.source_module||"ACCOUNTING",50),
+      cleanText(body.source_reference,200),
+      v.debit,
+      v.credit,
+      auth.user.id,
+      auth.user.id
+    )
+  ];
+
   for (const line of v.lines) {
-    stmts.push(env.DB.prepare(`INSERT INTO journal_lines (id,company_id,entry_id,line_no,account_id,side,amount_cents,branch_id,cost_center_id,history_template_id,history_complement,document_number) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`)
-      .bind(line.id,companyId,entryId,line.line_no,line.account_id,line.side,line.amount_cents,line.branch_id,line.cost_center_id,line.history_template_id,line.history_complement,line.document_number));
-    for (const alloc of line.allocations) stmts.push(env.DB.prepare(`INSERT INTO allocation_lines (id,company_id,journal_line_id,cost_center_id,amount_cents,percentage_basis_points) VALUES (?,?,?,?,?,?)`).bind(alloc.id,companyId,line.id,alloc.cost_center_id,alloc.amount_cents,alloc.percentage_basis_points));
+    stmts.push(
+      env.DB.prepare(`
+        INSERT INTO journal_lines
+          (id,company_id,entry_id,line_no,account_id,side,amount_cents,branch_id,cost_center_id,
+           history_template_id,history_complement,document_number)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+      `).bind(
+        line.id,companyId,entryId,line.line_no,line.account_id,line.side,line.amount_cents,
+        line.branch_id,line.cost_center_id,line.history_template_id,line.history_complement,line.document_number
+      )
+    );
+
+    for (const alloc of line.allocations) {
+      stmts.push(
+        env.DB.prepare(`
+          INSERT INTO allocation_lines
+            (id,company_id,journal_line_id,cost_center_id,amount_cents,percentage_basis_points)
+          VALUES (?,?,?,?,?,?)
+        `).bind(
+          alloc.id,companyId,line.id,alloc.cost_center_id,alloc.amount_cents,alloc.percentage_basis_points
+        )
+      );
+    }
   }
+
   await env.DB.batch(stmts);
-  const after={id:entryId,total_debit:centsToMoney(v.debit),total_credit:centsToMoney(v.credit),status:"DRAFT"};
-  await audit(env,{companyId,userId:auth.user.id,action:"CREATE",entity:"journal_entry",entityId:entryId,after,request});
+
+  const after={
+    id:entryId,
+    total_debit:centsToMoney(v.debit),
+    total_credit:centsToMoney(v.credit),
+    status:"POSTED",
+    official_status:"PENDING"
+  };
+
+  await audit(env,{
+    companyId,
+    userId:auth.user.id,
+    action:"CREATE_POSTED",
+    entity:"journal_entry",
+    entityId:entryId,
+    after,
+    request
+  });
+
   return after;
 }
 
 async function listEntries(env, companyId, limit=100) {
   await ensureBatchIntegrationSchema(env);
+  await migrateLegacyDraftEntries(env,companyId);
 
   const res=await env.DB.prepare(`
     SELECT
@@ -1853,6 +1930,7 @@ async function listEntries(env, companyId, limit=100) {
 
 async function getEntry(env, companyId, id) {
   await ensureBatchIntegrationSchema(env);
+  await migrateLegacyDraftEntries(env,companyId);
   const entry=await env.DB.prepare("SELECT * FROM journal_entries WHERE id=? AND company_id=?").bind(id,companyId).first();
   if (!entry) throw new HttpError(404,"Lançamento não encontrado.","NOT_FOUND");
   const linesRes=await env.DB.prepare(`SELECT l.*,a.code AS account_code,a.name AS account_name,cc.code AS cost_center_code,cc.name AS cost_center_name,h.code AS history_code,h.description AS history_description FROM journal_lines l JOIN accounts a ON a.id=l.account_id LEFT JOIN cost_centers cc ON cc.id=l.cost_center_id LEFT JOIN history_templates h ON h.id=l.history_template_id WHERE l.entry_id=? AND l.company_id=? ORDER BY l.line_no`).bind(id,companyId).all();
