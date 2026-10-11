@@ -988,22 +988,240 @@ async function deleteHistory(env, request, auth, companyId, id) {
   return {deleted:true,id};
 }
 
+
+async function ensureAccountingPeriodSchema(env) {
+  const info=await env.DB.prepare(`PRAGMA table_info(accounting_periods)`).all();
+  const columns=new Set((info.results||[]).map(x=>x.name));
+
+  if (!columns.has("closed_until")) {
+    await env.DB.prepare(`ALTER TABLE accounting_periods ADD COLUMN closed_until TEXT`).run();
+  }
+}
+
+function automaticPeriodCode(start, end) {
+  const sy=start.slice(0,4);
+  const ey=end.slice(0,4);
+
+  if (sy===ey && start===`${sy}-01-01` && end===`${sy}-12-31`) return sy;
+  return `${start.replaceAll("-","")}-${end.replaceAll("-","")}`;
+}
+
+function normalizedClosedUntil(value, start, end) {
+  if (value===undefined || value===null || String(value).trim()==="") return null;
+
+  const closed=isoDate(value,"closed_until");
+  if (closed<start || closed>end) {
+    throw new HttpError(400,"A data 'Fechado até' deve estar dentro do período contábil.","VALIDATION_ERROR");
+  }
+  return closed;
+}
+
+function periodStatusFromClosing(end, closedUntil) {
+  return closedUntil && closedUntil>=end ? "CLOSED" : "OPEN";
+}
+
+async function validateNoPeriodOverlap(env, companyId, start, end, ignoreId=null) {
+  const overlap=ignoreId
+    ? await env.DB.prepare(`
+        SELECT id,code,start_date,end_date
+        FROM accounting_periods
+        WHERE company_id=?
+          AND id<>?
+          AND NOT (end_date<? OR start_date>?)
+        LIMIT 1
+      `).bind(companyId,ignoreId,start,end).first()
+    : await env.DB.prepare(`
+        SELECT id,code,start_date,end_date
+        FROM accounting_periods
+        WHERE company_id=?
+          AND NOT (end_date<? OR start_date>?)
+        LIMIT 1
+      `).bind(companyId,start,end).first();
+
+  if (overlap) {
+    throw new HttpError(
+      409,
+      `Já existe o período ${overlap.code} entre ${overlap.start_date} e ${overlap.end_date}. Os períodos não podem se sobrepor.`,
+      "PERIOD_OVERLAP"
+    );
+  }
+}
+
+async function validatePeriodClosingDrafts(env, companyId, periodId, newClosedUntil, previousClosedUntil=null) {
+  if (!newClosedUntil) return;
+  if (previousClosedUntil && newClosedUntil<=previousClosedUntil) return;
+
+  const draft=await env.DB.prepare(`
+    SELECT je.id,je.entry_date,je.document_number
+    FROM journal_entries je
+    JOIN journal_batches jb ON jb.id=je.batch_id
+    WHERE je.company_id=?
+      AND jb.period_id=?
+      AND je.status='DRAFT'
+      AND je.entry_date<=?
+      AND (? IS NULL OR je.entry_date>?)
+    ORDER BY je.entry_date
+    LIMIT 1
+  `).bind(companyId,periodId,newClosedUntil,previousClosedUntil,previousClosedUntil).first();
+
+  if (draft) {
+    throw new HttpError(
+      409,
+      `Existe lançamento em rascunho na data ${draft.entry_date}. Contabilize ou ajuste os rascunhos antes de fechar até ${newClosedUntil}.`,
+      "PERIOD_HAS_DRAFTS"
+    );
+  }
+}
+
+function assertDateOpenInPeriod(period, date) {
+  if (period.status==="LOCKED") {
+    throw new HttpError(409,"O período contábil está bloqueado.","PERIOD_CLOSED");
+  }
+
+  if (period.status==="CLOSED" && !period.closed_until) {
+    throw new HttpError(409,"O período contábil está fechado.","PERIOD_CLOSED");
+  }
+
+  if (period.closed_until && date<=period.closed_until) {
+    throw new HttpError(
+      409,
+      `A contabilidade está fechada até ${period.closed_until}. A data ${date} não pode ser utilizada.`,
+      "DATE_CLOSED"
+    );
+  }
+
+  if (period.status==="CLOSED" && period.closed_until && period.closed_until>=period.end_date) {
+    throw new HttpError(409,"O período contábil está totalmente fechado.","PERIOD_CLOSED");
+  }
+}
+
 async function createPeriod(env, request, auth, companyId, body) {
   await requirePermission(env, auth.user.id, companyId, "accounting.period.manage");
-  const start=isoDate(body.start_date,"start_date"), end=isoDate(body.end_date,"end_date");
-  if (start>end) throw new HttpError(400,"start_date não pode ser posterior a end_date.","VALIDATION_ERROR");
+  await ensureAccountingPeriodSchema(env);
+
+  const start=isoDate(body.start_date,"start_date");
+  const end=isoDate(body.end_date,"end_date");
+
+  if (start>end) throw new HttpError(400,"A data inicial não pode ser posterior à data final.","VALIDATION_ERROR");
+
+  await validateNoPeriodOverlap(env,companyId,start,end);
+
+  const closedUntil=normalizedClosedUntil(body.closed_until,start,end);
+  const code=automaticPeriodCode(start,end);
+  const status=periodStatusFromClosing(end,closedUntil);
+
+  const duplicate=await env.DB.prepare(`
+    SELECT id FROM accounting_periods
+    WHERE company_id=? AND code=?
+    LIMIT 1
+  `).bind(companyId,code).first();
+
+  if (duplicate) throw new HttpError(409,`Já existe um período com o código ${code}.`,"DUPLICATE_PERIOD");
+
   const id=uuid();
-  await env.DB.prepare(`INSERT INTO accounting_periods (id,company_id,code,start_date,end_date,status) VALUES (?,?,?,?,?,?)`)
-    .bind(id,companyId,cleanText(required(body.code,"code"),30),start,end,body.status||"OPEN").run();
+
+  await env.DB.prepare(`
+    INSERT INTO accounting_periods
+      (id,company_id,code,start_date,end_date,status,closed_until)
+    VALUES (?,?,?,?,?,?,?)
+  `).bind(id,companyId,code,start,end,status,closedUntil).run();
+
   const row=await env.DB.prepare("SELECT * FROM accounting_periods WHERE id=?").bind(id).first();
+
   await audit(env,{companyId,userId:auth.user.id,action:"CREATE",entity:"accounting_period",entityId:id,after:row,request});
   return row;
 }
 
+async function updatePeriod(env, request, auth, companyId, id, body) {
+  await requirePermission(env, auth.user.id, companyId, "accounting.period.manage");
+  await ensureAccountingPeriodSchema(env);
+
+  const before=await assertCompanyEntity(env,"accounting_periods",id,companyId);
+
+  const start=isoDate(body.start_date ?? before.start_date,"start_date");
+  const end=isoDate(body.end_date ?? before.end_date,"end_date");
+
+  if (start>end) throw new HttpError(400,"A data inicial não pode ser posterior à data final.","VALIDATION_ERROR");
+
+  const hasBatch=await env.DB.prepare(`
+    SELECT id
+    FROM journal_batches
+    WHERE company_id=? AND period_id=?
+    LIMIT 1
+  `).bind(companyId,id).first();
+
+  if (hasBatch && (start!==before.start_date || end!==before.end_date)) {
+    throw new HttpError(
+      409,
+      "Este período já possui lote contábil. As datas inicial e final não podem mais ser alteradas.",
+      "PERIOD_HAS_BATCHES"
+    );
+  }
+
+  await validateNoPeriodOverlap(env,companyId,start,end,id);
+
+  const closedInput=body.closed_until===undefined ? before.closed_until : body.closed_until;
+  const closedUntil=normalizedClosedUntil(closedInput,start,end);
+
+  await validatePeriodClosingDrafts(env,companyId,id,closedUntil,before.closed_until||null);
+
+  const code=automaticPeriodCode(start,end);
+  const status=before.status==="LOCKED" ? "LOCKED" : periodStatusFromClosing(end,closedUntil);
+
+  const duplicate=await env.DB.prepare(`
+    SELECT id FROM accounting_periods
+    WHERE company_id=? AND code=? AND id<>?
+    LIMIT 1
+  `).bind(companyId,code,id).first();
+
+  if (duplicate) throw new HttpError(409,`Já existe um período com o código ${code}.`,"DUPLICATE_PERIOD");
+
+  await env.DB.prepare(`
+    UPDATE accounting_periods
+    SET code=?,start_date=?,end_date=?,status=?,closed_until=?,updated_at=CURRENT_TIMESTAMP
+    WHERE id=? AND company_id=?
+  `).bind(code,start,end,status,closedUntil,id,companyId).run();
+
+  const after=await env.DB.prepare("SELECT * FROM accounting_periods WHERE id=?").bind(id).first();
+
+  await audit(env,{companyId,userId:auth.user.id,action:"UPDATE",entity:"accounting_period",entityId:id,before,after,request});
+  return after;
+}
+
+async function deletePeriod(env, request, auth, companyId, id) {
+  await requirePermission(env, auth.user.id, companyId, "accounting.period.manage");
+  await ensureAccountingPeriodSchema(env);
+
+  const period=await assertCompanyEntity(env,"accounting_periods",id,companyId);
+
+  const batch=await env.DB.prepare(`
+    SELECT id,code
+    FROM journal_batches
+    WHERE company_id=? AND period_id=?
+    LIMIT 1
+  `).bind(companyId,id).first();
+
+  if (batch) {
+    throw new HttpError(
+      409,
+      `O período ${period.code} possui lote contábil e não pode ser excluído.`,
+      "PERIOD_HAS_BATCHES"
+    );
+  }
+
+  await env.DB.prepare(`DELETE FROM accounting_periods WHERE id=? AND company_id=?`).bind(id,companyId).run();
+
+  await audit(env,{companyId,userId:auth.user.id,action:"DELETE",entity:"accounting_period",entityId:id,before:period,request});
+  return {deleted:true,id};
+}
+
 async function createBatch(env, request, auth, companyId, body) {
   await requirePermission(env, auth.user.id, companyId, "accounting.batch.manage");
+  await ensureAccountingPeriodSchema(env);
   const period=await assertCompanyEntity(env,"accounting_periods",required(body.period_id,"period_id"),companyId);
-  if (period.status!=="OPEN") throw new HttpError(409,"O período contábil não está aberto.","PERIOD_CLOSED");
+  if (period.status==="LOCKED" || (period.status==="CLOSED" && (!period.closed_until || period.closed_until>=period.end_date))) {
+    throw new HttpError(409,"O período contábil está totalmente fechado.","PERIOD_CLOSED");
+  }
   const start=isoDate(body.start_date||period.start_date,"start_date"), end=isoDate(body.end_date||period.end_date,"end_date");
   if (start<period.start_date || end>period.end_date || start>end) throw new HttpError(400,"As datas do lote devem estar dentro do período contábil.","VALIDATION_ERROR");
   const id=uuid();
@@ -1017,10 +1235,13 @@ async function createBatch(env, request, auth, companyId, body) {
 async function validateEntry(env, companyId, body) {
   const batch=await assertCompanyEntity(env,"journal_batches",required(body.batch_id,"batch_id"),companyId);
   if (batch.status!=="OPEN") throw new HttpError(409,"O lote não está aberto.","BATCH_CLOSED");
+  await ensureAccountingPeriodSchema(env);
   const period=await assertCompanyEntity(env,"accounting_periods",batch.period_id,companyId);
-  if (period.status!=="OPEN") throw new HttpError(409,"O período contábil não está aberto.","PERIOD_CLOSED");
   const date=isoDate(body.entry_date,"entry_date");
-  if (date<batch.start_date || date>batch.end_date || date<period.start_date || date>period.end_date) throw new HttpError(400,"A data do lançamento está fora do período/lote.","DATE_OUT_OF_PERIOD");
+  if (date<batch.start_date || date>batch.end_date || date<period.start_date || date>period.end_date) {
+    throw new HttpError(400,"A data do lançamento está fora do período/lote.","DATE_OUT_OF_PERIOD");
+  }
+  assertDateOpenInPeriod(period,date);
   if (body.branch_id) await assertCompanyEntity(env,"branches",body.branch_id,companyId);
   const lines=Array.isArray(body.lines)?body.lines:[];
   if (lines.length<2) throw new HttpError(400,"O lançamento precisa de pelo menos 2 linhas.","VALIDATION_ERROR");
@@ -1096,8 +1317,10 @@ async function postEntry(env, request, auth, companyId, id) {
   if (entry.status!=="DRAFT") throw new HttpError(409,"Somente lançamentos em rascunho podem ser contabilizados.","INVALID_STATUS");
   if (entry.total_debit_cents!==entry.total_credit_cents || entry.total_debit_cents<=0) throw new HttpError(409,"O lançamento não está balanceado.","UNBALANCED_ENTRY");
   await validatePostedEntryAccounts(env,companyId,id);
+  await ensureAccountingPeriodSchema(env);
   const batch=await assertCompanyEntity(env,"journal_batches",entry.batch_id,companyId), period=await assertCompanyEntity(env,"accounting_periods",batch.period_id,companyId);
-  if (batch.status!=="OPEN" || period.status!=="OPEN") throw new HttpError(409,"Lote ou período não está aberto.","PERIOD_CLOSED");
+  if (batch.status!=="OPEN") throw new HttpError(409,"O lote contábil não está aberto.","BATCH_CLOSED");
+  assertDateOpenInPeriod(period,entry.entry_date);
   await env.DB.prepare(`UPDATE journal_entries SET status='POSTED',posted_by=?,posted_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=? AND company_id=? AND status='DRAFT'`).bind(auth.user.id,id,companyId).run();
   await audit(env,{companyId,userId:auth.user.id,action:"POST",entity:"journal_entry",entityId:id,before:{status:"DRAFT"},after:{status:"POSTED"},request});
   return getEntry(env,companyId,id);
@@ -1109,6 +1332,12 @@ async function voidEntry(env, request, auth, companyId, id, reason) {
   if (!before) throw new HttpError(404,"Lançamento não encontrado.","NOT_FOUND");
   if (before.status!=="POSTED") throw new HttpError(409,"Somente lançamento contabilizado pode ser anulado.","INVALID_STATUS");
   if (!String(reason||"").trim()) throw new HttpError(400,"Informe o motivo da anulação.","VALIDATION_ERROR");
+
+  await ensureAccountingPeriodSchema(env);
+  const batch=await assertCompanyEntity(env,"journal_batches",before.batch_id,companyId);
+  const period=await assertCompanyEntity(env,"accounting_periods",batch.period_id,companyId);
+  assertDateOpenInPeriod(period,before.entry_date);
+
   await env.DB.prepare(`UPDATE journal_entries SET status='VOID',voided_by=?,voided_at=CURRENT_TIMESTAMP,void_reason=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND company_id=? AND status='POSTED'`).bind(auth.user.id,cleanText(reason,1000),id,companyId).run();
   await audit(env,{companyId,userId:auth.user.id,action:"VOID",entity:"journal_entry",entityId:id,before:{status:"POSTED"},after:{status:"VOID",reason},request});
   return getEntry(env,companyId,id);
@@ -1465,8 +1694,15 @@ async function route(request, env) {
   if (p && method==="PATCH") return ok({history_template:await updateHistory(env,request,auth,companyId,p.id,await readJson(request))});
   if (p && method==="DELETE") return ok(await deleteHistory(env,request,auth,companyId,p.id));
 
-  if (method==="GET" && path==="/api/accounting-periods") { await requirePermission(env,auth.user.id,companyId,"accounting.period.read"); return ok({periods:await listSimple(env,companyId,"accounting_periods","id,code,start_date,end_date,status")}); }
+  if (method==="GET" && path==="/api/accounting-periods") {
+    await requirePermission(env,auth.user.id,companyId,"accounting.period.read");
+    await ensureAccountingPeriodSchema(env);
+    return ok({periods:await listSimple(env,companyId,"accounting_periods","id,code,start_date,end_date,status,closed_until")});
+  }
   if (method==="POST" && path==="/api/accounting-periods") return ok({period:await createPeriod(env,request,auth,companyId,await readJson(request))},201);
+  p=routeMatch(path,"/api/accounting-periods/:id");
+  if (p && method==="PATCH") return ok({period:await updatePeriod(env,request,auth,companyId,p.id,await readJson(request))});
+  if (p && method==="DELETE") return ok(await deletePeriod(env,request,auth,companyId,p.id));
 
   if (method==="GET" && path==="/api/journal-batches") { await requirePermission(env,auth.user.id,companyId,"accounting.batch.read"); return ok({batches:await listSimple(env,companyId,"journal_batches","id,period_id,code,description,start_date,end_date,status,created_at")}); }
   if (method==="POST" && path==="/api/journal-batches") return ok({batch:await createBatch(env,request,auth,companyId,await readJson(request))},201);
