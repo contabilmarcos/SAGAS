@@ -1215,24 +1215,556 @@ async function deletePeriod(env, request, auth, companyId, id) {
   return {deleted:true,id};
 }
 
+
+async function ensureBatchIntegrationSchema(env) {
+  const batchInfo=await env.DB.prepare(`PRAGMA table_info(journal_batches)`).all();
+  const batchCols=new Set((batchInfo.results||[]).map(x=>x.name));
+
+  if (!batchCols.has("cover_mode")) {
+    await env.DB.prepare(`ALTER TABLE journal_batches ADD COLUMN cover_mode TEXT NOT NULL DEFAULT 'AUTO'`).run();
+  }
+  if (!batchCols.has("cover_amount_cents")) {
+    await env.DB.prepare(`ALTER TABLE journal_batches ADD COLUMN cover_amount_cents INTEGER`).run();
+  }
+  if (!batchCols.has("locked_by")) {
+    await env.DB.prepare(`ALTER TABLE journal_batches ADD COLUMN locked_by TEXT`).run();
+  }
+  if (!batchCols.has("locked_at")) {
+    await env.DB.prepare(`ALTER TABLE journal_batches ADD COLUMN locked_at TEXT`).run();
+  }
+
+  const entryInfo=await env.DB.prepare(`PRAGMA table_info(journal_entries)`).all();
+  const entryCols=new Set((entryInfo.results||[]).map(x=>x.name));
+
+  if (!entryCols.has("official_status")) {
+    await env.DB.prepare(`ALTER TABLE journal_entries ADD COLUMN official_status TEXT NOT NULL DEFAULT 'PENDING'`).run();
+  }
+  if (!entryCols.has("integrated_by")) {
+    await env.DB.prepare(`ALTER TABLE journal_entries ADD COLUMN integrated_by TEXT`).run();
+  }
+  if (!entryCols.has("integrated_at")) {
+    await env.DB.prepare(`ALTER TABLE journal_entries ADD COLUMN integrated_at TEXT`).run();
+  }
+  if (!entryCols.has("integration_id")) {
+    await env.DB.prepare(`ALTER TABLE journal_entries ADD COLUMN integration_id TEXT`).run();
+  }
+  if (!entryCols.has("unintegrated_by")) {
+    await env.DB.prepare(`ALTER TABLE journal_entries ADD COLUMN unintegrated_by TEXT`).run();
+  }
+  if (!entryCols.has("unintegrated_at")) {
+    await env.DB.prepare(`ALTER TABLE journal_entries ADD COLUMN unintegrated_at TEXT`).run();
+  }
+}
+
+function nextIsoDate(value) {
+  const d=new Date(`${value}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate()+1);
+  return d.toISOString().slice(0,10);
+}
+
+async function nextBatchCode(env, companyId) {
+  const row=await env.DB.prepare(`
+    SELECT MAX(CAST(code AS INTEGER)) AS max_code
+    FROM journal_batches
+    WHERE company_id=?
+      AND code<>'0'
+      AND code NOT GLOB '*[^0-9]*'
+  `).bind(companyId).first();
+
+  return String((Number(row?.max_code)||0)+1);
+}
+
+async function batchEntrySummary(env, companyId, batchId) {
+  await ensureBatchIntegrationSchema(env);
+
+  const row=await env.DB.prepare(`
+    SELECT
+      COUNT(*) AS total_entries,
+      SUM(CASE WHEN status='DRAFT' THEN 1 ELSE 0 END) AS draft_entries,
+      SUM(CASE WHEN status='POSTED' THEN 1 ELSE 0 END) AS posted_entries,
+      SUM(CASE WHEN status='VOID' THEN 1 ELSE 0 END) AS void_entries,
+      SUM(CASE WHEN official_status='INTEGRATED' THEN 1 ELSE 0 END) AS integrated_entries,
+      SUM(CASE WHEN status='POSTED' AND official_status<>'INTEGRATED' THEN 1 ELSE 0 END) AS pending_entries,
+      COALESCE(SUM(CASE WHEN status<>'VOID' THEN total_debit_cents ELSE 0 END),0) AS total_debit_cents,
+      MIN(CASE WHEN status<>'VOID' THEN entry_date END) AS min_entry_date,
+      MAX(CASE WHEN status<>'VOID' THEN entry_date END) AS max_entry_date
+    FROM journal_entries
+    WHERE company_id=? AND batch_id=?
+  `).bind(companyId,batchId).first();
+
+  return {
+    total_entries:Number(row?.total_entries||0),
+    draft_entries:Number(row?.draft_entries||0),
+    posted_entries:Number(row?.posted_entries||0),
+    void_entries:Number(row?.void_entries||0),
+    integrated_entries:Number(row?.integrated_entries||0),
+    pending_entries:Number(row?.pending_entries||0),
+    total_debit_cents:Number(row?.total_debit_cents||0),
+    total_debit:centsToMoney(Number(row?.total_debit_cents||0)),
+    min_entry_date:row?.min_entry_date||null,
+    max_entry_date:row?.max_entry_date||null
+  };
+}
+
+async function listBatchesDetailed(env, companyId) {
+  await ensureBatchIntegrationSchema(env);
+
+  const res=await env.DB.prepare(`
+    SELECT
+      b.id,b.period_id,b.code,b.description,b.start_date,b.end_date,b.status,b.cover_mode,b.cover_amount_cents,
+      b.created_at,b.locked_at,p.code AS period_code,p.closed_until,
+      COUNT(e.id) AS total_entries,
+      SUM(CASE WHEN e.status='DRAFT' THEN 1 ELSE 0 END) AS draft_entries,
+      SUM(CASE WHEN e.status='POSTED' AND e.official_status<>'INTEGRATED' THEN 1 ELSE 0 END) AS pending_entries,
+      SUM(CASE WHEN e.official_status='INTEGRATED' THEN 1 ELSE 0 END) AS integrated_entries
+    FROM journal_batches b
+    JOIN accounting_periods p ON p.id=b.period_id
+    LEFT JOIN journal_entries e ON e.batch_id=b.id AND e.company_id=b.company_id
+    WHERE b.company_id=?
+    GROUP BY b.id
+    ORDER BY
+      CASE WHEN b.code NOT GLOB '*[^0-9]*' THEN CAST(b.code AS INTEGER) ELSE 999999999 END,
+      b.code
+  `).bind(companyId).all();
+
+  const official=await env.DB.prepare(`
+    SELECT
+      COUNT(*) AS total_entries,
+      COALESCE(SUM(total_debit_cents),0) AS total_debit_cents,
+      MIN(entry_date) AS start_date,
+      MAX(entry_date) AS end_date
+    FROM journal_entries
+    WHERE company_id=?
+      AND status='POSTED'
+      AND official_status='INTEGRATED'
+  `).bind(companyId).first();
+
+  return {
+    batches:(res.results||[]).map(x=>({
+      ...x,
+      cover_amount:x.cover_amount_cents==null?null:centsToMoney(x.cover_amount_cents),
+      total_entries:Number(x.total_entries||0),
+      draft_entries:Number(x.draft_entries||0),
+      pending_entries:Number(x.pending_entries||0),
+      integrated_entries:Number(x.integrated_entries||0)
+    })),
+    official:{
+      code:"0",
+      description:"LOTE OFICIAL",
+      status:"OFFICIAL",
+      total_entries:Number(official?.total_entries||0),
+      total_debit_cents:Number(official?.total_debit_cents||0),
+      total_debit:centsToMoney(Number(official?.total_debit_cents||0)),
+      start_date:official?.start_date||null,
+      end_date:official?.end_date||null
+    }
+  };
+}
+
+async function getBatchDetails(env, companyId, id) {
+  await ensureBatchIntegrationSchema(env);
+
+  const batch=await env.DB.prepare(`
+    SELECT b.*,p.code AS period_code,p.start_date AS period_start_date,p.end_date AS period_end_date,p.closed_until
+    FROM journal_batches b
+    JOIN accounting_periods p ON p.id=b.period_id
+    WHERE b.id=? AND b.company_id=?
+  `).bind(id,companyId).first();
+
+  if (!batch) throw new HttpError(404,"Lote não encontrado.","NOT_FOUND");
+
+  const entries=await env.DB.prepare(`
+    SELECT
+      id,entry_date,document_number,description,status,official_status,
+      total_debit_cents,total_credit_cents,integrated_at,integration_id
+    FROM journal_entries
+    WHERE company_id=? AND batch_id=?
+    ORDER BY entry_date,created_at
+  `).bind(companyId,id).all();
+
+  return {
+    ...batch,
+    cover_amount:batch.cover_amount_cents==null?null:centsToMoney(batch.cover_amount_cents),
+    summary:await batchEntrySummary(env,companyId,id),
+    entries:(entries.results||[]).map(x=>({
+      ...x,
+      total_debit:centsToMoney(x.total_debit_cents),
+      total_credit:centsToMoney(x.total_credit_cents)
+    }))
+  };
+}
+
+async function validateManualCover(env, companyId, batch) {
+  if (batch.cover_mode!=="MANUAL") return;
+
+  const summary=await batchEntrySummary(env,companyId,batch.id);
+
+  if (summary.draft_entries>0) {
+    throw new HttpError(
+      409,
+      "O lote possui lançamentos em rascunho. Contabilize ou ajuste os rascunhos antes de bloquear.",
+      "BATCH_HAS_DRAFTS"
+    );
+  }
+
+  if (batch.cover_amount_cents!=null && summary.total_debit_cents!==Number(batch.cover_amount_cents)) {
+    throw new HttpError(
+      409,
+      `O valor da capa é ${centsToMoney(batch.cover_amount_cents).toFixed(2)}, mas o lote totaliza ${centsToMoney(summary.total_debit_cents).toFixed(2)}.`,
+      "BATCH_COVER_MISMATCH"
+    );
+  }
+}
+
 async function createBatch(env, request, auth, companyId, body) {
   await requirePermission(env, auth.user.id, companyId, "accounting.batch.manage");
   await ensureAccountingPeriodSchema(env);
+  await ensureBatchIntegrationSchema(env);
+
   const period=await assertCompanyEntity(env,"accounting_periods",required(body.period_id,"period_id"),companyId);
+
   if (period.status==="LOCKED" || (period.status==="CLOSED" && (!period.closed_until || period.closed_until>=period.end_date))) {
     throw new HttpError(409,"O período contábil está totalmente fechado.","PERIOD_CLOSED");
   }
-  const start=isoDate(body.start_date||period.start_date,"start_date"), end=isoDate(body.end_date||period.end_date,"end_date");
-  if (start<period.start_date || end>period.end_date || start>end) throw new HttpError(400,"As datas do lote devem estar dentro do período contábil.","VALIDATION_ERROR");
+
+  const coverMode=body.cover_mode==="MANUAL" || body.manual_cover===true ? "MANUAL" : "AUTO";
+
+  let suggestedStart=period.start_date;
+  if (period.closed_until && period.closed_until>=period.start_date) {
+    suggestedStart=nextIsoDate(period.closed_until);
+  }
+
+  let start=suggestedStart;
+  let end=period.end_date;
+  let coverAmountCents=null;
+
+  if (coverMode==="MANUAL") {
+    start=isoDate(required(body.start_date,"start_date"),"start_date");
+    end=isoDate(required(body.end_date,"end_date"),"end_date");
+    coverAmountCents=moneyToCents(required(body.cover_amount,"cover_amount"));
+
+    if (coverAmountCents<=0) {
+      throw new HttpError(400,"O valor da capa deve ser maior que zero.","VALIDATION_ERROR");
+    }
+  }
+
+  if (start<period.start_date || end>period.end_date || start>end) {
+    throw new HttpError(400,"As datas do lote devem estar dentro do período contábil.","VALIDATION_ERROR");
+  }
+
+  if (period.closed_until && start<=period.closed_until) {
+    throw new HttpError(
+      409,
+      `O período está fechado até ${period.closed_until}. O lote deve começar após essa data.`,
+      "DATE_CLOSED"
+    );
+  }
+
+  const code=await nextBatchCode(env,companyId);
   const id=uuid();
-  await env.DB.prepare(`INSERT INTO journal_batches (id,company_id,period_id,code,description,start_date,end_date,status,created_by) VALUES (?,?,?,?,?,?,?,'OPEN',?)`)
-    .bind(id,companyId,period.id,cleanText(required(body.code,"code"),50),cleanText(required(body.description,"description"),500),start,end,auth.user.id).run();
+
+  await env.DB.prepare(`
+    INSERT INTO journal_batches
+      (id,company_id,period_id,code,description,start_date,end_date,status,created_by,cover_mode,cover_amount_cents)
+    VALUES (?,?,?,?,?,?,?,'OPEN',?,?,?)
+  `).bind(
+    id,
+    companyId,
+    period.id,
+    code,
+    cleanText(required(body.description,"description"),500),
+    start,
+    end,
+    auth.user.id,
+    coverMode,
+    coverAmountCents
+  ).run();
+
   const row=await env.DB.prepare("SELECT * FROM journal_batches WHERE id=?").bind(id).first();
   await audit(env,{companyId,userId:auth.user.id,action:"CREATE",entity:"journal_batch",entityId:id,after:row,request});
   return row;
 }
 
+async function updateBatch(env, request, auth, companyId, id, body) {
+  await requirePermission(env, auth.user.id, companyId, "accounting.batch.manage");
+  await ensureAccountingPeriodSchema(env);
+  await ensureBatchIntegrationSchema(env);
+
+  const before=await assertCompanyEntity(env,"journal_batches",id,companyId);
+
+  if (before.status==="LOCKED") {
+    throw new HttpError(409,"Desbloqueie o lote antes de editá-lo.","BATCH_LOCKED");
+  }
+
+  const period=await assertCompanyEntity(env,"accounting_periods",before.period_id,companyId);
+  const coverMode=body.cover_mode===undefined ? (before.cover_mode||"AUTO") : (body.cover_mode==="MANUAL"?"MANUAL":"AUTO");
+
+  let start=before.start_date;
+  let end=before.end_date;
+  let coverAmountCents=before.cover_amount_cents;
+
+  if (coverMode==="MANUAL") {
+    start=isoDate(body.start_date ?? before.start_date,"start_date");
+    end=isoDate(body.end_date ?? before.end_date,"end_date");
+
+    if (body.cover_amount!==undefined) {
+      coverAmountCents=moneyToCents(required(body.cover_amount,"cover_amount"));
+    }
+
+    if (coverAmountCents==null || coverAmountCents<=0) {
+      throw new HttpError(400,"Informe um valor de capa maior que zero.","VALIDATION_ERROR");
+    }
+  } else {
+    coverAmountCents=null;
+    let suggestedStart=period.start_date;
+    if (period.closed_until && period.closed_until>=period.start_date) suggestedStart=nextIsoDate(period.closed_until);
+    start=suggestedStart;
+    end=period.end_date;
+  }
+
+  if (start<period.start_date || end>period.end_date || start>end) {
+    throw new HttpError(400,"As datas do lote devem estar dentro do período contábil.","VALIDATION_ERROR");
+  }
+
+  if (period.closed_until && start<=period.closed_until) {
+    throw new HttpError(409,`O período está fechado até ${period.closed_until}.`,"DATE_CLOSED");
+  }
+
+  const outside=await env.DB.prepare(`
+    SELECT id,entry_date
+    FROM journal_entries
+    WHERE company_id=? AND batch_id=?
+      AND status<>'VOID'
+      AND (entry_date<? OR entry_date>?)
+    LIMIT 1
+  `).bind(companyId,id,start,end).first();
+
+  if (outside) {
+    throw new HttpError(
+      409,
+      `Existe lançamento em ${outside.entry_date}, fora das novas datas da capa.`,
+      "ENTRY_OUTSIDE_BATCH"
+    );
+  }
+
+  await env.DB.prepare(`
+    UPDATE journal_batches
+    SET description=?,start_date=?,end_date=?,cover_mode=?,cover_amount_cents=?,updated_at=CURRENT_TIMESTAMP
+    WHERE id=? AND company_id=?
+  `).bind(
+    cleanText(body.description ?? before.description,500),
+    start,end,coverMode,coverAmountCents,id,companyId
+  ).run();
+
+  const after=await env.DB.prepare("SELECT * FROM journal_batches WHERE id=?").bind(id).first();
+  await audit(env,{companyId,userId:auth.user.id,action:"UPDATE",entity:"journal_batch",entityId:id,before,after,request});
+  return after;
+}
+
+async function setBatchLock(env, request, auth, companyId, id, locked) {
+  await requirePermission(env, auth.user.id, companyId, "accounting.batch.manage");
+  await ensureBatchIntegrationSchema(env);
+
+  const before=await assertCompanyEntity(env,"journal_batches",id,companyId);
+
+  if (locked) {
+    await validateManualCover(env,companyId,before);
+
+    await env.DB.prepare(`
+      UPDATE journal_batches
+      SET status='LOCKED',locked_by=?,locked_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP
+      WHERE id=? AND company_id=?
+    `).bind(auth.user.id,id,companyId).run();
+  } else {
+    await env.DB.prepare(`
+      UPDATE journal_batches
+      SET status='OPEN',locked_by=NULL,locked_at=NULL,updated_at=CURRENT_TIMESTAMP
+      WHERE id=? AND company_id=?
+    `).bind(id,companyId).run();
+  }
+
+  await audit(env,{
+    companyId,
+    userId:auth.user.id,
+    action:locked?"LOCK":"UNLOCK",
+    entity:"journal_batch",
+    entityId:id,
+    before:{status:before.status},
+    after:{status:locked?"LOCKED":"OPEN"},
+    request
+  });
+
+  return getBatchDetails(env,companyId,id);
+}
+
+async function deleteBatch(env, request, auth, companyId, id) {
+  await requirePermission(env, auth.user.id, companyId, "accounting.batch.manage");
+  await ensureBatchIntegrationSchema(env);
+
+  const batch=await assertCompanyEntity(env,"journal_batches",id,companyId);
+
+  const entry=await env.DB.prepare(`
+    SELECT id FROM journal_entries
+    WHERE company_id=? AND batch_id=?
+    LIMIT 1
+  `).bind(companyId,id).first();
+
+  if (entry) {
+    throw new HttpError(
+      409,
+      `O lote ${batch.code} possui lançamentos e não pode ser excluído.`,
+      "BATCH_HAS_ENTRIES"
+    );
+  }
+
+  await env.DB.prepare(`DELETE FROM journal_batches WHERE id=? AND company_id=?`).bind(id,companyId).run();
+
+  await audit(env,{companyId,userId:auth.user.id,action:"DELETE",entity:"journal_batch",entityId:id,before:batch,request});
+  return {deleted:true,id};
+}
+
+async function integrateBatchEntries(env, request, auth, companyId, batchId, body) {
+  await requirePermission(env, auth.user.id, companyId, "accounting.batch.manage");
+  await ensureAccountingPeriodSchema(env);
+  await ensureBatchIntegrationSchema(env);
+
+  const batch=await assertCompanyEntity(env,"journal_batches",batchId,companyId);
+  const period=await assertCompanyEntity(env,"accounting_periods",batch.period_id,companyId);
+
+  const requested=Array.isArray(body.entry_ids)?[...new Set(body.entry_ids.map(String))]:[];
+
+  let sql=`
+    SELECT id,entry_date,official_status,status
+    FROM journal_entries
+    WHERE company_id=? AND batch_id=? AND status='POSTED' AND official_status<>'INTEGRATED'
+  `;
+  const binds=[companyId,batchId];
+
+  if (requested.length) {
+    sql+=` AND id IN (${requested.map(()=>"?").join(",")})`;
+    binds.push(...requested);
+  }
+
+  const res=await env.DB.prepare(sql).bind(...binds).all();
+  const entries=res.results||[];
+
+  if (!entries.length) {
+    throw new HttpError(409,"Não há lançamentos contabilizados pendentes para integrar.","NOTHING_TO_INTEGRATE");
+  }
+
+  for (const e of entries) assertDateOpenInPeriod(period,e.entry_date);
+
+  const integrationId=uuid();
+
+  await env.DB.batch(entries.map(e=>env.DB.prepare(`
+    UPDATE journal_entries
+    SET official_status='INTEGRATED',
+        integrated_by=?,
+        integrated_at=CURRENT_TIMESTAMP,
+        integration_id=?,
+        unintegrated_by=NULL,
+        unintegrated_at=NULL,
+        updated_at=CURRENT_TIMESTAMP
+    WHERE id=? AND company_id=? AND status='POSTED'
+  `).bind(auth.user.id,integrationId,e.id,companyId)));
+
+  await audit(env,{
+    companyId,
+    userId:auth.user.id,
+    action:"INTEGRATE_OFFICIAL",
+    entity:"journal_batch",
+    entityId:batchId,
+    after:{integration_id:integrationId,entry_ids:entries.map(x=>x.id)},
+    request
+  });
+
+  return {
+    integration_id:integrationId,
+    integrated_count:entries.length,
+    batch:await getBatchDetails(env,companyId,batchId)
+  };
+}
+
+async function unintegrateBatchEntries(env, request, auth, companyId, batchId, body) {
+  await requirePermission(env, auth.user.id, companyId, "accounting.batch.manage");
+  await ensureAccountingPeriodSchema(env);
+  await ensureBatchIntegrationSchema(env);
+
+  const batch=await assertCompanyEntity(env,"journal_batches",batchId,companyId);
+  const period=await assertCompanyEntity(env,"accounting_periods",batch.period_id,companyId);
+
+  const requested=Array.isArray(body.entry_ids)?[...new Set(body.entry_ids.map(String))]:[];
+
+  if (!requested.length) {
+    throw new HttpError(400,"Selecione ao menos um lançamento integrado.","VALIDATION_ERROR");
+  }
+
+  const sql=`
+    SELECT id,entry_date
+    FROM journal_entries
+    WHERE company_id=? AND batch_id=? AND status='POSTED' AND official_status='INTEGRATED'
+      AND id IN (${requested.map(()=>"?").join(",")})
+  `;
+
+  const res=await env.DB.prepare(sql).bind(companyId,batchId,...requested).all();
+  const entries=res.results||[];
+
+  if (!entries.length) {
+    throw new HttpError(409,"Nenhum dos lançamentos selecionados está integrado ao Lote 0.","NOTHING_TO_UNINTEGRATE");
+  }
+
+  for (const e of entries) assertDateOpenInPeriod(period,e.entry_date);
+
+  await env.DB.batch(entries.map(e=>env.DB.prepare(`
+    UPDATE journal_entries
+    SET official_status='PENDING',
+        unintegrated_by=?,
+        unintegrated_at=CURRENT_TIMESTAMP,
+        updated_at=CURRENT_TIMESTAMP
+    WHERE id=? AND company_id=? AND official_status='INTEGRATED'
+  `).bind(auth.user.id,e.id,companyId)));
+
+  await audit(env,{
+    companyId,
+    userId:auth.user.id,
+    action:"UNINTEGRATE_OFFICIAL",
+    entity:"journal_batch",
+    entityId:batchId,
+    after:{entry_ids:entries.map(x=>x.id)},
+    request
+  });
+
+  return {
+    unintegrated_count:entries.length,
+    batch:await getBatchDetails(env,companyId,batchId)
+  };
+}
+
+async function listOfficialEntries(env, companyId, limit=300) {
+  await ensureBatchIntegrationSchema(env);
+
+  const res=await env.DB.prepare(`
+    SELECT
+      e.id,e.entry_date,e.document_number,e.description,e.total_debit_cents,e.total_credit_cents,
+      e.integrated_at,e.integration_id,b.code AS origin_batch_code,b.description AS origin_batch_description
+    FROM journal_entries e
+    JOIN journal_batches b ON b.id=e.batch_id
+    WHERE e.company_id=?
+      AND e.status='POSTED'
+      AND e.official_status='INTEGRATED'
+    ORDER BY e.entry_date DESC,e.integrated_at DESC
+    LIMIT ?
+  `).bind(companyId,Math.min(500,Math.max(1,Number(limit)||300))).all();
+
+  return (res.results||[]).map(x=>({
+    ...x,
+    total_debit:centsToMoney(x.total_debit_cents),
+    total_credit:centsToMoney(x.total_credit_cents)
+  }));
+}
+
 async function validateEntry(env, companyId, body) {
+  await ensureBatchIntegrationSchema(env);
   const batch=await assertCompanyEntity(env,"journal_batches",required(body.batch_id,"batch_id"),companyId);
   if (batch.status!=="OPEN") throw new HttpError(409,"O lote não está aberto.","BATCH_CLOSED");
   await ensureAccountingPeriodSchema(env);
@@ -1295,11 +1827,32 @@ async function createEntry(env, request, auth, companyId, body) {
 }
 
 async function listEntries(env, companyId, limit=100) {
-  const res=await env.DB.prepare(`SELECT e.id,e.entry_date,e.document_number,e.description,e.source_module,e.source_reference,e.status,e.total_debit_cents,e.total_credit_cents,e.created_at,e.posted_at,b.code AS batch_code,b.description AS batch_description,br.code AS branch_code,br.name AS branch_name FROM journal_entries e JOIN journal_batches b ON b.id=e.batch_id LEFT JOIN branches br ON br.id=e.branch_id WHERE e.company_id=? ORDER BY e.entry_date DESC,e.created_at DESC LIMIT ?`).bind(companyId,Math.min(500,Math.max(1,Number(limit)||100))).all();
-  return (res.results||[]).map(x=>({...x,total_debit:centsToMoney(x.total_debit_cents),total_credit:centsToMoney(x.total_credit_cents)}));
+  await ensureBatchIntegrationSchema(env);
+
+  const res=await env.DB.prepare(`
+    SELECT
+      e.id,e.entry_date,e.document_number,e.description,e.source_module,e.source_reference,e.status,
+      e.official_status,e.integration_id,e.integrated_at,
+      e.total_debit_cents,e.total_credit_cents,e.created_at,e.posted_at,
+      b.code AS batch_code,b.description AS batch_description,
+      br.code AS branch_code,br.name AS branch_name
+    FROM journal_entries e
+    JOIN journal_batches b ON b.id=e.batch_id
+    LEFT JOIN branches br ON br.id=e.branch_id
+    WHERE e.company_id=?
+    ORDER BY e.entry_date DESC,e.created_at DESC
+    LIMIT ?
+  `).bind(companyId,Math.min(500,Math.max(1,Number(limit)||100))).all();
+
+  return (res.results||[]).map(x=>({
+    ...x,
+    total_debit:centsToMoney(x.total_debit_cents),
+    total_credit:centsToMoney(x.total_credit_cents)
+  }));
 }
 
 async function getEntry(env, companyId, id) {
+  await ensureBatchIntegrationSchema(env);
   const entry=await env.DB.prepare("SELECT * FROM journal_entries WHERE id=? AND company_id=?").bind(id,companyId).first();
   if (!entry) throw new HttpError(404,"Lançamento não encontrado.","NOT_FOUND");
   const linesRes=await env.DB.prepare(`SELECT l.*,a.code AS account_code,a.name AS account_name,cc.code AS cost_center_code,cc.name AS cost_center_name,h.code AS history_code,h.description AS history_description FROM journal_lines l JOIN accounts a ON a.id=l.account_id LEFT JOIN cost_centers cc ON cc.id=l.cost_center_id LEFT JOIN history_templates h ON h.id=l.history_template_id WHERE l.entry_id=? AND l.company_id=? ORDER BY l.line_no`).bind(id,companyId).all();
@@ -1330,7 +1883,11 @@ async function voidEntry(env, request, auth, companyId, id, reason) {
   await requirePermission(env, auth.user.id, companyId, "accounting.entry.void");
   const before=await env.DB.prepare("SELECT * FROM journal_entries WHERE id=? AND company_id=?").bind(id,companyId).first();
   if (!before) throw new HttpError(404,"Lançamento não encontrado.","NOT_FOUND");
+  await ensureBatchIntegrationSchema(env);
   if (before.status!=="POSTED") throw new HttpError(409,"Somente lançamento contabilizado pode ser anulado.","INVALID_STATUS");
+  if (before.official_status==="INTEGRATED") {
+    throw new HttpError(409,"Este lançamento está no Lote 0. Desfaça a integração antes de anulá-lo.","ENTRY_IN_OFFICIAL_BATCH");
+  }
   if (!String(reason||"").trim()) throw new HttpError(400,"Informe o motivo da anulação.","VALIDATION_ERROR");
 
   await ensureAccountingPeriodSchema(env);
@@ -1704,8 +2261,36 @@ async function route(request, env) {
   if (p && method==="PATCH") return ok({period:await updatePeriod(env,request,auth,companyId,p.id,await readJson(request))});
   if (p && method==="DELETE") return ok(await deletePeriod(env,request,auth,companyId,p.id));
 
-  if (method==="GET" && path==="/api/journal-batches") { await requirePermission(env,auth.user.id,companyId,"accounting.batch.read"); return ok({batches:await listSimple(env,companyId,"journal_batches","id,period_id,code,description,start_date,end_date,status,created_at")}); }
+  if (method==="GET" && path==="/api/journal-batches") {
+    await requirePermission(env,auth.user.id,companyId,"accounting.batch.read");
+    return ok(await listBatchesDetailed(env,companyId));
+  }
   if (method==="POST" && path==="/api/journal-batches") return ok({batch:await createBatch(env,request,auth,companyId,await readJson(request))},201);
+
+  p=routeMatch(path,"/api/journal-batches/:id/lock");
+  if (p && method==="POST") return ok({batch:await setBatchLock(env,request,auth,companyId,p.id,true)});
+
+  p=routeMatch(path,"/api/journal-batches/:id/unlock");
+  if (p && method==="POST") return ok({batch:await setBatchLock(env,request,auth,companyId,p.id,false)});
+
+  p=routeMatch(path,"/api/journal-batches/:id/integrate");
+  if (p && method==="POST") return ok(await integrateBatchEntries(env,request,auth,companyId,p.id,await readJson(request)));
+
+  p=routeMatch(path,"/api/journal-batches/:id/unintegrate");
+  if (p && method==="POST") return ok(await unintegrateBatchEntries(env,request,auth,companyId,p.id,await readJson(request)));
+
+  p=routeMatch(path,"/api/journal-batches/:id");
+  if (p && method==="GET") {
+    await requirePermission(env,auth.user.id,companyId,"accounting.batch.read");
+    return ok({batch:await getBatchDetails(env,companyId,p.id)});
+  }
+  if (p && method==="PATCH") return ok({batch:await updateBatch(env,request,auth,companyId,p.id,await readJson(request))});
+  if (p && method==="DELETE") return ok(await deleteBatch(env,request,auth,companyId,p.id));
+
+  if (method==="GET" && path==="/api/official-entries") {
+    await requirePermission(env,auth.user.id,companyId,"accounting.entry.read");
+    return ok({entries:await listOfficialEntries(env,companyId,url.searchParams.get("limit"))});
+  }
 
   if (method==="GET" && path==="/api/journal-entries") { await requirePermission(env,auth.user.id,companyId,"accounting.entry.read"); return ok({entries:await listEntries(env,companyId,url.searchParams.get("limit"))}); }
   if (method==="POST" && path==="/api/journal-entries") return ok({entry:await createEntry(env,request,auth,companyId,await readJson(request))},201);
