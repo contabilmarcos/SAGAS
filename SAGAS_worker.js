@@ -1778,6 +1778,222 @@ async function migrateLegacyDraftEntries(env, companyId) {
   `).bind(companyId).run();
 }
 
+
+async function ensureEntryMaintenanceSchema(env) {
+  // Colunas de rastreabilidade de edição.
+  const info=await env.DB.prepare(`PRAGMA table_info(journal_entries)`).all();
+  const cols=new Set((info.results||[]).map(x=>x.name));
+
+  if (!cols.has("edited_by")) {
+    await env.DB.prepare(`ALTER TABLE journal_entries ADD COLUMN edited_by TEXT`).run();
+  }
+  if (!cols.has("edited_at")) {
+    await env.DB.prepare(`ALTER TABLE journal_entries ADD COLUMN edited_at TEXT`).run();
+  }
+
+  // Novas permissões. A migração de perfis ocorre somente quando a permissão
+  // é criada pela primeira vez, para não reatribuir algo removido depois pelo administrador.
+  const editExists=await env.DB.prepare(`SELECT id FROM permissions WHERE code='accounting.entry.edit'`).first();
+  if (!editExists) {
+    const editId=uuid();
+    await env.DB.batch([
+      env.DB.prepare(`
+        INSERT INTO permissions (id,code,module,description)
+        VALUES (?,'accounting.entry.edit','ACCOUNTING','Editar lançamentos contábeis')
+      `).bind(editId),
+      env.DB.prepare(`
+        INSERT OR IGNORE INTO role_permissions (role_id,permission_id)
+        SELECT rp.role_id, ?
+        FROM role_permissions rp
+        JOIN permissions pold ON pold.id=rp.permission_id
+        WHERE pold.code='accounting.entry.create'
+      `).bind(editId)
+    ]);
+  }
+
+  const deleteExists=await env.DB.prepare(`SELECT id FROM permissions WHERE code='accounting.entry.delete'`).first();
+  if (!deleteExists) {
+    const deleteId=uuid();
+    await env.DB.batch([
+      env.DB.prepare(`
+        INSERT INTO permissions (id,code,module,description)
+        VALUES (?,'accounting.entry.delete','ACCOUNTING','Excluir lançamentos contábeis')
+      `).bind(deleteId),
+      env.DB.prepare(`
+        INSERT OR IGNORE INTO role_permissions (role_id,permission_id)
+        SELECT rp.role_id, ?
+        FROM role_permissions rp
+        JOIN permissions pold ON pold.id=rp.permission_id
+        WHERE pold.code='accounting.entry.void'
+      `).bind(deleteId)
+    ]);
+  }
+}
+
+async function assertEntryCanBeMaintained(env, companyId, entry, actionLabel) {
+  await ensureBatchIntegrationSchema(env);
+  await ensureAccountingPeriodSchema(env);
+
+  if (entry.status!=="POSTED") {
+    throw new HttpError(409,`Somente lançamento contabilizado pode ser ${actionLabel}.`,"INVALID_STATUS");
+  }
+
+  if (entry.official_status==="INTEGRATED") {
+    throw new HttpError(
+      409,
+      `Este lançamento está no Lote 0. Desfaça a integração antes de ${actionLabel}.`,
+      "ENTRY_IN_OFFICIAL_BATCH"
+    );
+  }
+
+  const batch=await assertCompanyEntity(env,"journal_batches",entry.batch_id,companyId);
+  if (batch.status!=="OPEN") {
+    throw new HttpError(
+      409,
+      `O lote ${batch.code} não está aberto. Desbloqueie o lote antes de ${actionLabel}.`,
+      "BATCH_CLOSED"
+    );
+  }
+
+  const period=await assertCompanyEntity(env,"accounting_periods",batch.period_id,companyId);
+  assertDateOpenInPeriod(period,entry.entry_date);
+
+  return {batch,period};
+}
+
+async function entrySnapshot(env, companyId, id) {
+  return await getEntry(env,companyId,id);
+}
+
+async function updateEntry(env, request, auth, companyId, id, body) {
+  await ensureEntryMaintenanceSchema(env);
+  await requirePermission(env,auth.user.id,companyId,"accounting.entry.edit");
+
+  const before=await entrySnapshot(env,companyId,id);
+  await assertEntryCanBeMaintained(env,companyId,before,"editado");
+
+  // A mesma validação usada na inclusão: lote aberto, período aberto,
+  // débito=crédito, contas/CC/históricos válidos etc.
+  const v=await validateEntry(env,companyId,body);
+
+  const deleteAlloc=env.DB.prepare(`
+    DELETE FROM allocation_lines
+    WHERE company_id=?
+      AND journal_line_id IN (
+        SELECT id FROM journal_lines WHERE company_id=? AND entry_id=?
+      )
+  `).bind(companyId,companyId,id);
+
+  const deleteLines=env.DB.prepare(`
+    DELETE FROM journal_lines WHERE company_id=? AND entry_id=?
+  `).bind(companyId,id);
+
+  const stmts=[
+    deleteAlloc,
+    deleteLines,
+    env.DB.prepare(`
+      UPDATE journal_entries
+      SET batch_id=?,
+          branch_id=?,
+          entry_date=?,
+          document_number=?,
+          description=?,
+          total_debit_cents=?,
+          total_credit_cents=?,
+          edited_by=?,
+          edited_at=CURRENT_TIMESTAMP,
+          updated_at=CURRENT_TIMESTAMP
+      WHERE id=? AND company_id=?
+    `).bind(
+      v.batch.id,
+      body.branch_id||null,
+      v.date,
+      cleanText(body.document_number,120),
+      cleanText(body.description,1000),
+      v.debit,
+      v.credit,
+      auth.user.id,
+      id,
+      companyId
+    )
+  ];
+
+  for (const line of v.lines) {
+    stmts.push(
+      env.DB.prepare(`
+        INSERT INTO journal_lines
+          (id,company_id,entry_id,line_no,account_id,side,amount_cents,branch_id,cost_center_id,
+           history_template_id,history_complement,document_number)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+      `).bind(
+        line.id,companyId,id,line.line_no,line.account_id,line.side,line.amount_cents,
+        line.branch_id,line.cost_center_id,line.history_template_id,line.history_complement,line.document_number
+      )
+    );
+
+    for (const alloc of line.allocations) {
+      stmts.push(
+        env.DB.prepare(`
+          INSERT INTO allocation_lines
+            (id,company_id,journal_line_id,cost_center_id,amount_cents,percentage_basis_points)
+          VALUES (?,?,?,?,?,?)
+        `).bind(
+          alloc.id,companyId,line.id,alloc.cost_center_id,alloc.amount_cents,alloc.percentage_basis_points
+        )
+      );
+    }
+  }
+
+  await env.DB.batch(stmts);
+
+  const after=await entrySnapshot(env,companyId,id);
+
+  await audit(env,{
+    companyId,
+    userId:auth.user.id,
+    action:"UPDATE",
+    entity:"journal_entry",
+    entityId:id,
+    before,
+    after,
+    request
+  });
+
+  return after;
+}
+
+async function deleteEntry(env, request, auth, companyId, id) {
+  await ensureEntryMaintenanceSchema(env);
+  await requirePermission(env,auth.user.id,companyId,"accounting.entry.delete");
+
+  const before=await entrySnapshot(env,companyId,id);
+  await assertEntryCanBeMaintained(env,companyId,before,"excluído");
+
+  await env.DB.batch([
+    env.DB.prepare(`
+      DELETE FROM allocation_lines
+      WHERE company_id=?
+        AND journal_line_id IN (
+          SELECT id FROM journal_lines WHERE company_id=? AND entry_id=?
+        )
+    `).bind(companyId,companyId,id),
+    env.DB.prepare(`DELETE FROM journal_lines WHERE company_id=? AND entry_id=?`).bind(companyId,id),
+    env.DB.prepare(`DELETE FROM journal_entries WHERE company_id=? AND id=?`).bind(companyId,id)
+  ]);
+
+  await audit(env,{
+    companyId,
+    userId:auth.user.id,
+    action:"DELETE",
+    entity:"journal_entry",
+    entityId:id,
+    before,
+    request
+  });
+
+  return {deleted:true,id};
+}
+
 async function validateEntry(env, companyId, body) {
   await ensureBatchIntegrationSchema(env);
   const batch=await assertCompanyEntity(env,"journal_batches",required(body.batch_id,"batch_id"),companyId);
@@ -1937,7 +2153,11 @@ async function getEntry(env, companyId, id) {
   const lines=[];
   for (const row of (linesRes.results||[])) {
     const alloc=await env.DB.prepare(`SELECT al.*,cc.code AS cost_center_code,cc.name AS cost_center_name FROM allocation_lines al JOIN cost_centers cc ON cc.id=al.cost_center_id WHERE al.journal_line_id=? AND al.company_id=? ORDER BY cc.code`).bind(row.id,companyId).all();
-    lines.push({...row,amount:centsToMoney(row.amount_cents),allocations:alloc.results||[]});
+    lines.push({
+      ...row,
+      amount:centsToMoney(row.amount_cents),
+      allocations:(alloc.results||[]).map(a=>({...a,amount:centsToMoney(a.amount_cents)}))
+    });
   }
   return {...entry,total_debit:centsToMoney(entry.total_debit_cents),total_credit:centsToMoney(entry.total_credit_cents),lines};
 }
@@ -2290,6 +2510,7 @@ async function route(request, env) {
   if (method==="POST" && path==="/api/companies") return ok({company:await createCompany(env,request,auth,await readJson(request))},201);
 
   const companyId=await currentCompany(request,env,auth);
+  await ensureEntryMaintenanceSchema(env);
 
   if (method==="GET" && path==="/api/auth/permissions") return ok({permissions:await getEffectivePermissions(env,auth.user.id,companyId)});
 
@@ -2374,6 +2595,8 @@ async function route(request, env) {
   if (method==="POST" && path==="/api/journal-entries") return ok({entry:await createEntry(env,request,auth,companyId,await readJson(request))},201);
   p=routeMatch(path,"/api/journal-entries/:id");
   if (p && method==="GET") { await requirePermission(env,auth.user.id,companyId,"accounting.entry.read"); return ok({entry:await getEntry(env,companyId,p.id)}); }
+  if (p && method==="PATCH") return ok({entry:await updateEntry(env,request,auth,companyId,p.id,await readJson(request))});
+  if (p && method==="DELETE") return ok(await deleteEntry(env,request,auth,companyId,p.id));
   p=routeMatch(path,"/api/journal-entries/:id/post");
   if (p && method==="POST") return ok({entry:await postEntry(env,request,auth,companyId,p.id)});
   p=routeMatch(path,"/api/journal-entries/:id/void");
