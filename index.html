@@ -1120,7 +1120,7 @@ async function renderBatches(){
 }
 
 async function batchForm(item=null){
-  const p=(await periods()).filter(x=>x.status==='OPEN');
+  const p=(await periods()).filter(x=>x.status!=='LOCKED' && !(x.closed_until && x.closed_until>=x.end_date));
   const selectedPeriod=item?p.find(x=>x.id===item.period_id):null;
 
   openModal(
