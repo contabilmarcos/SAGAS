@@ -776,15 +776,83 @@ async function deleteAccount(env, request, auth, companyId, id) {
 }
 
 
+
+const COST_CENTER_MASK_WIDTHS=[2,2,3];
+const COST_CENTER_MASK_CUMULATIVE=[2,4,7];
+
+function parseCostCenterCodeMask(value) {
+  const raw=String(value??"").trim().replace(/\D/g,"");
+  const levelIndex=COST_CENTER_MASK_CUMULATIVE.indexOf(raw.length);
+  if (levelIndex<0) throw new HttpError(400,"Código inválido. Use a máscara 01.01.001. Você pode digitar somente os números; os pontos são automáticos.","INVALID_COST_CENTER_MASK");
+  let pos=0; const parts=[];
+  for (let i=0;i<=levelIndex;i++) { const width=COST_CENTER_MASK_WIDTHS[i]; parts.push(raw.slice(pos,pos+width)); pos+=width; }
+  const code=parts.join("."); const level=levelIndex+1;
+  return {raw,code,level,analytic:level===3,parentCode:level>1?parts.slice(0,-1).join("."):null};
+}
+
+async function resolveCostCenterParentFromMask(env, companyId, currentId, parsed) {
+  if (!parsed.parentCode) return null;
+  const parent=await env.DB.prepare(`SELECT * FROM cost_centers WHERE company_id=? AND code=? LIMIT 1`).bind(companyId,parsed.parentCode).first();
+  if (!parent) throw new HttpError(400,`Cadastre primeiro o centro de custo superior ${parsed.parentCode}.`,"MISSING_PARENT_COST_CENTER");
+  const parentMask=parseCostCenterCodeMask(parent.code);
+  if (parentMask.analytic) throw new HttpError(400,`O centro de custo ${parent.code} é analítico e não pode possuir centros abaixo dele.`,"INVALID_COST_CENTER_HIERARCHY");
+  if (currentId && parent.id===currentId) throw new HttpError(400,"Um centro de custo não pode ser superior dele mesmo.","INVALID_COST_CENTER_HIERARCHY");
+  return parent;
+}
+
+async function costCenterUsage(env, companyId, id) {
+  const line=await env.DB.prepare(`SELECT id FROM journal_lines WHERE company_id=? AND cost_center_id=? LIMIT 1`).bind(companyId,id).first();
+  const allocation=await env.DB.prepare(`SELECT id FROM allocation_lines WHERE company_id=? AND cost_center_id=? LIMIT 1`).bind(companyId,id).first();
+  return !!(line||allocation);
+}
+
+async function validateCostCenterForEntry(env, companyId, id) {
+  const cc=await assertCompanyEntity(env,"cost_centers",id,companyId);
+  const parsed=parseCostCenterCodeMask(cc.code);
+  if (!cc.active) throw new HttpError(400,`O centro de custo ${cc.code} está inativo.`,"INVALID_COST_CENTER");
+  if (!parsed.analytic) throw new HttpError(400,`O centro de custo ${cc.code} é sintético. Somente centros analíticos no padrão 01.01.001 podem receber lançamentos e rateios.`,"INVALID_COST_CENTER");
+  return cc;
+}
+
 async function createCostCenter(env, request, auth, companyId, body) {
   await requirePermission(env, auth.user.id, companyId, "accounting.cost_center.manage");
-  if (body.parent_id) await assertCompanyEntity(env,"cost_centers",body.parent_id,companyId);
+  const parsed=parseCostCenterCodeMask(required(body.code,"code"));
+  const parent=await resolveCostCenterParentFromMask(env,companyId,null,parsed);
+  const duplicate=await env.DB.prepare(`SELECT id FROM cost_centers WHERE company_id=? AND code=? LIMIT 1`).bind(companyId,parsed.code).first();
+  if (duplicate) throw new HttpError(400,`O centro de custo ${parsed.code} já existe.`,"DUPLICATE_COST_CENTER");
   const id=uuid();
-  await env.DB.prepare(`INSERT INTO cost_centers (id,company_id,code,name,parent_id,active) VALUES (?,?,?,?,?,?)`)
-    .bind(id,companyId,cleanText(required(body.code,"code"),80),cleanText(required(body.name,"name"),300),body.parent_id||null,bool01(body.active,1)).run();
+  await env.DB.prepare(`INSERT INTO cost_centers (id,company_id,code,name,parent_id,active) VALUES (?,?,?,?,?,?)`).bind(id,companyId,parsed.code,cleanText(required(body.name,"name"),300),parent?.id||null,bool01(body.active,1)).run();
   const row=await env.DB.prepare("SELECT * FROM cost_centers WHERE id=?").bind(id).first();
   await audit(env,{companyId,userId:auth.user.id,action:"CREATE",entity:"cost_center",entityId:id,after:row,request});
   return row;
+}
+
+async function updateCostCenter(env, request, auth, companyId, id, body) {
+  await requirePermission(env, auth.user.id, companyId, "accounting.cost_center.manage");
+  const before=await assertCompanyEntity(env,"cost_centers",id,companyId);
+  const parsed=parseCostCenterCodeMask(body.code ?? before.code);
+  const parent=await resolveCostCenterParentFromMask(env,companyId,id,parsed);
+  const duplicate=await env.DB.prepare(`SELECT id FROM cost_centers WHERE company_id=? AND code=? AND id<>? LIMIT 1`).bind(companyId,parsed.code,id).first();
+  if (duplicate) throw new HttpError(400,`O centro de custo ${parsed.code} já existe.`,"DUPLICATE_COST_CENTER");
+  const child=await env.DB.prepare(`SELECT id,code,name FROM cost_centers WHERE company_id=? AND parent_id=? LIMIT 1`).bind(companyId,id).first();
+  if (child && parsed.analytic) throw new HttpError(409,`Este centro possui o centro filho ${child.code} e deve permanecer sintético.`,"COST_CENTER_HAS_CHILDREN");
+  if (child && parsed.code!==before.code) throw new HttpError(409,"Um centro de custo que possui centros abaixo dele não pode ter o código alterado.","COST_CENTER_CODE_HAS_CHILDREN");
+  if (parsed.code!==before.code && await costCenterUsage(env,companyId,id)) throw new HttpError(409,"Este centro de custo já foi utilizado em lançamentos ou rateios. O código não pode mais ser alterado.","COST_CENTER_IN_USE");
+  await env.DB.prepare(`UPDATE cost_centers SET code=?,name=?,parent_id=?,active=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND company_id=?`).bind(parsed.code,cleanText(body.name ?? before.name,300),parent?.id||null,bool01(body.active,before.active),id,companyId).run();
+  const after=await env.DB.prepare("SELECT * FROM cost_centers WHERE id=?").bind(id).first();
+  await audit(env,{companyId,userId:auth.user.id,action:"UPDATE",entity:"cost_center",entityId:id,before,after,request});
+  return after;
+}
+
+async function deleteCostCenter(env, request, auth, companyId, id) {
+  await requirePermission(env, auth.user.id, companyId, "accounting.cost_center.manage");
+  const cc=await assertCompanyEntity(env,"cost_centers",id,companyId);
+  const child=await env.DB.prepare(`SELECT id,code,name FROM cost_centers WHERE company_id=? AND parent_id=? LIMIT 1`).bind(companyId,id).first();
+  if (child) throw new HttpError(409,`O centro de custo ${cc.code} possui centros abaixo dele. Exclua primeiro os centros filhos.`,"COST_CENTER_HAS_CHILDREN");
+  if (await costCenterUsage(env,companyId,id)) throw new HttpError(409,`O centro de custo ${cc.code} já foi utilizado em lançamentos ou rateios e não pode ser excluído. Inative-o.`,"COST_CENTER_IN_USE");
+  await env.DB.prepare(`DELETE FROM cost_centers WHERE id=? AND company_id=?`).bind(id,companyId).run();
+  await audit(env,{companyId,userId:auth.user.id,action:"DELETE",entity:"cost_center",entityId:id,before:cc,request});
+  return {deleted:true,id};
 }
 
 async function createHistory(env, request, auth, companyId, body) {
@@ -843,7 +911,7 @@ async function validateEntry(env, companyId, body) {
     if (!["D","C"].includes(side)) throw new HttpError(400,`lines[${i}].side deve ser D ou C.`,"VALIDATION_ERROR");
     const cents=moneyToCents(required(line.amount,`lines[${i}].amount`));
     if (cents<=0) throw new HttpError(400,"O valor da linha deve ser maior que zero.","VALIDATION_ERROR");
-    if (line.cost_center_id) await assertCompanyEntity(env,"cost_centers",line.cost_center_id,companyId);
+    if (line.cost_center_id) await validateCostCenterForEntry(env,companyId,line.cost_center_id);
     if (line.history_template_id) {
       const hist=await assertCompanyEntity(env,"history_templates",line.history_template_id,companyId);
       if (hist.complement_required && !String(line.history_complement||"").trim()) throw new HttpError(400,`A linha ${i+1} exige complemento de histórico.`,"VALIDATION_ERROR");
@@ -851,7 +919,7 @@ async function validateEntry(env, companyId, body) {
     const allocations=Array.isArray(line.allocations)?line.allocations:[];
     let allocTotal=0,bpTotal=0; const normAllocs=[];
     for (const alloc of allocations) {
-      await assertCompanyEntity(env,"cost_centers",required(alloc.cost_center_id,"allocation.cost_center_id"),companyId);
+      await validateCostCenterForEntry(env,companyId,required(alloc.cost_center_id,"allocation.cost_center_id"));
       const ac=moneyToCents(required(alloc.amount,"allocation.amount"));
       const bp=alloc.percentage_basis_points!=null?Number(alloc.percentage_basis_points):Math.round((ac/cents)*10000);
       if (ac<=0 || bp<=0 || bp>10000) throw new HttpError(400,"Rateio inválido.","VALIDATION_ERROR");
@@ -1264,6 +1332,9 @@ async function route(request, env) {
 
   if (method==="GET" && path==="/api/cost-centers") { await requirePermission(env,auth.user.id,companyId,"accounting.cost_center.read"); return ok({cost_centers:await listSimple(env,companyId,"cost_centers","id,code,name,parent_id,active")}); }
   if (method==="POST" && path==="/api/cost-centers") return ok({cost_center:await createCostCenter(env,request,auth,companyId,await readJson(request))},201);
+  p=routeMatch(path,"/api/cost-centers/:id");
+  if (p && method==="PATCH") return ok({cost_center:await updateCostCenter(env,request,auth,companyId,p.id,await readJson(request))});
+  if (p && method==="DELETE") return ok(await deleteCostCenter(env,request,auth,companyId,p.id));
 
   if (method==="GET" && path==="/api/history-templates") { await requirePermission(env,auth.user.id,companyId,"accounting.history.read"); return ok({history_templates:await listSimple(env,companyId,"history_templates","id,code,description,complement_required,active")}); }
   if (method==="POST" && path==="/api/history-templates") return ok({history_template:await createHistory(env,request,auth,companyId,await readJson(request))},201);
