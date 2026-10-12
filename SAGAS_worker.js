@@ -2923,16 +2923,22 @@ async function savePurchaseProduct(env,request,auth,companyId,id,body) {
   const unit=cleanText(required(body.unit,'unit'),20).toUpperCase();
   const purchaseUnit=cleanText(body.purchase_unit||unit,20)?.toUpperCase();
   const active=bool01(body.active,1), notes=cleanText(body.notes,1000);
+  const natureId=cleanText(body.budget_nature_id,80)||null;
+  if(natureId){
+    const nature=await env.DB.prepare(`SELECT id,active,synthetic_analytic FROM budget_natures WHERE id=? AND company_id=?`).bind(natureId,companyId).first();
+    if(!nature) throw new HttpError(404,'Natureza Orçamentária/Financeira não encontrada.','NOT_FOUND');
+    if(!nature.active||nature.synthetic_analytic!=='ANALYTIC') throw new HttpError(409,'A Natureza padrão do produto deve ser analítica e ativa.','INVALID_NATURE');
+  }
   if (id) {
     const before=await purchaseEntity(env,'purchase_products',id,companyId);
-    await env.DB.prepare(`UPDATE purchase_products SET code=?,description=?,item_type=?,unit=?,purchase_unit=?,notes=?,active=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND company_id=?`)
-      .bind(code,description,itemType,unit,purchaseUnit,notes,active,id,companyId).run();
+    await env.DB.prepare(`UPDATE purchase_products SET code=?,description=?,item_type=?,unit=?,purchase_unit=?,budget_nature_id=?,notes=?,active=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND company_id=?`)
+      .bind(code,description,itemType,unit,purchaseUnit,natureId,notes,active,id,companyId).run();
     const after=await purchaseEntity(env,'purchase_products',id,companyId);
     await audit(env,{companyId,userId:auth.user.id,action:'UPDATE',entity:'purchase_product',entityId:id,before,after,request}); return after;
   }
   const newId=uuid();
-  await env.DB.prepare(`INSERT INTO purchase_products (id,company_id,code,description,item_type,unit,purchase_unit,notes,active) VALUES (?,?,?,?,?,?,?,?,?)`)
-    .bind(newId,companyId,code,description,itemType,unit,purchaseUnit,notes,active).run();
+  await env.DB.prepare(`INSERT INTO purchase_products (id,company_id,code,description,item_type,unit,purchase_unit,budget_nature_id,notes,active) VALUES (?,?,?,?,?,?,?,?,?,?)`)
+    .bind(newId,companyId,code,description,itemType,unit,purchaseUnit,natureId,notes,active).run();
   const after=await purchaseEntity(env,'purchase_products',newId,companyId);
   await audit(env,{companyId,userId:auth.user.id,action:'CREATE',entity:'purchase_product',entityId:newId,after,request}); return after;
 }
@@ -2985,9 +2991,12 @@ async function deletePurchaseMaster(env,request,auth,companyId,type,id) {
 
 async function listPurchaseRequests(env,companyId) {
   const res=await env.DB.prepare(`
-    SELECT r.id,r.number,r.request_date,r.needed_date,r.requester_name,r.status,r.notes,r.created_at,
-           b.code AS branch_code,b.name AS branch_name,COUNT(i.id) AS item_count
-    FROM purchase_requests r LEFT JOIN branches b ON b.id=r.branch_id
+    SELECT r.id,r.number,r.request_date,r.needed_date,r.requester_name,r.status,r.notes,r.branch_id,r.movement_type_id,
+           b.code AS branch_code,b.name AS branch_name,mt.code AS movement_type_code,mt.name AS movement_type_name,
+           COUNT(i.id) AS item_count
+    FROM purchase_requests r
+    LEFT JOIN branches b ON b.id=r.branch_id
+    LEFT JOIN movement_types mt ON mt.id=r.movement_type_id
     LEFT JOIN purchase_request_items i ON i.request_id=r.id AND i.company_id=r.company_id
     WHERE r.company_id=? GROUP BY r.id ORDER BY r.request_date DESC,r.number DESC
   `).bind(companyId).all();
@@ -2995,57 +3004,107 @@ async function listPurchaseRequests(env,companyId) {
 }
 
 async function getPurchaseRequest(env,companyId,id) {
-  const req=await env.DB.prepare(`SELECT r.*,b.code AS branch_code,b.name AS branch_name,u.name AS created_by_name FROM purchase_requests r LEFT JOIN branches b ON b.id=r.branch_id LEFT JOIN users u ON u.id=r.created_by WHERE r.id=? AND r.company_id=?`).bind(id,companyId).first();
+  const req=await env.DB.prepare(`
+    SELECT r.*,b.code AS branch_code,b.name AS branch_name,u.name AS created_by_name,
+           mt.code AS movement_type_code,mt.name AS movement_type_name,mt.fetch_product_nature,mt.allow_edit_item_nature
+    FROM purchase_requests r
+    LEFT JOIN branches b ON b.id=r.branch_id
+    LEFT JOIN users u ON u.id=r.created_by
+    LEFT JOIN movement_types mt ON mt.id=r.movement_type_id
+    WHERE r.id=? AND r.company_id=?
+  `).bind(id,companyId).first();
   if(!req)throw new HttpError(404,'Solicitação não encontrada.','NOT_FOUND');
   const items=await env.DB.prepare(`
     SELECT i.*,p.code AS product_code,p.description AS product_description,p.item_type,p.unit AS product_unit,
+           n.code AS nature_code,n.description AS nature_description,
            cc.code AS cost_center_code,cc.name AS cost_center_name,l.code AS location_code,l.name AS location_name
-    FROM purchase_request_items i JOIN purchase_products p ON p.id=i.product_id
-    LEFT JOIN cost_centers cc ON cc.id=i.cost_center_id LEFT JOIN purchase_locations l ON l.id=i.location_id
+    FROM purchase_request_items i
+    JOIN purchase_products p ON p.id=i.product_id
+    LEFT JOIN budget_natures n ON n.id=i.budget_nature_id
+    LEFT JOIN cost_centers cc ON cc.id=i.cost_center_id
+    LEFT JOIN purchase_locations l ON l.id=i.location_id
     WHERE i.company_id=? AND i.request_id=? ORDER BY i.line_no
   `).bind(companyId,id).all();
   return {...req,items:(items.results||[]).map(x=>({...x,quantity:milliToQty(x.quantity_milli),ordered_qty:milliToQty(x.ordered_qty_milli),received_qty:milliToQty(x.received_qty_milli)}))};
 }
 
-async function validatePurchaseRequestItems(env,companyId,items) {
+async function validatePurchaseRequestItems(env,companyId,items,movementType) {
   if(!Array.isArray(items)||!items.length)throw new HttpError(400,'Inclua pelo menos um item na solicitação.','VALIDATION_ERROR');
   const out=[]; let no=1;
   for(const raw of items){
     const product=await purchaseEntity(env,'purchase_products',required(raw.product_id,'produto'),companyId);
     if(!product.active)throw new HttpError(409,`Produto/serviço ${product.code} está inativo.`,'INACTIVE_PRODUCT');
     let cc=null,loc=null;
-    if(raw.cost_center_id){ cc=await assertCompanyEntity(env,'cost_centers',raw.cost_center_id,companyId); if(!cc.active)throw new HttpError(409,'Centro de custo inativo.','INACTIVE_COST_CENTER'); }
-    if(raw.location_id){ loc=await purchaseEntity(env,'purchase_locations',raw.location_id,companyId); if(!loc.active)throw new HttpError(409,'Local de estoque inativo.','INACTIVE_LOCATION'); }
-    out.push({id:raw.id||uuid(),line_no:no++,product_id:product.id,description:cleanText(raw.description||product.description,500),quantity_milli:qtyToMilli(raw.quantity),unit:cleanText(raw.unit||product.purchase_unit||product.unit,20).toUpperCase(),cost_center_id:cc?.id||null,location_id:loc?.id||null,needed_date:raw.needed_date?isoDate(raw.needed_date,'data necessária do item'):null,notes:cleanText(raw.notes,1000)});
+    const ccId=raw.cost_center_id||movementType.default_cost_center_id||null;
+    const locId=raw.location_id||movementType.default_location_id||null;
+    if(ccId){ cc=await assertCompanyEntity(env,'cost_centers',ccId,companyId); if(!cc.active)throw new HttpError(409,'Centro de custo inativo.','INACTIVE_COST_CENTER'); }
+    if(locId){ loc=await purchaseEntity(env,'purchase_locations',locId,companyId); if(!loc.active)throw new HttpError(409,'Local de estoque inativo.','INACTIVE_LOCATION'); }
+
+    let natureId=cleanText(raw.budget_nature_id,80)||null;
+    if(movementType.fetch_product_nature && product.budget_nature_id) natureId=product.budget_nature_id;
+    if(!movementType.allow_edit_item_nature && product.budget_nature_id) natureId=product.budget_nature_id;
+    if(natureId){
+      const n=await env.DB.prepare(`SELECT id,active,synthetic_analytic FROM budget_natures WHERE id=? AND company_id=?`).bind(natureId,companyId).first();
+      if(!n||!n.active||n.synthetic_analytic!=='ANALYTIC') throw new HttpError(409,`Natureza Orçamentária/Financeira inválida no item ${product.code}.`,'INVALID_NATURE');
+    }
+    out.push({
+      id:raw.id||uuid(),line_no:no++,product_id:product.id,description:cleanText(raw.description||product.description,500),
+      quantity_milli:qtyToMilli(raw.quantity),unit:cleanText(raw.unit||product.purchase_unit||product.unit,20).toUpperCase(),
+      budget_nature_id:natureId,cost_center_id:cc?.id||null,location_id:loc?.id||null,
+      needed_date:raw.needed_date?isoDate(raw.needed_date,'data necessária do item'):null,notes:cleanText(raw.notes,1000)
+    });
   }
   return out;
 }
 
 async function createPurchaseRequest(env,request,auth,companyId,body) {
   await requirePermission(env,auth.user.id,companyId,'purchasing.request.manage');
+  const movementType=await getMovementType(env,companyId,required(body.movement_type_id,'Tipo de Movimento'));
+  if(!movementType.active) throw new HttpError(409,'O Tipo de Movimento está inativo.','INACTIVE_MOVEMENT_TYPE');
   const branchId=body.branch_id||null; if(branchId)await assertCompanyEntity(env,'branches',branchId,companyId);
-  const items=await validatePurchaseRequestItems(env,companyId,body.items);
-  const id=uuid(),number=await nextPurchaseNumber(env,companyId,'purchase_requests','SC-');
+  const items=await validatePurchaseRequestItems(env,companyId,body.items,movementType);
+  const id=uuid(),number=await nextMovementNumber(env,companyId,movementType.id);
   const requestDate=isoDate(body.request_date||new Date().toISOString().slice(0,10),'data da solicitação');
   const neededDate=body.needed_date?isoDate(body.needed_date,'data necessária'):null;
   const requester=cleanText(required(body.requester_name,'solicitante'),250),notes=cleanText(body.notes,2000);
-  const stmts=[env.DB.prepare(`INSERT INTO purchase_requests (id,company_id,number,branch_id,request_date,needed_date,requester_name,notes,status,created_by) VALUES (?,?,?,?,?,?,?,?, 'OPEN',?)`).bind(id,companyId,number,branchId,requestDate,neededDate,requester,notes,auth.user.id)];
-  for(const x of items)stmts.push(env.DB.prepare(`INSERT INTO purchase_request_items (id,company_id,request_id,line_no,product_id,description,quantity_milli,unit,cost_center_id,location_id,needed_date,notes) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`).bind(x.id,companyId,id,x.line_no,x.product_id,x.description,x.quantity_milli,x.unit,x.cost_center_id,x.location_id,x.needed_date,x.notes));
-  await env.DB.batch(stmts); const after=await getPurchaseRequest(env,companyId,id); await audit(env,{companyId,userId:auth.user.id,action:'CREATE',entity:'purchase_request',entityId:id,after:{number,status:'OPEN'},request}); return after;
+  const stmts=[env.DB.prepare(`
+    INSERT INTO purchase_requests
+      (id,company_id,number,branch_id,request_date,needed_date,requester_name,notes,status,created_by,movement_type_id)
+    VALUES (?,?,?,?,?,?,?,?, 'OPEN',?,?)
+  `).bind(id,companyId,number,branchId,requestDate,neededDate,requester,notes,auth.user.id,movementType.id)];
+  for(const x of items)stmts.push(env.DB.prepare(`
+    INSERT INTO purchase_request_items
+      (id,company_id,request_id,line_no,product_id,description,quantity_milli,unit,budget_nature_id,cost_center_id,location_id,needed_date,notes)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+  `).bind(x.id,companyId,id,x.line_no,x.product_id,x.description,x.quantity_milli,x.unit,x.budget_nature_id,x.cost_center_id,x.location_id,x.needed_date,x.notes));
+  await env.DB.batch(stmts);
+  const after=await getPurchaseRequest(env,companyId,id);
+  await audit(env,{companyId,userId:auth.user.id,action:'CREATE',entity:'purchase_request',entityId:id,after:{number,status:'OPEN',movement_type:movementType.code},request});
+  return after;
 }
 
 async function updatePurchaseRequest(env,request,auth,companyId,id,body) {
   await requirePermission(env,auth.user.id,companyId,'purchasing.request.manage');
   const before=await getPurchaseRequest(env,companyId,id); if(before.status!=='OPEN')throw new HttpError(409,'Somente solicitação aberta pode ser editada.','INVALID_STATUS');
+  const movementType=await getMovementType(env,companyId,body.movement_type_id||before.movement_type_id);
+  if(!movementType.active) throw new HttpError(409,'O Tipo de Movimento está inativo.','INACTIVE_MOVEMENT_TYPE');
   const branchId=body.branch_id||null; if(branchId)await assertCompanyEntity(env,'branches',branchId,companyId);
-  const items=await validatePurchaseRequestItems(env,companyId,body.items);
+  const items=await validatePurchaseRequestItems(env,companyId,body.items,movementType);
   const requestDate=isoDate(body.request_date||before.request_date,'data da solicitação'),neededDate=body.needed_date?isoDate(body.needed_date,'data necessária'):null;
   const stmts=[
     env.DB.prepare(`DELETE FROM purchase_request_items WHERE company_id=? AND request_id=?`).bind(companyId,id),
-    env.DB.prepare(`UPDATE purchase_requests SET branch_id=?,request_date=?,needed_date=?,requester_name=?,notes=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND company_id=?`).bind(branchId,requestDate,neededDate,cleanText(required(body.requester_name,'solicitante'),250),cleanText(body.notes,2000),id,companyId)
+    env.DB.prepare(`UPDATE purchase_requests SET branch_id=?,request_date=?,needed_date=?,requester_name=?,notes=?,movement_type_id=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND company_id=?`)
+      .bind(branchId,requestDate,neededDate,cleanText(required(body.requester_name,'solicitante'),250),cleanText(body.notes,2000),movementType.id,id,companyId)
   ];
-  for(const x of items)stmts.push(env.DB.prepare(`INSERT INTO purchase_request_items (id,company_id,request_id,line_no,product_id,description,quantity_milli,unit,cost_center_id,location_id,needed_date,notes) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`).bind(x.id,companyId,id,x.line_no,x.product_id,x.description,x.quantity_milli,x.unit,x.cost_center_id,x.location_id,x.needed_date,x.notes));
-  await env.DB.batch(stmts); const after=await getPurchaseRequest(env,companyId,id); await audit(env,{companyId,userId:auth.user.id,action:'UPDATE',entity:'purchase_request',entityId:id,before:{number:before.number},after:{number:after.number},request}); return after;
+  for(const x of items)stmts.push(env.DB.prepare(`
+    INSERT INTO purchase_request_items
+      (id,company_id,request_id,line_no,product_id,description,quantity_milli,unit,budget_nature_id,cost_center_id,location_id,needed_date,notes)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+  `).bind(x.id,companyId,id,x.line_no,x.product_id,x.description,x.quantity_milli,x.unit,x.budget_nature_id,x.cost_center_id,x.location_id,x.needed_date,x.notes));
+  await env.DB.batch(stmts);
+  const after=await getPurchaseRequest(env,companyId,id);
+  await audit(env,{companyId,userId:auth.user.id,action:'UPDATE',entity:'purchase_request',entityId:id,before:{number:before.number},after:{number:after.number},request});
+  return after;
 }
 
 async function setPurchaseRequestStatus(env,request,auth,companyId,id,target) {
@@ -3113,32 +3172,85 @@ async function cancelQuotation(env,request,auth,companyId,id) {
   await env.DB.batch([env.DB.prepare(`UPDATE purchase_quotations SET status='CANCELLED',updated_at=CURRENT_TIMESTAMP WHERE id=? AND company_id=?`).bind(id,companyId),env.DB.prepare(`UPDATE purchase_requests SET status='RELEASED',updated_at=CURRENT_TIMESTAMP WHERE id=? AND company_id=? AND status='QUOTING'`).bind(q.request_id,companyId)]); await audit(env,{companyId,userId:auth.user.id,action:'CANCEL',entity:'purchase_quotation',entityId:id,request}); return getQuotation(env,companyId,id);
 }
 
-async function generateOrdersFromQuotation(env,request,auth,companyId,id) {
+async function generateOrdersFromQuotation(env,request,auth,companyId,id,body={}) {
   await requirePermission(env,auth.user.id,companyId,'purchasing.order.manage');
   const q=await getQuotation(env,companyId,id); if(q.status!=='OPEN')throw new HttpError(409,'A cotação não está aberta para geração de ordem.','INVALID_STATUS');
+  const destType=await assertMovementDestination(env,companyId,q.request.movement_type_id,required(body.movement_type_id,'Tipo de Movimento destino'));
   const selected=q.proposals.filter(x=>Number(x.selected)===1&&x.unit_price_cents!=null); const allItems=q.request.items;
   const selectedMap=new Map(selected.map(x=>[x.request_item_id,x])); const missing=allItems.filter(x=>!selectedMap.has(x.id)); if(missing.length)throw new HttpError(409,`Selecione o fornecedor vencedor de todos os ${allItems.length} itens antes de gerar as ordens.`,'MISSING_WINNERS');
   const supplierConfig=new Map(q.suppliers.map(x=>[x.supplier_id,x])),groups=new Map();
   for(const item of allItems){const p=selectedMap.get(item.id);if(!groups.has(p.supplier_id))groups.set(p.supplier_id,[]);groups.get(p.supplier_id).push({item,proposal:p});}
   const created=[];
   for(const [supplierId,rows] of groups){
-    const oid=uuid(),number=await nextPurchaseNumber(env,companyId,'purchase_orders','OC-'),sc=supplierConfig.get(supplierId)||{};
-    const stmts=[env.DB.prepare(`INSERT INTO purchase_orders (id,company_id,number,quotation_id,request_id,supplier_id,branch_id,order_date,expected_delivery,payment_terms,freight_cents,notes,status,created_by) VALUES (?,?,?,?,?,?,?,?,?,?,?,?, 'OPEN',?)`).bind(oid,companyId,number,q.id,q.request_id,supplierId,q.branch_id,new Date().toISOString().slice(0,10),q.expected_delivery||null,sc.payment_terms||null,Number(sc.freight_cents||0),q.notes||null,auth.user.id)];
-    for(const row of rows){const total=Math.round(Number(row.item.quantity_milli)*Number(row.proposal.unit_price_cents)/1000);stmts.push(env.DB.prepare(`INSERT INTO purchase_order_items (id,company_id,order_id,request_item_id,product_id,description,quantity_milli,unit,unit_price_cents,total_cents,cost_center_id,location_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`).bind(uuid(),companyId,oid,row.item.id,row.item.product_id,row.item.description,row.item.quantity_milli,row.item.unit,row.proposal.unit_price_cents,total,row.item.cost_center_id,row.item.location_id));stmts.push(env.DB.prepare(`UPDATE purchase_request_items SET ordered_qty_milli=ordered_qty_milli+? WHERE id=? AND company_id=?`).bind(row.item.quantity_milli,row.item.id,companyId));}
-    await env.DB.batch(stmts); created.push({id:oid,number,supplier_id:supplierId});
+    const oid=uuid(),number=await nextMovementNumber(env,companyId,destType.id),sc=supplierConfig.get(supplierId)||{};
+    const stmts=[env.DB.prepare(`
+      INSERT INTO purchase_orders
+      (id,company_id,number,quotation_id,request_id,supplier_id,branch_id,order_date,expected_delivery,payment_terms,freight_cents,notes,status,created_by,movement_type_id)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?, 'OPEN',?,?)
+    `).bind(oid,companyId,number,q.id,q.request_id,supplierId,q.branch_id,new Date().toISOString().slice(0,10),q.expected_delivery||null,sc.payment_terms||null,Number(sc.freight_cents||0),q.notes||null,auth.user.id,destType.id)];
+    for(const row of rows){
+      const total=Math.round(Number(row.item.quantity_milli)*Number(row.proposal.unit_price_cents)/1000);
+      stmts.push(env.DB.prepare(`
+        INSERT INTO purchase_order_items
+        (id,company_id,order_id,request_item_id,product_id,description,quantity_milli,unit,unit_price_cents,total_cents,budget_nature_id,cost_center_id,location_id)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+      `).bind(uuid(),companyId,oid,row.item.id,row.item.product_id,row.item.description,row.item.quantity_milli,row.item.unit,row.proposal.unit_price_cents,total,row.item.budget_nature_id||null,row.item.cost_center_id,row.item.location_id));
+      stmts.push(env.DB.prepare(`UPDATE purchase_request_items SET ordered_qty_milli=ordered_qty_milli+? WHERE id=? AND company_id=?`).bind(row.item.quantity_milli,row.item.id,companyId));
+    }
+    await env.DB.batch(stmts); created.push({id:oid,number,supplier_id:supplierId,movement_type_id:destType.id,movement_type_code:destType.code});
   }
-  await env.DB.batch([env.DB.prepare(`UPDATE purchase_quotations SET status='ORDERED',updated_at=CURRENT_TIMESTAMP WHERE id=? AND company_id=?`).bind(id,companyId),env.DB.prepare(`UPDATE purchase_requests SET status='ORDERED',updated_at=CURRENT_TIMESTAMP WHERE id=? AND company_id=?`).bind(q.request_id,companyId)]);
-  await audit(env,{companyId,userId:auth.user.id,action:'GENERATE_ORDERS',entity:'purchase_quotation',entityId:id,after:{orders:created.map(x=>x.number)},request}); return {orders:created};
+  await env.DB.batch([
+    env.DB.prepare(`UPDATE purchase_quotations SET status='ORDERED',updated_at=CURRENT_TIMESTAMP WHERE id=? AND company_id=?`).bind(id,companyId),
+    env.DB.prepare(`UPDATE purchase_requests SET status='ORDERED',updated_at=CURRENT_TIMESTAMP WHERE id=? AND company_id=?`).bind(q.request_id,companyId)
+  ]);
+  await audit(env,{companyId,userId:auth.user.id,action:'GENERATE_ORDERS',entity:'purchase_quotation',entityId:id,after:{movement_type:destType.code,orders:created.map(x=>x.number)},request});
+  return {orders:created};
 }
 
 async function listOrders(env,companyId) {
-  const r=await env.DB.prepare(`SELECT o.id,o.number,o.order_date,o.expected_delivery,o.status,o.freight_cents,s.code AS supplier_code,s.name AS supplier_name,q.number AS quotation_number,r.number AS request_number,COUNT(i.id) AS item_count,COALESCE(SUM(i.total_cents),0)+o.freight_cents AS total_cents FROM purchase_orders o JOIN purchase_suppliers s ON s.id=o.supplier_id LEFT JOIN purchase_quotations q ON q.id=o.quotation_id LEFT JOIN purchase_requests r ON r.id=o.request_id LEFT JOIN purchase_order_items i ON i.order_id=o.id AND i.company_id=o.company_id WHERE o.company_id=? GROUP BY o.id ORDER BY o.order_date DESC,o.number DESC`).bind(companyId).all(); return (r.results||[]).map(x=>({...x,freight:centsToMoney(x.freight_cents),total:centsToMoney(x.total_cents),item_count:Number(x.item_count||0)}));
+  const r=await env.DB.prepare(`
+    SELECT o.id,o.number,o.order_date,o.expected_delivery,o.status,o.freight_cents,o.movement_type_id,
+           mt.code AS movement_type_code,mt.name AS movement_type_name,
+           s.code AS supplier_code,s.name AS supplier_name,q.number AS quotation_number,r.number AS request_number,
+           COUNT(i.id) AS item_count,COALESCE(SUM(i.total_cents),0)+o.freight_cents AS total_cents
+    FROM purchase_orders o
+    JOIN purchase_suppliers s ON s.id=o.supplier_id
+    LEFT JOIN movement_types mt ON mt.id=o.movement_type_id
+    LEFT JOIN purchase_quotations q ON q.id=o.quotation_id
+    LEFT JOIN purchase_requests r ON r.id=o.request_id
+    LEFT JOIN purchase_order_items i ON i.order_id=o.id AND i.company_id=o.company_id
+    WHERE o.company_id=? GROUP BY o.id ORDER BY o.order_date DESC,o.number DESC
+  `).bind(companyId).all();
+  return (r.results||[]).map(x=>({...x,freight:centsToMoney(x.freight_cents),total:centsToMoney(x.total_cents),item_count:Number(x.item_count||0)}));
 }
 
 async function getOrder(env,companyId,id) {
-  const o=await env.DB.prepare(`SELECT o.*,s.code AS supplier_code,s.name AS supplier_name,s.tax_id,s.email,s.phone,q.number AS quotation_number,r.number AS request_number,b.code AS branch_code,b.name AS branch_name,u.name AS created_by_name FROM purchase_orders o JOIN purchase_suppliers s ON s.id=o.supplier_id LEFT JOIN purchase_quotations q ON q.id=o.quotation_id LEFT JOIN purchase_requests r ON r.id=o.request_id LEFT JOIN branches b ON b.id=o.branch_id LEFT JOIN users u ON u.id=o.created_by WHERE o.id=? AND o.company_id=?`).bind(id,companyId).first(); if(!o)throw new HttpError(404,'Ordem de compra não encontrada.','NOT_FOUND');
-  const items=await env.DB.prepare(`SELECT i.*,p.code AS product_code,p.item_type,cc.code AS cost_center_code,cc.name AS cost_center_name,l.code AS location_code,l.name AS location_name FROM purchase_order_items i JOIN purchase_products p ON p.id=i.product_id LEFT JOIN cost_centers cc ON cc.id=i.cost_center_id LEFT JOIN purchase_locations l ON l.id=i.location_id WHERE i.company_id=? AND i.order_id=? ORDER BY i.created_at`).bind(companyId,id).all();
-  const arr=(items.results||[]).map(x=>({...x,quantity:milliToQty(x.quantity_milli),received_qty:milliToQty(x.received_qty_milli),remaining_qty:milliToQty(Math.max(0,x.quantity_milli-x.received_qty_milli)),unit_price:centsToMoney(x.unit_price_cents),total:centsToMoney(x.total_cents)})); return {...o,freight:centsToMoney(o.freight_cents),items:arr,total:centsToMoney(arr.reduce((s,x)=>s+x.total_cents,Number(o.freight_cents||0)))};
+  const o=await env.DB.prepare(`
+    SELECT o.*,s.code AS supplier_code,s.name AS supplier_name,s.tax_id,s.email,s.phone,
+           q.number AS quotation_number,r.number AS request_number,b.code AS branch_code,b.name AS branch_name,
+           u.name AS created_by_name,mt.code AS movement_type_code,mt.name AS movement_type_name
+    FROM purchase_orders o
+    JOIN purchase_suppliers s ON s.id=o.supplier_id
+    LEFT JOIN purchase_quotations q ON q.id=o.quotation_id
+    LEFT JOIN purchase_requests r ON r.id=o.request_id
+    LEFT JOIN branches b ON b.id=o.branch_id
+    LEFT JOIN users u ON u.id=o.created_by
+    LEFT JOIN movement_types mt ON mt.id=o.movement_type_id
+    WHERE o.id=? AND o.company_id=?
+  `).bind(id,companyId).first();
+  if(!o)throw new HttpError(404,'Ordem de compra não encontrada.','NOT_FOUND');
+  const items=await env.DB.prepare(`
+    SELECT i.*,p.code AS product_code,p.item_type,n.code AS nature_code,n.description AS nature_description,
+           cc.code AS cost_center_code,cc.name AS cost_center_name,l.code AS location_code,l.name AS location_name
+    FROM purchase_order_items i
+    JOIN purchase_products p ON p.id=i.product_id
+    LEFT JOIN budget_natures n ON n.id=i.budget_nature_id
+    LEFT JOIN cost_centers cc ON cc.id=i.cost_center_id
+    LEFT JOIN purchase_locations l ON l.id=i.location_id
+    WHERE i.company_id=? AND i.order_id=? ORDER BY i.created_at
+  `).bind(companyId,id).all();
+  const arr=(items.results||[]).map(x=>({...x,quantity:milliToQty(x.quantity_milli),received_qty:milliToQty(x.received_qty_milli),remaining_qty:milliToQty(Math.max(0,x.quantity_milli-x.received_qty_milli)),unit_price:centsToMoney(x.unit_price_cents),total:centsToMoney(x.total_cents)}));
+  return {...o,freight:centsToMoney(o.freight_cents),items:arr,total:centsToMoney(arr.reduce((s,x)=>s+x.total_cents,Number(o.freight_cents||0)))};
 }
 
 async function cancelOrder(env,request,auth,companyId,id) {
@@ -3148,12 +3260,46 @@ async function cancelOrder(env,request,auth,companyId,id) {
 }
 
 async function listReceipts(env,companyId) {
-  const r=await env.DB.prepare(`SELECT rec.id,rec.number,rec.receipt_date,rec.document_number,rec.created_at,o.number AS order_number,s.code AS supplier_code,s.name AS supplier_name,COUNT(ri.id) AS item_count FROM purchase_receipts rec JOIN purchase_orders o ON o.id=rec.order_id JOIN purchase_suppliers s ON s.id=o.supplier_id LEFT JOIN purchase_receipt_items ri ON ri.receipt_id=rec.id AND ri.company_id=rec.company_id WHERE rec.company_id=? GROUP BY rec.id ORDER BY rec.receipt_date DESC,rec.number DESC`).bind(companyId).all(); return (r.results||[]).map(x=>({...x,item_count:Number(x.item_count||0)}));
+  const r=await env.DB.prepare(`
+    SELECT rec.id,rec.number,rec.receipt_date,rec.document_number,rec.created_at,rec.movement_type_id,
+           mt.code AS movement_type_code,mt.name AS movement_type_name,
+           o.number AS order_number,s.code AS supplier_code,s.name AS supplier_name,COUNT(ri.id) AS item_count
+    FROM purchase_receipts rec
+    JOIN purchase_orders o ON o.id=rec.order_id
+    JOIN purchase_suppliers s ON s.id=o.supplier_id
+    LEFT JOIN movement_types mt ON mt.id=rec.movement_type_id
+    LEFT JOIN purchase_receipt_items ri ON ri.receipt_id=rec.id AND ri.company_id=rec.company_id
+    WHERE rec.company_id=? GROUP BY rec.id ORDER BY rec.receipt_date DESC,rec.number DESC
+  `).bind(companyId).all();
+  return (r.results||[]).map(x=>({...x,item_count:Number(x.item_count||0)}));
 }
 
 async function getReceipt(env,companyId,id) {
-  const rec=await env.DB.prepare(`SELECT rec.*,o.number AS order_number,s.code AS supplier_code,s.name AS supplier_name,u.name AS created_by_name FROM purchase_receipts rec JOIN purchase_orders o ON o.id=rec.order_id JOIN purchase_suppliers s ON s.id=o.supplier_id LEFT JOIN users u ON u.id=rec.created_by WHERE rec.id=? AND rec.company_id=?`).bind(id,companyId).first(); if(!rec)throw new HttpError(404,'Recebimento não encontrado.','NOT_FOUND');
-  const items=await env.DB.prepare(`SELECT ri.*,oi.description,oi.unit,p.code AS product_code,l.code AS location_code,l.name AS location_name FROM purchase_receipt_items ri JOIN purchase_order_items oi ON oi.id=ri.order_item_id JOIN purchase_products p ON p.id=oi.product_id LEFT JOIN purchase_locations l ON l.id=oi.location_id WHERE ri.company_id=? AND ri.receipt_id=?`).bind(companyId,id).all();
+  const rec=await env.DB.prepare(`
+    SELECT rec.*,o.number AS order_number,s.code AS supplier_code,s.name AS supplier_name,u.name AS created_by_name,
+           mt.code AS movement_type_code,mt.name AS movement_type_name,
+           ev.code AS accounting_event_code,ev.name AS accounting_event_name,
+           jb.code AS accounting_batch_code,jb.description AS accounting_batch_description
+    FROM purchase_receipts rec
+    JOIN purchase_orders o ON o.id=rec.order_id
+    JOIN purchase_suppliers s ON s.id=o.supplier_id
+    LEFT JOIN users u ON u.id=rec.created_by
+    LEFT JOIN movement_types mt ON mt.id=rec.movement_type_id
+    LEFT JOIN movement_accounting_events ev ON ev.id=rec.accounting_event_id
+    LEFT JOIN journal_batches jb ON jb.id=rec.accounting_batch_id
+    WHERE rec.id=? AND rec.company_id=?
+  `).bind(id,companyId).first();
+  if(!rec)throw new HttpError(404,'Recebimento não encontrado.','NOT_FOUND');
+  const items=await env.DB.prepare(`
+    SELECT ri.*,oi.description,oi.unit,p.code AS product_code,n.code AS nature_code,n.description AS nature_description,
+           l.code AS location_code,l.name AS location_name
+    FROM purchase_receipt_items ri
+    JOIN purchase_order_items oi ON oi.id=ri.order_item_id
+    JOIN purchase_products p ON p.id=oi.product_id
+    LEFT JOIN budget_natures n ON n.id=oi.budget_nature_id
+    LEFT JOIN purchase_locations l ON l.id=oi.location_id
+    WHERE ri.company_id=? AND ri.receipt_id=?
+  `).bind(companyId,id).all();
   const integrations=await receiptIntegrationLinks(env,companyId,id);
   return {...rec,items:(items.results||[]).map(x=>({...x,quantity:milliToQty(x.quantity_milli)})),integrations};
 }
@@ -3168,6 +3314,7 @@ async function createReceipt(env,request,auth,companyId,body) {
   await requirePermission(env,auth.user.id,companyId,'purchasing.receipt.manage');
   const order=await purchaseEntity(env,'purchase_orders',required(body.order_id,'ordem de compra'),companyId);
   if(!['OPEN','PARTIAL'].includes(order.status))throw new HttpError(409,'A ordem não está aberta para recebimento.','INVALID_STATUS');
+  const movementType=await assertMovementDestination(env,companyId,order.movement_type_id,required(body.movement_type_id,'Tipo de Movimento destino'));
   const orderDetails=await getOrder(env,companyId,order.id),map=new Map(orderDetails.items.map(x=>[x.id,x]));
   const rows=Array.isArray(body.items)?body.items:[];
   if(!rows.length)throw new HttpError(400,'Informe ao menos um item recebido.','VALIDATION_ERROR');
@@ -3176,34 +3323,64 @@ async function createReceipt(env,request,auth,companyId,body) {
     const oi=map.get(raw.order_item_id);if(!oi)continue;
     const q=qtyToMilli(raw.quantity,'quantidade recebida'),remaining=oi.quantity_milli-oi.received_qty_milli;
     if(q>remaining)throw new HttpError(409,`Quantidade recebida de ${oi.description} excede o saldo da ordem.`,'QUANTITY_EXCEEDED');
+    if(oi.item_type==='PRODUCT'&&movementType.stock_effect!=='NONE'&&!oi.location_id)
+      throw new HttpError(409,`O item ${oi.description} precisa de Local de Estoque para este Tipo de Movimento.`,'LOCATION_REQUIRED');
     valid.push({oi,q});
   }
   if(!valid.length)throw new HttpError(400,'Nenhuma quantidade de recebimento válida.','VALIDATION_ERROR');
 
   const selected=new Map(valid.map(x=>[x.oi.id,x.q]));
   const willComplete=orderDetails.items.every(x=>Number(x.received_qty_milli)+(selected.get(x.id)||0)>=Number(x.quantity_milli));
-  const rid=uuid(),number=await nextPurchaseNumber(env,companyId,'purchase_receipts','REC-'),date=isoDate(body.receipt_date||new Date().toISOString().slice(0,10),'data do recebimento'),doc=cleanText(body.document_number,120);
-  const integration=await prepareReceiptIntegrations(env,auth,companyId,{order,orderDetails,valid,receiptId:rid,receiptNumber:number,receiptDate:date,documentNumber:doc,dueDate:body.due_date||null,willComplete});
+  const rid=uuid(),number=await nextMovementNumber(env,companyId,movementType.id);
+  const date=isoDate(body.receipt_date||new Date().toISOString().slice(0,10),'data do recebimento'),doc=cleanText(body.document_number,120);
 
-  const stmts=[env.DB.prepare(`INSERT INTO purchase_receipts (id,company_id,number,order_id,receipt_date,document_number,notes,created_by) VALUES (?,?,?,?,?,?,?,?)`).bind(rid,companyId,number,order.id,date,doc,cleanText(body.notes,2000),auth.user.id)];
+  let eventId=movementType.accounting_event_id||null;
+  if(movementType.allow_edit_accounting_event && body.accounting_event_id!==undefined) eventId=cleanText(body.accounting_event_id,80)||null;
+  if(eventId){
+    const ev=await getMovementAccountingEvent(env,companyId,eventId);
+    if(!ev.active) throw new HttpError(409,'O Evento Contábil selecionado está inativo.','INACTIVE_ACCOUNTING_EVENT');
+  }
+  if(movementType.require_accounting_event&&!eventId) throw new HttpError(409,'O Tipo de Movimento exige Evento Contábil.','ACCOUNTING_EVENT_REQUIRED');
+
+  const batchId=eventId?(cleanText(body.accounting_batch_id,80)||null):null;
+  const integration=await prepareReceiptIntegrationsRM(env,auth,companyId,{
+    movementType,eventId,batchId,order,orderDetails,valid,receiptId:rid,receiptNumber:number,
+    receiptDate:date,documentNumber:doc,dueDate:body.due_date||null,willComplete
+  });
+
+  const stmts=[env.DB.prepare(`
+    INSERT INTO purchase_receipts
+      (id,company_id,number,order_id,receipt_date,document_number,notes,created_by,movement_type_id,
+       accounting_event_id,accounting_batch_id,generate_financial,stock_effect)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+  `).bind(rid,companyId,number,order.id,date,doc,cleanText(body.notes,2000),auth.user.id,movementType.id,eventId,batchId,movementType.generate_financial?1:0,movementType.stock_effect)];
+
   for(const {oi,q} of valid){
     stmts.push(env.DB.prepare(`INSERT INTO purchase_receipt_items (id,company_id,receipt_id,order_item_id,quantity_milli) VALUES (?,?,?,?,?)`).bind(uuid(),companyId,rid,oi.id,q));
     stmts.push(env.DB.prepare(`UPDATE purchase_order_items SET received_qty_milli=received_qty_milli+? WHERE id=? AND company_id=?`).bind(q,oi.id,companyId));
     if(oi.request_item_id)stmts.push(env.DB.prepare(`UPDATE purchase_request_items SET received_qty_milli=received_qty_milli+? WHERE id=? AND company_id=?`).bind(q,oi.request_item_id,companyId));
-    if(oi.item_type==='PRODUCT'&&oi.location_id){
-      const bal=await env.DB.prepare(`SELECT id FROM stock_balances WHERE company_id=? AND product_id=? AND location_id=?`).bind(companyId,oi.product_id,oi.location_id).first();
-      if(bal)stmts.push(env.DB.prepare(`UPDATE stock_balances SET quantity_milli=quantity_milli+?,updated_at=CURRENT_TIMESTAMP WHERE id=?`).bind(q,bal.id));
-      else stmts.push(env.DB.prepare(`INSERT INTO stock_balances (id,company_id,product_id,location_id,quantity_milli) VALUES (?,?,?,?,?)`).bind(uuid(),companyId,oi.product_id,oi.location_id,q));
-      stmts.push(env.DB.prepare(`INSERT INTO stock_movements (id,company_id,product_id,location_id,movement_date,movement_type,quantity_milli,source_type,source_id) VALUES (?,?,?,?,?,'PURCHASE_RECEIPT',?,'PURCHASE_RECEIPT',?)`).bind(uuid(),companyId,oi.product_id,oi.location_id,date,q,rid));
+
+    if(oi.item_type==='PRODUCT'&&oi.location_id&&movementType.stock_effect!=='NONE'){
+      const sign=movementType.stock_effect==='OUT'?-1:1;
+      const delta=q*sign;
+      const bal=await env.DB.prepare(`SELECT id,quantity_milli FROM stock_balances WHERE company_id=? AND product_id=? AND location_id=?`).bind(companyId,oi.product_id,oi.location_id).first();
+      if(sign<0 && Number(bal?.quantity_milli||0)<q) throw new HttpError(409,`Saldo insuficiente para movimentar ${oi.description}.`,'INSUFFICIENT_STOCK');
+      if(bal)stmts.push(env.DB.prepare(`UPDATE stock_balances SET quantity_milli=quantity_milli+?,updated_at=CURRENT_TIMESTAMP WHERE id=?`).bind(delta,bal.id));
+      else if(sign>0)stmts.push(env.DB.prepare(`INSERT INTO stock_balances (id,company_id,product_id,location_id,quantity_milli) VALUES (?,?,?,?,?)`).bind(uuid(),companyId,oi.product_id,oi.location_id,q));
+      stmts.push(env.DB.prepare(`
+        INSERT INTO stock_movements
+        (id,company_id,product_id,location_id,movement_date,movement_type,quantity_milli,source_type,source_id)
+        VALUES (?,?,?,?,?,?,?,?,?)
+      `).bind(uuid(),companyId,oi.product_id,oi.location_id,date,movementType.code,delta,'PURCHASE_MOVEMENT',rid));
     }
   }
   stmts.push(...integration.stmts);
   stmts.push(env.DB.prepare(`UPDATE purchase_orders SET status=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND company_id=?`).bind(willComplete?'RECEIVED':'PARTIAL',order.id,companyId));
   await env.DB.batch(stmts);
   await refreshRequestFulfillment(env,companyId,order.request_id);
-  if(integration.meta.journal_entry)await audit(env,{companyId,userId:auth.user.id,action:'CREATE_POSTED',entity:'journal_entry',entityId:integration.meta.journal_entry.id,after:{source:'PURCHASE_RECEIPT',receipt:number},request});
+  if(integration.meta.journal_entry)await audit(env,{companyId,userId:auth.user.id,action:'CREATE_POSTED',entity:'journal_entry',entityId:integration.meta.journal_entry.id,after:{source:'PURCHASE_MOVEMENT',receipt:number,movement_type:movementType.code},request});
   if(integration.meta.payable)await audit(env,{companyId,userId:auth.user.id,action:'CREATE',entity:'financial_payable',entityId:integration.meta.payable.id,after:integration.meta.payable,request});
-  await audit(env,{companyId,userId:auth.user.id,action:'RECEIVE',entity:'purchase_order',entityId:order.id,after:{receipt:number,integrations:integration.meta},request});
+  await audit(env,{companyId,userId:auth.user.id,action:'RECEIVE',entity:'purchase_order',entityId:order.id,after:{receipt:number,movement_type:movementType.code,integrations:integration.meta},request});
   const receipt=await getReceipt(env,companyId,rid);
   return {...receipt,integration_created:integration.meta};
 }
@@ -3212,6 +3389,589 @@ async function listStockBalances(env,companyId) {
   const r=await env.DB.prepare(`SELECT sb.id,p.code AS product_code,p.description,p.unit,l.code AS location_code,l.name AS location_name,sb.quantity_milli,sb.updated_at FROM stock_balances sb JOIN purchase_products p ON p.id=sb.product_id JOIN purchase_locations l ON l.id=sb.location_id WHERE sb.company_id=? ORDER BY p.code,l.code`).bind(companyId).all(); return (r.results||[]).map(x=>({...x,quantity:milliToQty(x.quantity_milli)}));
 }
 
+
+
+
+// ===== rm-purchasing-reference-model.js =====
+// Estrutura funcional baseada nas entidades observadas no RM:
+// TTMV/TITMTMV/TTMVEXT/TTMVFATURAMENTO,
+// TTBORCAMENTO/TTBORCAMENTOCONT,
+// TEVENTOSCONT/TITMEVC e TMOV/TITMMOV.
+
+const RM_PURCHASE_PERMISSION_DEFS=[
+  ["purchasing.movement_type.read","Consultar tipos de movimento"],
+  ["purchasing.movement_type.manage","Gerenciar tipos de movimento"],
+  ["purchasing.nature.read","Consultar naturezas orçamentárias/financeiras"],
+  ["purchasing.nature.manage","Gerenciar naturezas orçamentárias/financeiras"],
+  ["purchasing.accounting_event.read","Consultar eventos contábeis de movimentos"],
+  ["purchasing.accounting_event.manage","Gerenciar eventos contábeis de movimentos"]
+];
+
+async function ensureTableColumn(env,table,column,definition){
+  const info=await env.DB.prepare(`PRAGMA table_info(${table})`).all();
+  const names=new Set((info.results||[]).map(x=>x.name));
+  if(!names.has(column)) await env.DB.prepare(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`).run();
+}
+
+async function ensureRmPurchasingSchema(env){
+  await env.DB.batch([
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS budget_natures (
+      id TEXT PRIMARY KEY,
+      company_id TEXT NOT NULL,
+      code TEXT NOT NULL,
+      description TEXT NOT NULL,
+      synthetic_analytic TEXT NOT NULL DEFAULT 'ANALYTIC',
+      active INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(company_id,code)
+    )`),
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS budget_nature_accounts (
+      id TEXT PRIMARY KEY,
+      company_id TEXT NOT NULL,
+      nature_id TEXT NOT NULL,
+      side TEXT NOT NULL,
+      account_id TEXT NOT NULL,
+      percentage REAL NOT NULL DEFAULT 100,
+      branch_id TEXT,
+      cost_center_id TEXT,
+      history_template_id TEXT,
+      history_complement TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )`),
+    env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_budget_nature_accounts_nature ON budget_nature_accounts(company_id,nature_id,side)`),
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS movement_accounting_events (
+      id TEXT PRIMARY KEY,
+      company_id TEXT NOT NULL,
+      code TEXT NOT NULL,
+      name TEXT NOT NULL,
+      process TEXT,
+      use_percentage INTEGER NOT NULL DEFAULT 1,
+      active INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(company_id,code)
+    )`),
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS movement_accounting_event_items (
+      id TEXT PRIMARY KEY,
+      company_id TEXT NOT NULL,
+      event_id TEXT NOT NULL,
+      line_no INTEGER NOT NULL,
+      side TEXT NOT NULL,
+      incidence TEXT NOT NULL DEFAULT 'TOTAL',
+      account_origin TEXT NOT NULL DEFAULT 'FIXED',
+      account_id TEXT,
+      percentage REAL NOT NULL DEFAULT 100,
+      branch_id TEXT,
+      cost_center_id TEXT,
+      history_template_id TEXT,
+      history_complement TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(event_id,line_no)
+    )`),
+    env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_movement_event_items_event ON movement_accounting_event_items(company_id,event_id,line_no)`),
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS movement_types (
+      id TEXT PRIMARY KEY,
+      company_id TEXT NOT NULL,
+      code TEXT NOT NULL,
+      name TEXT NOT NULL,
+      initial_status TEXT,
+      accounting_event_id TEXT,
+      require_accounting_event INTEGER NOT NULL DEFAULT 0,
+      allow_edit_accounting_event INTEGER NOT NULL DEFAULT 0,
+      fetch_product_nature INTEGER NOT NULL DEFAULT 1,
+      allow_edit_item_nature INTEGER NOT NULL DEFAULT 1,
+      generate_financial INTEGER NOT NULL DEFAULT 0,
+      stock_effect TEXT NOT NULL DEFAULT 'NONE',
+      default_cost_center_id TEXT,
+      default_location_id TEXT,
+      active INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(company_id,code)
+    )`),
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS movement_type_destinations (
+      id TEXT PRIMARY KEY,
+      company_id TEXT NOT NULL,
+      source_type_id TEXT NOT NULL,
+      destination_type_id TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(company_id,source_type_id,destination_type_id)
+    )`),
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS movement_type_sequences (
+      company_id TEXT NOT NULL,
+      movement_type_id TEXT NOT NULL,
+      last_number INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY(company_id,movement_type_id)
+    )`)
+  ]);
+
+  await ensureTableColumn(env,'purchase_products','budget_nature_id','TEXT');
+  await ensureTableColumn(env,'purchase_requests','movement_type_id','TEXT');
+  await ensureTableColumn(env,'purchase_request_items','budget_nature_id','TEXT');
+  await ensureTableColumn(env,'purchase_orders','movement_type_id','TEXT');
+  await ensureTableColumn(env,'purchase_order_items','budget_nature_id','TEXT');
+  await ensureTableColumn(env,'purchase_receipts','movement_type_id','TEXT');
+  await ensureTableColumn(env,'purchase_receipts','accounting_event_id','TEXT');
+  await ensureTableColumn(env,'purchase_receipts','accounting_batch_id','TEXT');
+  await ensureTableColumn(env,'purchase_receipts','generate_financial','INTEGER NOT NULL DEFAULT 0');
+  await ensureTableColumn(env,'purchase_receipts','stock_effect','TEXT NOT NULL DEFAULT "NONE"');
+
+  for(const [code,description] of RM_PURCHASE_PERMISSION_DEFS){
+    const exists=await env.DB.prepare(`SELECT id FROM permissions WHERE code=?`).bind(code).first();
+    if(!exists) await env.DB.prepare(`INSERT INTO permissions (id,code,module,description) VALUES (?,?,'PURCHASES',?)`).bind(uuid(),code,description).run();
+  }
+  await env.DB.prepare(`
+    INSERT OR IGNORE INTO role_permissions (role_id,permission_id)
+    SELECT r.id,p.id FROM roles r CROSS JOIN permissions p
+    WHERE r.code='ADMIN' AND p.code IN (
+      'purchasing.movement_type.read','purchasing.movement_type.manage',
+      'purchasing.nature.read','purchasing.nature.manage',
+      'purchasing.accounting_event.read','purchasing.accounting_event.manage'
+    )
+  `).run();
+}
+
+async function getMovementType(env,companyId,id){
+  if(!id) throw new HttpError(400,'Informe o Tipo de Movimento.','VALIDATION_ERROR');
+  const x=await env.DB.prepare(`
+    SELECT mt.*,e.code AS accounting_event_code,e.name AS accounting_event_name,
+           cc.code AS default_cost_center_code,cc.name AS default_cost_center_name,
+           pl.code AS default_location_code,pl.name AS default_location_name
+    FROM movement_types mt
+    LEFT JOIN movement_accounting_events e ON e.id=mt.accounting_event_id
+    LEFT JOIN cost_centers cc ON cc.id=mt.default_cost_center_id
+    LEFT JOIN purchase_locations pl ON pl.id=mt.default_location_id
+    WHERE mt.id=? AND mt.company_id=?
+  `).bind(id,companyId).first();
+  if(!x) throw new HttpError(404,'Tipo de Movimento não encontrado.','NOT_FOUND');
+  return x;
+}
+
+async function listMovementTypes(env,companyId){
+  const r=await env.DB.prepare(`
+    SELECT mt.*,e.code AS accounting_event_code,e.name AS accounting_event_name
+    FROM movement_types mt
+    LEFT JOIN movement_accounting_events e ON e.id=mt.accounting_event_id
+    WHERE mt.company_id=? ORDER BY mt.code
+  `).bind(companyId).all();
+  return r.results||[];
+}
+
+async function getMovementTypeDetails(env,companyId,id){
+  const movement_type=await getMovementType(env,companyId,id);
+  const d=await env.DB.prepare(`
+    SELECT mt.id,mt.code,mt.name
+    FROM movement_type_destinations rel
+    JOIN movement_types mt ON mt.id=rel.destination_type_id
+    WHERE rel.company_id=? AND rel.source_type_id=?
+    ORDER BY mt.code
+  `).bind(companyId,id).all();
+  return {...movement_type,destinations:d.results||[]};
+}
+
+async function saveMovementType(env,request,auth,companyId,id,body){
+  await requirePermission(env,auth.user.id,companyId,'purchasing.movement_type.manage');
+  const code=cleanText(required(body.code,'código do Tipo de Movimento'),30);
+  const name=cleanText(required(body.name,'nome do Tipo de Movimento'),300);
+  const eventId=cleanText(body.accounting_event_id,80)||null;
+  if(eventId){
+    const e=await env.DB.prepare(`SELECT id,active FROM movement_accounting_events WHERE id=? AND company_id=?`).bind(eventId,companyId).first();
+    if(!e) throw new HttpError(404,'Evento Contábil não encontrado.','NOT_FOUND');
+    if(!e.active) throw new HttpError(409,'O Evento Contábil selecionado está inativo.','INACTIVE_ACCOUNTING_EVENT');
+  }
+  const defaultCc=cleanText(body.default_cost_center_id,80)||null;
+  if(defaultCc){
+    const cc=await assertCompanyEntity(env,'cost_centers',defaultCc,companyId);
+    if(!cc.active) throw new HttpError(409,'Centro de custo padrão está inativo.','INACTIVE_COST_CENTER');
+  }
+  const defaultLoc=cleanText(body.default_location_id,80)||null;
+  if(defaultLoc){
+    const loc=await purchaseEntity(env,'purchase_locations',defaultLoc,companyId);
+    if(!loc.active) throw new HttpError(409,'Local de estoque padrão está inativo.','INACTIVE_LOCATION');
+  }
+  const stockEffect=['NONE','IN','OUT'].includes(String(body.stock_effect||'NONE').toUpperCase())?String(body.stock_effect||'NONE').toUpperCase():'NONE';
+  const vals=[
+    code,name,cleanText(body.initial_status,40),
+    eventId,bool01(body.require_accounting_event,0),bool01(body.allow_edit_accounting_event,0),
+    bool01(body.fetch_product_nature,1),bool01(body.allow_edit_item_nature,1),
+    bool01(body.generate_financial,0),stockEffect,defaultCc,defaultLoc,bool01(body.active,1)
+  ];
+  let target=id;
+  if(id){
+    await getMovementType(env,companyId,id);
+    await env.DB.prepare(`
+      UPDATE movement_types SET code=?,name=?,initial_status=?,accounting_event_id=?,require_accounting_event=?,
+      allow_edit_accounting_event=?,fetch_product_nature=?,allow_edit_item_nature=?,generate_financial=?,
+      stock_effect=?,default_cost_center_id=?,default_location_id=?,active=?,updated_at=CURRENT_TIMESTAMP
+      WHERE id=? AND company_id=?
+    `).bind(...vals,id,companyId).run();
+  }else{
+    target=uuid();
+    await env.DB.prepare(`
+      INSERT INTO movement_types
+      (id,company_id,code,name,initial_status,accounting_event_id,require_accounting_event,
+       allow_edit_accounting_event,fetch_product_nature,allow_edit_item_nature,generate_financial,
+       stock_effect,default_cost_center_id,default_location_id,active)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    `).bind(target,companyId,...vals).run();
+  }
+
+  const destIds=[...new Set((Array.isArray(body.destination_type_ids)?body.destination_type_ids:[]).filter(Boolean))];
+  const stmts=[env.DB.prepare(`DELETE FROM movement_type_destinations WHERE company_id=? AND source_type_id=?`).bind(companyId,target)];
+  for(const did of destIds){
+    if(did===target) continue;
+    const d=await getMovementType(env,companyId,did);
+    if(!d.active) throw new HttpError(409,`Tipo de Movimento destino ${d.code} está inativo.`,'INACTIVE_MOVEMENT_TYPE');
+    stmts.push(env.DB.prepare(`INSERT OR IGNORE INTO movement_type_destinations (id,company_id,source_type_id,destination_type_id) VALUES (?,?,?,?)`).bind(uuid(),companyId,target,did));
+  }
+  await env.DB.batch(stmts);
+  const after=await getMovementTypeDetails(env,companyId,target);
+  await audit(env,{companyId,userId:auth.user.id,action:id?'UPDATE':'CREATE',entity:'movement_type',entityId:target,after,request});
+  return after;
+}
+
+async function deleteMovementType(env,request,auth,companyId,id){
+  await requirePermission(env,auth.user.id,companyId,'purchasing.movement_type.manage');
+  const before=await getMovementType(env,companyId,id);
+  const used=await env.DB.prepare(`
+    SELECT 1 FROM purchase_requests WHERE company_id=? AND movement_type_id=?
+    UNION ALL SELECT 1 FROM purchase_orders WHERE company_id=? AND movement_type_id=?
+    UNION ALL SELECT 1 FROM purchase_receipts WHERE company_id=? AND movement_type_id=?
+    LIMIT 1
+  `).bind(companyId,id,companyId,id,companyId,id).first();
+  if(used){
+    await env.DB.prepare(`UPDATE movement_types SET active=0,updated_at=CURRENT_TIMESTAMP WHERE id=? AND company_id=?`).bind(id,companyId).run();
+    await audit(env,{companyId,userId:auth.user.id,action:'INACTIVATE',entity:'movement_type',entityId:id,before,request});
+    return {inactivated:true,id};
+  }
+  await env.DB.batch([
+    env.DB.prepare(`DELETE FROM movement_type_destinations WHERE company_id=? AND (source_type_id=? OR destination_type_id=?)`).bind(companyId,id,id),
+    env.DB.prepare(`DELETE FROM movement_type_sequences WHERE company_id=? AND movement_type_id=?`).bind(companyId,id),
+    env.DB.prepare(`DELETE FROM movement_types WHERE company_id=? AND id=?`).bind(companyId,id)
+  ]);
+  await audit(env,{companyId,userId:auth.user.id,action:'DELETE',entity:'movement_type',entityId:id,before,request});
+  return {deleted:true,id};
+}
+
+async function listBudgetNatures(env,companyId){
+  const r=await env.DB.prepare(`
+    SELECT n.*,
+      (SELECT COUNT(*) FROM budget_nature_accounts a WHERE a.company_id=n.company_id AND a.nature_id=n.id) AS default_count
+    FROM budget_natures n WHERE n.company_id=? ORDER BY n.code
+  `).bind(companyId).all();
+  return r.results||[];
+}
+
+async function getBudgetNature(env,companyId,id){
+  const n=await env.DB.prepare(`SELECT * FROM budget_natures WHERE id=? AND company_id=?`).bind(id,companyId).first();
+  if(!n) throw new HttpError(404,'Natureza Orçamentária/Financeira não encontrada.','NOT_FOUND');
+  const r=await env.DB.prepare(`
+    SELECT a.*,ac.code AS account_code,ac.name AS account_name,
+           b.code AS branch_code,b.name AS branch_name,cc.code AS cost_center_code,cc.name AS cost_center_name,
+           h.code AS history_code,h.description AS history_description
+    FROM budget_nature_accounts a
+    JOIN accounts ac ON ac.id=a.account_id
+    LEFT JOIN branches b ON b.id=a.branch_id
+    LEFT JOIN cost_centers cc ON cc.id=a.cost_center_id
+    LEFT JOIN history_templates h ON h.id=a.history_template_id
+    WHERE a.company_id=? AND a.nature_id=?
+    ORDER BY a.side,a.created_at
+  `).bind(companyId,id).all();
+  return {...n,defaults:r.results||[]};
+}
+
+async function validateDefaultPercentage(rows,label){
+  const bySide={D:0,C:0};
+  for(const x of rows) bySide[x.side]=(bySide[x.side]||0)+Number(x.percentage||0);
+  for(const side of ['D','C']){
+    if(bySide[side]&&Math.abs(bySide[side]-100)>0.0001)
+      throw new HttpError(400,`${label}: o percentual dos defaults de ${side==='D'?'débito':'crédito'} deve totalizar 100%.`,'INVALID_PERCENTAGE');
+  }
+}
+
+async function saveBudgetNature(env,request,auth,companyId,id,body){
+  await requirePermission(env,auth.user.id,companyId,'purchasing.nature.manage');
+  const code=cleanText(required(body.code,'código da natureza'),50),description=cleanText(required(body.description,'descrição da natureza'),500);
+  const sa=String(body.synthetic_analytic||'ANALYTIC').toUpperCase()==='SYNTHETIC'?'SYNTHETIC':'ANALYTIC';
+  const defaults=Array.isArray(body.defaults)?body.defaults:[];
+  const normalized=[];
+  for(const raw of defaults){
+    const side=String(raw.side||'').toUpperCase();
+    if(!['D','C'].includes(side)) throw new HttpError(400,'Default contábil com débito/crédito inválido.','VALIDATION_ERROR');
+    const account=await assertAnalyticActiveAccount(env,companyId,required(raw.account_id,'conta contábil do default'),'a conta contábil do default');
+    const pct=Number(raw.percentage??100);
+    if(!Number.isFinite(pct)||pct<=0||pct>100) throw new HttpError(400,'Percentual de default inválido.','INVALID_PERCENTAGE');
+    if(raw.branch_id) await assertCompanyEntity(env,'branches',raw.branch_id,companyId);
+    if(raw.cost_center_id) await assertCompanyEntity(env,'cost_centers',raw.cost_center_id,companyId);
+    if(raw.history_template_id) await assertCompanyEntity(env,'history_templates',raw.history_template_id,companyId);
+    normalized.push({side,account_id:account.id,percentage:pct,branch_id:raw.branch_id||null,cost_center_id:raw.cost_center_id||null,history_template_id:raw.history_template_id||null,history_complement:cleanText(raw.history_complement,1000)});
+  }
+  await validateDefaultPercentage(normalized,'Natureza Orçamentária/Financeira');
+  let target=id;
+  if(id){
+    await getBudgetNature(env,companyId,id);
+    await env.DB.prepare(`UPDATE budget_natures SET code=?,description=?,synthetic_analytic=?,active=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND company_id=?`).bind(code,description,sa,bool01(body.active,1),id,companyId).run();
+  }else{
+    target=uuid();
+    await env.DB.prepare(`INSERT INTO budget_natures (id,company_id,code,description,synthetic_analytic,active) VALUES (?,?,?,?,?,?)`).bind(target,companyId,code,description,sa,bool01(body.active,1)).run();
+  }
+  const stmts=[env.DB.prepare(`DELETE FROM budget_nature_accounts WHERE company_id=? AND nature_id=?`).bind(companyId,target)];
+  for(const x of normalized) stmts.push(env.DB.prepare(`
+    INSERT INTO budget_nature_accounts
+      (id,company_id,nature_id,side,account_id,percentage,branch_id,cost_center_id,history_template_id,history_complement)
+    VALUES (?,?,?,?,?,?,?,?,?,?)
+  `).bind(uuid(),companyId,target,x.side,x.account_id,x.percentage,x.branch_id,x.cost_center_id,x.history_template_id,x.history_complement));
+  await env.DB.batch(stmts);
+  const after=await getBudgetNature(env,companyId,target);
+  await audit(env,{companyId,userId:auth.user.id,action:id?'UPDATE':'CREATE',entity:'budget_nature',entityId:target,after,request});
+  return after;
+}
+
+async function deleteBudgetNature(env,request,auth,companyId,id){
+  await requirePermission(env,auth.user.id,companyId,'purchasing.nature.manage');
+  const before=await getBudgetNature(env,companyId,id);
+  const used=await env.DB.prepare(`
+    SELECT 1 FROM purchase_products WHERE company_id=? AND budget_nature_id=?
+    UNION ALL SELECT 1 FROM purchase_request_items WHERE company_id=? AND budget_nature_id=?
+    UNION ALL SELECT 1 FROM purchase_order_items WHERE company_id=? AND budget_nature_id=?
+    LIMIT 1
+  `).bind(companyId,id,companyId,id,companyId,id).first();
+  if(used){
+    await env.DB.prepare(`UPDATE budget_natures SET active=0,updated_at=CURRENT_TIMESTAMP WHERE id=? AND company_id=?`).bind(id,companyId).run();
+    await audit(env,{companyId,userId:auth.user.id,action:'INACTIVATE',entity:'budget_nature',entityId:id,before,request});
+    return {inactivated:true,id};
+  }
+  await env.DB.batch([
+    env.DB.prepare(`DELETE FROM budget_nature_accounts WHERE company_id=? AND nature_id=?`).bind(companyId,id),
+    env.DB.prepare(`DELETE FROM budget_natures WHERE company_id=? AND id=?`).bind(companyId,id)
+  ]);
+  await audit(env,{companyId,userId:auth.user.id,action:'DELETE',entity:'budget_nature',entityId:id,before,request});
+  return {deleted:true,id};
+}
+
+async function listMovementAccountingEvents(env,companyId){
+  const r=await env.DB.prepare(`
+    SELECT e.*,(SELECT COUNT(*) FROM movement_accounting_event_items i WHERE i.company_id=e.company_id AND i.event_id=e.id) AS item_count
+    FROM movement_accounting_events e WHERE e.company_id=? ORDER BY e.code
+  `).bind(companyId).all();
+  return r.results||[];
+}
+
+async function getMovementAccountingEvent(env,companyId,id){
+  const e=await env.DB.prepare(`SELECT * FROM movement_accounting_events WHERE id=? AND company_id=?`).bind(id,companyId).first();
+  if(!e) throw new HttpError(404,'Evento Contábil não encontrado.','NOT_FOUND');
+  const r=await env.DB.prepare(`
+    SELECT i.*,a.code AS account_code,a.name AS account_name,b.code AS branch_code,b.name AS branch_name,
+           cc.code AS cost_center_code,cc.name AS cost_center_name,h.code AS history_code,h.description AS history_description
+    FROM movement_accounting_event_items i
+    LEFT JOIN accounts a ON a.id=i.account_id
+    LEFT JOIN branches b ON b.id=i.branch_id
+    LEFT JOIN cost_centers cc ON cc.id=i.cost_center_id
+    LEFT JOIN history_templates h ON h.id=i.history_template_id
+    WHERE i.company_id=? AND i.event_id=? ORDER BY i.line_no
+  `).bind(companyId,id).all();
+  return {...e,items:r.results||[]};
+}
+
+async function saveMovementAccountingEvent(env,request,auth,companyId,id,body){
+  await requirePermission(env,auth.user.id,companyId,'purchasing.accounting_event.manage');
+  const code=cleanText(required(body.code,'código do evento'),40),name=cleanText(required(body.name,'nome do evento'),300);
+  const rawItems=Array.isArray(body.items)?body.items:[];
+  if(!rawItems.length) throw new HttpError(400,'Inclua ao menos um item no Evento Contábil.','VALIDATION_ERROR');
+  const items=[];let no=1;
+  for(const raw of rawItems){
+    const side=String(raw.side||'').toUpperCase();
+    if(!['D','C'].includes(side)) throw new HttpError(400,'Tipo de lançamento do evento inválido.','VALIDATION_ERROR');
+    const incidence=String(raw.incidence||'TOTAL').toUpperCase();
+    if(!['TOTAL','ITEM','ITEMS','FREIGHT'].includes(incidence)) throw new HttpError(400,'Incidência do evento inválida.','VALIDATION_ERROR');
+    const origin=String(raw.account_origin||'FIXED').toUpperCase();
+    if(!['FIXED','NATURE'].includes(origin)) throw new HttpError(400,'Origem da conta do evento inválida.','VALIDATION_ERROR');
+    let accountId=null;
+    if(origin==='FIXED') accountId=(await assertAnalyticActiveAccount(env,companyId,required(raw.account_id,'conta fixa do evento'),'a conta fixa do evento')).id;
+    if(origin==='NATURE'&&incidence!=='ITEM') throw new HttpError(400,'Quando a origem da conta for Natureza do item, a incidência deve ser Item.','VALIDATION_ERROR');
+    const pct=Number(raw.percentage??100);
+    if(!Number.isFinite(pct)||pct<=0||pct>100) throw new HttpError(400,'Percentual do evento inválido.','INVALID_PERCENTAGE');
+    if(raw.branch_id) await assertCompanyEntity(env,'branches',raw.branch_id,companyId);
+    if(raw.cost_center_id) await assertCompanyEntity(env,'cost_centers',raw.cost_center_id,companyId);
+    if(raw.history_template_id) await assertCompanyEntity(env,'history_templates',raw.history_template_id,companyId);
+    items.push({line_no:no++,side,incidence,account_origin:origin,account_id:accountId,percentage:pct,branch_id:raw.branch_id||null,cost_center_id:raw.cost_center_id||null,history_template_id:raw.history_template_id||null,history_complement:cleanText(raw.history_complement,1000)});
+  }
+  let target=id;
+  if(id){
+    await getMovementAccountingEvent(env,companyId,id);
+    await env.DB.prepare(`UPDATE movement_accounting_events SET code=?,name=?,process=?,use_percentage=?,active=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND company_id=?`).bind(code,name,cleanText(body.process,120),bool01(body.use_percentage,1),bool01(body.active,1),id,companyId).run();
+  }else{
+    target=uuid();
+    await env.DB.prepare(`INSERT INTO movement_accounting_events (id,company_id,code,name,process,use_percentage,active) VALUES (?,?,?,?,?,?,?)`).bind(target,companyId,code,name,cleanText(body.process,120),bool01(body.use_percentage,1),bool01(body.active,1)).run();
+  }
+  const stmts=[env.DB.prepare(`DELETE FROM movement_accounting_event_items WHERE company_id=? AND event_id=?`).bind(companyId,target)];
+  for(const x of items) stmts.push(env.DB.prepare(`
+    INSERT INTO movement_accounting_event_items
+      (id,company_id,event_id,line_no,side,incidence,account_origin,account_id,percentage,branch_id,cost_center_id,history_template_id,history_complement)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+  `).bind(uuid(),companyId,target,x.line_no,x.side,x.incidence,x.account_origin,x.account_id,x.percentage,x.branch_id,x.cost_center_id,x.history_template_id,x.history_complement));
+  await env.DB.batch(stmts);
+  const after=await getMovementAccountingEvent(env,companyId,target);
+  await audit(env,{companyId,userId:auth.user.id,action:id?'UPDATE':'CREATE',entity:'movement_accounting_event',entityId:target,after,request});
+  return after;
+}
+
+async function deleteMovementAccountingEvent(env,request,auth,companyId,id){
+  await requirePermission(env,auth.user.id,companyId,'purchasing.accounting_event.manage');
+  const before=await getMovementAccountingEvent(env,companyId,id);
+  const used=await env.DB.prepare(`SELECT 1 FROM movement_types WHERE company_id=? AND accounting_event_id=? LIMIT 1`).bind(companyId,id).first();
+  if(used){
+    await env.DB.prepare(`UPDATE movement_accounting_events SET active=0,updated_at=CURRENT_TIMESTAMP WHERE id=? AND company_id=?`).bind(id,companyId).run();
+    await audit(env,{companyId,userId:auth.user.id,action:'INACTIVATE',entity:'movement_accounting_event',entityId:id,before,request});
+    return {inactivated:true,id};
+  }
+  await env.DB.batch([
+    env.DB.prepare(`DELETE FROM movement_accounting_event_items WHERE company_id=? AND event_id=?`).bind(companyId,id),
+    env.DB.prepare(`DELETE FROM movement_accounting_events WHERE company_id=? AND id=?`).bind(companyId,id)
+  ]);
+  await audit(env,{companyId,userId:auth.user.id,action:'DELETE',entity:'movement_accounting_event',entityId:id,before,request});
+  return {deleted:true,id};
+}
+
+async function nextMovementNumber(env,companyId,movementTypeId){
+  await env.DB.prepare(`
+    INSERT INTO movement_type_sequences (company_id,movement_type_id,last_number) VALUES (?,?,0)
+    ON CONFLICT(company_id,movement_type_id) DO NOTHING
+  `).bind(companyId,movementTypeId).run();
+  await env.DB.prepare(`
+    UPDATE movement_type_sequences SET last_number=last_number+1
+    WHERE company_id=? AND movement_type_id=?
+  `).bind(companyId,movementTypeId).run();
+  const r=await env.DB.prepare(`SELECT last_number FROM movement_type_sequences WHERE company_id=? AND movement_type_id=?`).bind(companyId,movementTypeId).first();
+  return String(Number(r?.last_number||1)).padStart(6,'0');
+}
+
+async function assertMovementDestination(env,companyId,sourceTypeId,destTypeId){
+  const dest=await getMovementType(env,companyId,destTypeId);
+  if(!dest.active) throw new HttpError(409,'O Tipo de Movimento destino está inativo.','INACTIVE_MOVEMENT_TYPE');
+  if(sourceTypeId){
+    const rel=await env.DB.prepare(`
+      SELECT 1 FROM movement_type_destinations
+      WHERE company_id=? AND source_type_id=? AND destination_type_id=?
+    `).bind(companyId,sourceTypeId,destTypeId).first();
+    if(!rel) throw new HttpError(409,`O Tipo de Movimento ${dest.code} não está configurado como movimento destino do movimento de origem.`,'MOVEMENT_DESTINATION_NOT_ALLOWED');
+  }
+  return dest;
+}
+
+async function getNatureDefaults(env,companyId,natureId,side){
+  const r=await env.DB.prepare(`
+    SELECT a.*,ac.code AS account_code,ac.name AS account_name
+    FROM budget_nature_accounts a
+    JOIN accounts ac ON ac.id=a.account_id
+    WHERE a.company_id=? AND a.nature_id=? AND a.side=?
+    ORDER BY a.created_at
+  `).bind(companyId,natureId,side).all();
+  return r.results||[];
+}
+
+function centsPercent(base,pct){ return Math.round(Number(base||0)*Number(pct||0)/100); }
+
+async function buildRmAccountingLines(env,companyId,{eventId,receiptItems,itemsSubtotal,freightCents,totalCents,branchId,documentNumber,supplierName}){
+  const event=await getMovementAccountingEvent(env,companyId,eventId);
+  if(!event.active) throw new HttpError(409,'O Evento Contábil do movimento está inativo.','INACTIVE_ACCOUNTING_EVENT');
+  const lines=[];
+  for(const rule of event.items){
+    const pct=Number(rule.percentage||100);
+    if(rule.account_origin==='NATURE'){
+      for(const x of receiptItems){
+        if(!x.oi.budget_nature_id) throw new HttpError(409,`O item ${x.oi.description} não possui Natureza Orçamentária/Financeira.`,'NATURE_NOT_CONFIGURED');
+        const defaults=await getNatureDefaults(env,companyId,x.oi.budget_nature_id,rule.side);
+        if(!defaults.length) throw new HttpError(409,`A Natureza do item ${x.oi.description} não possui default contábil de ${rule.side==='D'?'débito':'crédito'}.`,'NATURE_DEFAULT_NOT_CONFIGURED');
+        const itemAmount=Math.round(Number(x.oi.unit_price_cents)*Number(x.q)/1000);
+        for(const d of defaults){
+          const amount=centsPercent(centsPercent(itemAmount,pct),Number(d.percentage||100));
+          if(amount<=0) continue;
+          lines.push({
+            side:rule.side,account_id:d.account_id,amount:centsToMoney(amount),
+            branch_id:rule.branch_id||d.branch_id||branchId||null,
+            cost_center_id:rule.cost_center_id||d.cost_center_id||x.oi.cost_center_id||null,
+            history_template_id:rule.history_template_id||d.history_template_id||null,
+            history_complement:rule.history_complement||d.history_complement||`Compra ${documentNumber||''} - ${supplierName||''}`
+          });
+        }
+      }
+      continue;
+    }
+
+    let base=0;
+    if(rule.incidence==='TOTAL') base=totalCents;
+    if(rule.incidence==='ITEMS') base=itemsSubtotal;
+    if(rule.incidence==='FREIGHT') base=freightCents;
+    if(rule.incidence==='ITEM'){
+      for(const x of receiptItems){
+        const itemAmount=Math.round(Number(x.oi.unit_price_cents)*Number(x.q)/1000);
+        const amount=centsPercent(itemAmount,pct);
+        if(amount<=0) continue;
+        lines.push({
+          side:rule.side,account_id:rule.account_id,amount:centsToMoney(amount),
+          branch_id:rule.branch_id||branchId||null,
+          cost_center_id:rule.cost_center_id||x.oi.cost_center_id||null,
+          history_template_id:rule.history_template_id||null,
+          history_complement:rule.history_complement||`Compra ${documentNumber||''} - ${supplierName||''}`
+        });
+      }
+      continue;
+    }
+    const amount=centsPercent(base,pct);
+    if(amount<=0) continue;
+    lines.push({
+      side:rule.side,account_id:rule.account_id,amount:centsToMoney(amount),
+      branch_id:rule.branch_id||branchId||null,cost_center_id:rule.cost_center_id||null,
+      history_template_id:rule.history_template_id||null,
+      history_complement:rule.history_complement||`Compra ${documentNumber||''} - ${supplierName||''}`
+    });
+  }
+  if(!lines.length) throw new HttpError(409,'O Evento Contábil não gerou partidas para este movimento.','ACCOUNTING_EVENT_EMPTY');
+  return lines;
+}
+
+async function prepareReceiptIntegrationsRM(env,auth,companyId,{movementType,eventId,batchId,order,orderDetails,valid,receiptId,receiptNumber,receiptDate,documentNumber,dueDate,willComplete}){
+  const stmts=[],meta={payable:null,journal_entry:null};
+  let itemsSubtotal=0;
+  for(const {oi,q} of valid) itemsSubtotal+=Math.round(Number(oi.unit_price_cents)*Number(q)/1000);
+  const freightCents=willComplete?Number(orderDetails.freight_cents||0):0;
+  const totalCents=itemsSubtotal+freightCents;
+  if(totalCents<=0) throw new HttpError(409,'O movimento não possui valor financeiro/contábil.','INVALID_AMOUNT');
+
+  if(movementType.generate_financial){
+    const finalDue=dueDate?isoDate(dueDate,'vencimento financeiro'):receiptDate;
+    const payableId=uuid(),payableNumber=await nextPayableNumber(env,companyId);
+    stmts.push(env.DB.prepare(`
+      INSERT INTO financial_payables
+      (id,company_id,number,supplier_id,source_type,source_id,receipt_id,issue_date,due_date,document_number,description,amount_cents,balance_cents,status,created_by)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,'OPEN',?)
+    `).bind(payableId,companyId,payableNumber,order.supplier_id,'PURCHASE_MOVEMENT',receiptId,receiptId,receiptDate,finalDue,cleanText(documentNumber,120),`Movimento ${movementType.code} ${receiptNumber} / Ordem ${order.number}`,totalCents,totalCents,auth.user.id));
+    meta.payable={id:payableId,number:payableNumber,due_date:finalDue,amount:centsToMoney(totalCents)};
+  }
+
+  if(eventId){
+    if(!batchId) throw new HttpError(409,'Informe o lote contábil do movimento.','ACCOUNTING_BATCH_REQUIRED');
+    const batch=await assertCompanyEntity(env,'journal_batches',batchId,companyId);
+    if(batch.status!=='OPEN') throw new HttpError(409,'O lote contábil do movimento precisa estar aberto.','BATCH_LOCKED');
+    const lines=await buildRmAccountingLines(env,companyId,{
+      eventId,receiptItems:valid,itemsSubtotal,freightCents,totalCents,
+      branchId:order.branch_id||null,documentNumber:documentNumber||receiptNumber,supplierName:orderDetails.supplier_name
+    });
+    const built=await buildInternalPostedEntry(env,auth,companyId,{
+      batch_id:batchId,branch_id:order.branch_id||null,entry_date:receiptDate,
+      document_number:documentNumber||receiptNumber,
+      description:`Movimento ${movementType.code} ${receiptNumber} - ${orderDetails.supplier_name}`,
+      source_module:'PURCHASES',source_reference:`RECEIPT:${receiptId}`,lines
+    });
+    stmts.push(...built.stmts);
+    meta.journal_entry={id:built.entryId,amount:centsToMoney(built.total_cents)};
+  }else if(movementType.require_accounting_event){
+    throw new HttpError(409,'O Tipo de Movimento exige Evento Contábil.','ACCOUNTING_EVENT_REQUIRED');
+  }
+  return {stmts,meta,total_cents:totalCents};
+}
 
 
 // ===== purchase-finance-accounting-integration.js =====
@@ -3504,6 +4264,7 @@ async function route(request, env) {
   await ensureEntryMaintenanceSchema(env);
   await ensurePurchasingSchema(env);
   await ensurePurchaseIntegrationSchema(env);
+  await ensureRmPurchasingSchema(env);
 
   if (method==="GET" && path==="/api/auth/permissions") return ok({permissions:await getEffectivePermissions(env,auth.user.id,companyId)});
 
@@ -3619,8 +4380,50 @@ async function route(request, env) {
   if (p && method==="POST") { const b=await readJson(request); return ok({entry:await voidEntry(env,request,auth,companyId,p.id,b.reason)}); }
 
 
+
+  // ---- Cadastros estruturais do RM para Movimentos / Compras ----
+  if(method==="GET"&&path==="/api/movement-types"){
+    await requirePermission(env,auth.user.id,companyId,"purchasing.movement_type.read");
+    return ok({movement_types:await listMovementTypes(env,companyId)});
+  }
+  if(method==="POST"&&path==="/api/movement-types")return ok({movement_type:await saveMovementType(env,request,auth,companyId,null,await readJson(request))},201);
+  p=routeMatch(path,"/api/movement-types/:id");
+  if(p&&method==="GET"){await requirePermission(env,auth.user.id,companyId,"purchasing.movement_type.read");return ok({movement_type:await getMovementTypeDetails(env,companyId,p.id)});}
+  if(p&&method==="PATCH")return ok({movement_type:await saveMovementType(env,request,auth,companyId,p.id,await readJson(request))});
+  if(p&&method==="DELETE")return ok(await deleteMovementType(env,request,auth,companyId,p.id));
+
+  if(method==="GET"&&path==="/api/budget-natures"){
+    await requirePermission(env,auth.user.id,companyId,"purchasing.nature.read");
+    return ok({natures:await listBudgetNatures(env,companyId)});
+  }
+  if(method==="POST"&&path==="/api/budget-natures")return ok({nature:await saveBudgetNature(env,request,auth,companyId,null,await readJson(request))},201);
+  p=routeMatch(path,"/api/budget-natures/:id");
+  if(p&&method==="GET"){await requirePermission(env,auth.user.id,companyId,"purchasing.nature.read");return ok({nature:await getBudgetNature(env,companyId,p.id)});}
+  if(p&&method==="PATCH")return ok({nature:await saveBudgetNature(env,request,auth,companyId,p.id,await readJson(request))});
+  if(p&&method==="DELETE")return ok(await deleteBudgetNature(env,request,auth,companyId,p.id));
+
+  if(method==="GET"&&path==="/api/movement-accounting-events"){
+    await requirePermission(env,auth.user.id,companyId,"purchasing.accounting_event.read");
+    return ok({events:await listMovementAccountingEvents(env,companyId)});
+  }
+  if(method==="POST"&&path==="/api/movement-accounting-events")return ok({event:await saveMovementAccountingEvent(env,request,auth,companyId,null,await readJson(request))},201);
+  p=routeMatch(path,"/api/movement-accounting-events/:id");
+  if(p&&method==="GET"){await requirePermission(env,auth.user.id,companyId,"purchasing.accounting_event.read");return ok({event:await getMovementAccountingEvent(env,companyId,p.id)});}
+  if(p&&method==="PATCH")return ok({event:await saveMovementAccountingEvent(env,request,auth,companyId,p.id,await readJson(request))});
+  if(p&&method==="DELETE")return ok(await deleteMovementAccountingEvent(env,request,auth,companyId,p.id));
+
   // ---- Compras / Materiais ----
-  if (method==="GET" && path==="/api/purchase-products") { await requirePermission(env,auth.user.id,companyId,"purchasing.product.read"); return ok({products:await listPurchaseMaster(env,companyId,"purchase_products","id,code,description,item_type,unit,purchase_unit,notes,active,created_at")}); }
+  if (method==="GET" && path==="/api/purchase-products") {
+    await requirePermission(env,auth.user.id,companyId,"purchasing.product.read");
+    const r=await env.DB.prepare(`
+      SELECT p.id,p.code,p.description,p.item_type,p.unit,p.purchase_unit,p.budget_nature_id,p.notes,p.active,p.created_at,
+             n.code AS nature_code,n.description AS nature_description
+      FROM purchase_products p
+      LEFT JOIN budget_natures n ON n.id=p.budget_nature_id
+      WHERE p.company_id=? ORDER BY p.code
+    `).bind(companyId).all();
+    return ok({products:r.results||[]});
+  }
   if (method==="POST" && path==="/api/purchase-products") return ok({product:await savePurchaseProduct(env,request,auth,companyId,null,await readJson(request))},201);
   p=routeMatch(path,"/api/purchase-products/:id");
   if (p && method==="PATCH") return ok({product:await savePurchaseProduct(env,request,auth,companyId,p.id,await readJson(request))});
@@ -3650,7 +4453,7 @@ async function route(request, env) {
   if(method==="GET"&&path==="/api/purchase-quotations"){await requirePermission(env,auth.user.id,companyId,"purchasing.quotation.read");return ok({quotations:await listQuotations(env,companyId)});}
   if(method==="POST"&&path==="/api/purchase-quotations")return ok({quotation:await createQuotation(env,request,auth,companyId,await readJson(request))},201);
   p=routeMatch(path,"/api/purchase-quotations/:id/proposals"); if(p&&method==="PATCH")return ok({quotation:await saveQuotationProposals(env,request,auth,companyId,p.id,await readJson(request))});
-  p=routeMatch(path,"/api/purchase-quotations/:id/generate-orders"); if(p&&method==="POST")return ok(await generateOrdersFromQuotation(env,request,auth,companyId,p.id));
+  p=routeMatch(path,"/api/purchase-quotations/:id/generate-orders"); if(p&&method==="POST")return ok(await generateOrdersFromQuotation(env,request,auth,companyId,p.id,await readJson(request)));
   p=routeMatch(path,"/api/purchase-quotations/:id/cancel"); if(p&&method==="POST")return ok({quotation:await cancelQuotation(env,request,auth,companyId,p.id)});
   p=routeMatch(path,"/api/purchase-quotations/:id"); if(p&&method==="GET"){await requirePermission(env,auth.user.id,companyId,"purchasing.quotation.read");return ok({quotation:await getQuotation(env,companyId,p.id)});}
 
