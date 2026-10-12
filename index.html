@@ -92,6 +92,15 @@ function money(v){return new Intl.NumberFormat('pt-BR',{style:'currency',currenc
 function dateBR(v){if(!v)return'';const p=String(v).slice(0,10).split('-');return p.length===3?`${p[2]}/${p[1]}/${p[0]}`:v}
 function nextDateLocal(value){if(!value)return'';const d=new Date(`${value}T00:00:00Z`);d.setUTCDate(d.getUTCDate()+1);return d.toISOString().slice(0,10)}
 function officialState(x){return x==='INTEGRATED'?badge('INTEGRATED'):badge('PENDING')}
+function dateTimeBR(v){
+  if(!v)return'—';
+  const raw=String(v).trim().replace(' ','T');
+  const d=new Date(raw.endsWith('Z')||/[+-]\d\d:\d\d$/.test(raw)?raw:raw+'Z');
+  return Number.isNaN(d.getTime())?String(v):d.toLocaleString('pt-BR');
+}
+function currentCompany(){return S.companies.find(x=>x.id===S.companyId)||null}
+function htmlText(v){return esc(v==null?'':String(v))}
+
 
 function save(){localStorage.setItem('erp_token',S.token||'');localStorage.setItem('erp_user',JSON.stringify(S.user));localStorage.setItem('erp_companies',JSON.stringify(S.companies));localStorage.setItem('erp_company',S.companyId||'')}
 function clear(){S.token='';S.user=null;S.companies=[];S.companyId='';S.cache={};['erp_token','erp_user','erp_companies','erp_company'].forEach(localStorage.removeItem.bind(localStorage))}
@@ -1330,8 +1339,359 @@ function deleteBatchModal(item){
   };
 }
 
+
+const ENTRY_FILTER_FIELDS={
+  entry_date:{label:'Data',type:'date'},
+  batch_code:{label:'Lote',type:'text'},
+  document_number:{label:'Documento',type:'text'},
+  description:{label:'Descrição',type:'text'},
+  total_debit:{label:'Débito',type:'money'},
+  total_credit:{label:'Crédito',type:'money'},
+  status:{label:'Situação',type:'status'},
+  official_status:{label:'Oficial',type:'official'},
+  branch:{label:'Filial',type:'text'},
+  account:{label:'Conta',type:'text'},
+  cost_center:{label:'Centro de custo',type:'text'}
+};
+
+const ENTRY_FILTER_OPERATORS={
+  text:[
+    ['contains','Contém'],['eq','Igual a'],['neq','Diferente de'],
+    ['starts','Começa com'],['ends','Termina com'],['blank','Está vazio'],['not_blank','Não está vazio']
+  ],
+  date:[
+    ['eq','Igual a'],['neq','Diferente de'],['gt','Maior que'],['gte','Maior ou igual'],
+    ['lt','Menor que'],['lte','Menor ou igual'],['between','Entre']
+  ],
+  money:[
+    ['eq','Igual a'],['neq','Diferente de'],['gt','Maior que'],['gte','Maior ou igual'],
+    ['lt','Menor que'],['lte','Menor ou igual'],['between','Entre']
+  ],
+  status:[['eq','Igual a'],['neq','Diferente de']],
+  official:[['eq','Igual a'],['neq','Diferente de']]
+};
+
+async function entryFilters(force=false){
+  if(!force&&S.cache.entryFilters)return S.cache.entryFilters;
+  const d=await api('/api/journal-entry-filters');
+  return S.cache.entryFilters=d.filters||[];
+}
+
+function filterFieldOptions(selected=''){
+  return Object.entries(ENTRY_FILTER_FIELDS).map(([k,v])=>`<option value="${k}" ${k===selected?'selected':''}>${esc(v.label)}</option>`).join('');
+}
+
+function filterOperatorOptions(field,selected=''){
+  const type=ENTRY_FILTER_FIELDS[field]?.type||'text';
+  return (ENTRY_FILTER_OPERATORS[type]||ENTRY_FILTER_OPERATORS.text)
+    .map(([k,label])=>`<option value="${k}" ${k===selected?'selected':''}>${esc(label)}</option>`).join('');
+}
+
+function filterValueControl(field,operator,value='',value2=''){
+  if(operator==='blank'||operator==='not_blank')return `<span style="color:var(--muted)">Sem valor</span>`;
+
+  const type=ENTRY_FILTER_FIELDS[field]?.type||'text';
+  const second=operator==='between';
+
+  if(type==='status'){
+    const options=[['POSTED','Contabilizado'],['VOID','Anulado']];
+    return `<select class="filter-value">${options.map(([v,l])=>`<option value="${v}" ${v===value?'selected':''}>${l}</option>`).join('')}</select>`;
+  }
+
+  if(type==='official'){
+    const options=[['PENDING','Pendente'],['INTEGRATED','Lote 0']];
+    return `<select class="filter-value">${options.map(([v,l])=>`<option value="${v}" ${v===value?'selected':''}>${l}</option>`).join('')}</select>`;
+  }
+
+  const inputType=type==='date'?'date':'text';
+  const placeholder=type==='money'?'0,00':'Valor';
+  return `<div style="display:flex;gap:6px;align-items:center">
+    <input class="filter-value" type="${inputType}" value="${esc(value||'')}" placeholder="${placeholder}">
+    ${second?`<span style="color:var(--muted)">e</span><input class="filter-value2" type="${inputType}" value="${esc(value2||'')}" placeholder="${placeholder}">`:''}
+  </div>`;
+}
+
+function entryFilterExpression(definition){
+  const c=definition?.conditions||[];
+  if(!c.length)return 'Todos os lançamentos';
+
+  const opLabel={};
+  Object.values(ENTRY_FILTER_OPERATORS).flat().forEach(([k,v])=>opLabel[k]=v);
+
+  return c.map((x,i)=>{
+    const f=ENTRY_FILTER_FIELDS[x.field]?.label||x.field;
+    const val=(x.operator==='blank'||x.operator==='not_blank')?'':` "${x.value||''}"${x.operator==='between'?` e "${x.value2||''}"`:''}`;
+    return `${i?((x.logic||'AND')==='OR'?'OU ':'E '):''}${f} ${opLabel[x.operator]||x.operator}${val}`;
+  }).join(' ');
+}
+
+function currentEntryFilterDefinition(){
+  return S.entryFilter?.definition||{conditions:[]};
+}
+
+async function openEntryAutoFilter(){
+  const saved=await entryFilters();
+  const active=S.entryFilter||null;
+  const initial=(active?.definition?.conditions||[]).map(x=>({...x}));
+  if(!initial.length)initial.push({logic:'AND',field:'entry_date',operator:'eq',value:'',value2:''});
+
+  openModal(
+    'Autofiltro',
+    'Monte o filtro por campo, operador e valor. Você pode aplicar na visão ou salvar para reutilizar.',
+    `<div class="grid">
+      <label class="field"><span>Nome do filtro (opcional)</span>
+        <input id="filterName" maxlength="120" value="${esc(active?.name||'')}" placeholder="Ex.: Lançamentos de outubro">
+      </label>
+      <label class="check" style="align-self:end;padding-bottom:10px">
+        <input id="filterDefault" type="checkbox" ${active?.is_default?'checked':''}>
+        Sempre usar este filtro ao abrir a visão
+      </label>
+    </div>
+
+    <div class="section-title">Condições</div>
+    <div class="table-wrap">
+      <table class="table">
+        <thead><tr><th style="width:80px">Ligação</th><th>Campo</th><th>Operador</th><th>Valor</th><th style="width:50px"></th></tr></thead>
+        <tbody id="filterConditionBody"></tbody>
+      </table>
+    </div>
+
+    <div style="margin-top:9px"><button id="addFilterCondition" type="button" class="btn secondary sm">+ Adicionar condição</button></div>
+
+    <div style="margin-top:14px;padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:#f8fafc">
+      <div style="font-size:12px;color:var(--muted);margin-bottom:3px">Expressão</div>
+      <div id="filterExpression"></div>
+    </div>
+
+    <div class="form-actions">
+      ${active?.id?'<button id="deleteSavedFilter" type="button" class="btn danger">Excluir filtro salvo</button>':''}
+      <button id="clearEntryFilter" type="button" class="btn secondary">Limpar</button>
+      <button id="saveEntryFilter" type="button" class="btn secondary">Salvar filtro</button>
+      <button id="applyEntryFilter" type="button" class="btn primary">Aplicar filtro</button>
+    </div>`,
+    true
+  );
+
+  const tbody=$('#filterConditionBody');
+
+  function readDefinition(){
+    const conditions=$$('#filterConditionBody tr').map((tr,i)=>({
+      logic:i===0?'AND':$('.filter-logic',tr).value,
+      field:$('.filter-field',tr).value,
+      operator:$('.filter-operator',tr).value,
+      value:$('.filter-value',tr)?.value||'',
+      value2:$('.filter-value2',tr)?.value||''
+    }));
+    return {conditions};
+  }
+
+  function refreshExpression(){
+    $('#filterExpression').textContent=entryFilterExpression(readDefinition());
+  }
+
+  function addCondition(c={logic:'AND',field:'description',operator:'contains',value:'',value2:''}){
+    const tr=document.createElement('tr');
+    const index=tbody.children.length;
+    tr.innerHTML=`
+      <td>
+        <select class="filter-logic" ${index===0?'disabled':''}>
+          <option value="AND" ${(c.logic||'AND')==='AND'?'selected':''}>E</option>
+          <option value="OR" ${(c.logic||'AND')==='OR'?'selected':''}>OU</option>
+        </select>
+      </td>
+      <td><select class="filter-field">${filterFieldOptions(c.field)}</select></td>
+      <td><select class="filter-operator">${filterOperatorOptions(c.field,c.operator)}</select></td>
+      <td class="filter-value-cell">${filterValueControl(c.field,c.operator,c.value,c.value2)}</td>
+      <td><button type="button" class="remove-line filter-remove">×</button></td>`;
+    tbody.appendChild(tr);
+
+    const field=$('.filter-field',tr),operator=$('.filter-operator',tr);
+
+    field.onchange=()=>{
+      const type=ENTRY_FILTER_FIELDS[field.value]?.type||'text';
+      const first=(ENTRY_FILTER_OPERATORS[type]||ENTRY_FILTER_OPERATORS.text)[0][0];
+      operator.innerHTML=filterOperatorOptions(field.value,first);
+      $('.filter-value-cell',tr).innerHTML=filterValueControl(field.value,first,'','');
+      refreshExpression();
+    };
+
+    operator.onchange=()=>{
+      $('.filter-value-cell',tr).innerHTML=filterValueControl(field.value,operator.value,'','');
+      refreshExpression();
+    };
+
+    tr.addEventListener('input',refreshExpression);
+    tr.addEventListener('change',refreshExpression);
+
+    $('.filter-remove',tr).onclick=()=>{
+      tr.remove();
+      if(!tbody.children.length)addCondition();
+      [...tbody.children].forEach((r,i)=>{
+        const logic=$('.filter-logic',r);
+        logic.disabled=i===0;
+        if(i===0)logic.value='AND';
+      });
+      refreshExpression();
+    };
+  }
+
+  initial.forEach(addCondition);
+  refreshExpression();
+
+  $('#addFilterCondition').onclick=()=>{addCondition();refreshExpression()};
+
+  $('#clearEntryFilter').onclick=()=>{
+    S.entryFilter=null;
+    closeModal();
+    renderEntries();
+  };
+
+  $('#applyEntryFilter').onclick=()=>{
+    const definition=readDefinition();
+    S.entryFilter={
+      id:null,
+      name:$('#filterName').value.trim()||'Filtro atual',
+      is_default:false,
+      definition
+    };
+    closeModal();
+    renderEntries();
+  };
+
+  $('#saveEntryFilter').onclick=async()=>{
+    const name=$('#filterName').value.trim();
+    if(!name)return toast('Informe um nome para salvar o filtro.','error');
+
+    try{
+      const d=await api('/api/journal-entry-filters',{
+        method:'POST',
+        body:{
+          view_key:'journal_entries',
+          name,
+          definition:readDefinition(),
+          is_default:$('#filterDefault').checked
+        }
+      });
+
+      S.cache.entryFilters=null;
+      S.entryFilter=d.filter;
+      closeModal();
+      toast('Filtro salvo.');
+      renderEntries();
+    }catch(x){toast(x.message,'error')}
+  };
+
+  if($('#deleteSavedFilter'))$('#deleteSavedFilter').onclick=async()=>{
+    try{
+      await api(`/api/journal-entry-filters/${active.id}`,{method:'DELETE'});
+      S.cache.entryFilters=null;
+      S.entryFilter=null;
+      closeModal();
+      toast('Filtro excluído.');
+      renderEntries();
+    }catch(x){toast(x.message,'error')}
+  };
+}
+
+function printEntry(e){
+  const company=currentCompany();
+  const w=window.open('','_blank','width=1100,height=800');
+  if(!w)return toast('O navegador bloqueou a janela de impressão. Permita pop-ups para o SAGAS.','error');
+
+  const historyText=l=>{
+    const base=l.history_description?(l.history_code?`${l.history_code} - ${l.history_description}`:l.history_description):'';
+    return base+(l.history_complement?`${base?' - ':''}${l.history_complement}`:'');
+  };
+
+  const rows=(e.lines||[]).map(l=>`
+    <tr>
+      <td>${l.line_no}</td>
+      <td>${htmlText(l.side)}</td>
+      <td>${htmlText(l.account_code)}${l.account_reduced_code?` <span class="muted">(${htmlText(l.account_reduced_code)})</span>`:''}<br><span class="muted">${htmlText(l.account_name)}</span></td>
+      <td class="num">${l.side==='D'?money(l.amount):''}</td>
+      <td class="num">${l.side==='C'?money(l.amount):''}</td>
+      <td>${l.cost_center_code?`${htmlText(l.cost_center_code)} - ${htmlText(l.cost_center_name||'')}`:'—'}</td>
+      <td>${htmlText(historyText(l)||'—')}</td>
+    </tr>`).join('');
+
+  const official=e.official_status==='INTEGRATED'?'Lote 0':'Pendente';
+  const status=e.status==='POSTED'?'Contabilizado':(e.status==='VOID'?'Anulado':e.status);
+
+  w.document.open();
+  w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Lançamento contábil</title>
+  <style>
+    @page{size:A4 landscape;margin:12mm}
+    *{box-sizing:border-box}
+    body{font-family:Arial,Helvetica,sans-serif;color:#111827;margin:0;font-size:12px}
+    .header{display:flex;justify-content:space-between;gap:20px;border-bottom:2px solid #1d4ed8;padding-bottom:10px;margin-bottom:14px}
+    h1{font-size:20px;margin:0 0 4px}.brand{font-size:12px;color:#4b5563}
+    .company{text-align:right}.company b{font-size:13px}
+    .grid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:12px}
+    .box{border:1px solid #d1d5db;border-radius:5px;padding:7px 9px;min-height:48px}
+    .label{font-size:10px;text-transform:uppercase;color:#6b7280;margin-bottom:4px}
+    .value{font-weight:600}.wide{grid-column:span 2}.full{grid-column:1/-1}
+    table{width:100%;border-collapse:collapse;margin-top:10px}
+    th,td{border:1px solid #d1d5db;padding:6px 7px;vertical-align:top}
+    th{background:#f3f4f6;text-align:left;font-size:10px;text-transform:uppercase}
+    .num{text-align:right;white-space:nowrap}.muted{color:#6b7280}
+    .totals{display:flex;justify-content:flex-end;gap:28px;margin-top:10px;font-size:13px}
+    .audit{margin-top:18px;border-top:1px solid #d1d5db;padding-top:9px;color:#4b5563;font-size:10px}
+    .no-print{margin:0 0 12px}
+    @media print{.no-print{display:none}}
+  </style></head><body>
+    <button class="no-print" onclick="window.print()">Imprimir</button>
+    <div class="header">
+      <div><h1>Lançamento Contábil</h1><div class="brand">SAGAS</div></div>
+      <div class="company"><b>${htmlText(company?.code||'')} ${company?.code?' - ':''}${htmlText(company?.legal_name||company?.trade_name||'')}</b><br>${htmlText(company?.tax_id||'')}</div>
+    </div>
+
+    <div class="grid">
+      <div class="box"><div class="label">Data</div><div class="value">${dateBR(e.entry_date)}</div></div>
+      <div class="box"><div class="label">Lote</div><div class="value">${htmlText(e.batch_code)} - ${htmlText(e.batch_description||'')}</div></div>
+      <div class="box"><div class="label">Período</div><div class="value">${htmlText(e.period_code||'')}</div></div>
+      <div class="box"><div class="label">Documento</div><div class="value">${htmlText(e.document_number||'—')}</div></div>
+      <div class="box"><div class="label">Filial</div><div class="value">${e.branch_code?`${htmlText(e.branch_code)} - ${htmlText(e.branch_name||'')}`:'Sem filial'}</div></div>
+      <div class="box"><div class="label">Situação</div><div class="value">${htmlText(status)}</div></div>
+      <div class="box"><div class="label">Oficial</div><div class="value">${htmlText(official)}</div></div>
+      <div class="box"><div class="label">Origem</div><div class="value">${htmlText(e.source_module||'ACCOUNTING')}</div></div>
+      <div class="box full"><div class="label">Descrição</div><div class="value">${htmlText(e.description||'—')}</div></div>
+    </div>
+
+    <table>
+      <thead><tr><th>#</th><th>D/C</th><th>Conta</th><th>Débito</th><th>Crédito</th><th>Centro de custo</th><th>Histórico / complemento</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+
+    <div class="totals">
+      <div>Débito: <b>${money(e.total_debit)}</b></div>
+      <div>Crédito: <b>${money(e.total_credit)}</b></div>
+    </div>
+
+    <div class="audit">
+      Criado por: ${htmlText(e.created_by_name||'—')} em ${dateTimeBR(e.created_at)}
+      &nbsp; | &nbsp; Contabilizado por: ${htmlText(e.posted_by_name||'—')} em ${dateTimeBR(e.posted_at)}
+      ${e.edited_at?` &nbsp; | &nbsp; Última edição: ${htmlText(e.edited_by_name||'—')} em ${dateTimeBR(e.edited_at)}`:''}
+      ${e.integrated_at?` &nbsp; | &nbsp; Integrado ao Lote 0 por ${htmlText(e.integrated_by_name||'—')} em ${dateTimeBR(e.integrated_at)}`:''}
+    </div>
+  </body></html>`);
+  w.document.close();
+  w.focus();
+}
+
 async function renderEntries(){
-  const d=await api('/api/journal-entries?limit=300'),a=d.entries||[];
+  const saved=await entryFilters();
+
+  if(S.entryFilterCompany!==S.companyId){
+    S.entryFilterCompany=S.companyId;
+    S.entryFilter=saved.find(x=>x.is_default)||null;
+  }else if(S.entryFilter?.id){
+    S.entryFilter=saved.find(x=>x.id===S.entryFilter.id)||S.entryFilter;
+  }
+
+  const definition=currentEntryFilterDefinition();
+  const filterParam=definition.conditions?.length?`&filter=${encodeURIComponent(JSON.stringify(definition))}`:'';
+  const d=await api(`/api/journal-entries?limit=1000${filterParam}`);
+  const a=d.entries||[];
   const create=can('accounting.entry.create'),edit=can('accounting.entry.edit'),del=can('accounting.entry.delete');
 
   tablePage({
@@ -1349,20 +1709,56 @@ async function renderEntries(){
       <td>${x.status==='POSTED'?officialState(x.official_status):'<span class="badge gray">—</span>'}</td>
       <td><div class="actions">
         <button class="btn secondary sm" data-open="${x.id}">Abrir</button>
+        ${create?`<button class="btn secondary sm" data-duplicate-entry="${x.id}">Duplicar</button>`:''}
         ${x.status==='POSTED'&&x.official_status!=='INTEGRATED'&&edit?`<button class="btn secondary sm" data-edit-entry="${x.id}">Editar</button>`:''}
         ${x.status==='POSTED'&&x.official_status!=='INTEGRATED'&&del?`<button class="btn danger sm" data-delete-entry="${x.id}">Excluir</button>`:''}
       </div></td>
     </tr>`).join(''):null,
     emptyTitle:'Nenhum lançamento',
-    emptyText:create?'Inclua o primeiro lançamento contábil.':'Nenhum lançamento disponível para consulta.'
+    emptyText:definition.conditions?.length?'Nenhum lançamento atende ao filtro aplicado.':(create?'Inclua o primeiro lançamento contábil.':'Nenhum lançamento disponível para consulta.')
   });
 
+  const toolbar=$('.toolbar');
+  const filterCount=definition.conditions?.length||0;
+  const savedOptions=saved.map(x=>`<option value="${x.id}" ${S.entryFilter?.id===x.id?'selected':''}>${esc(x.name)}${x.is_default?' • padrão':''}</option>`).join('');
+
+  toolbar.insertAdjacentHTML('afterbegin',`
+    <button id="entryAutoFilterBtn" class="btn secondary">${filterCount?`Autofiltro (${filterCount})`:'Autofiltro'}</button>
+    <select id="savedEntryFilter" style="max-width:220px">
+      <option value="">Todos / filtro atual</option>
+      ${savedOptions}
+    </select>
+    ${filterCount?'<button id="clearEntryFilterToolbar" class="btn secondary">Limpar filtro</button>':''}
+  `);
+
+  $('#entryAutoFilterBtn').onclick=openEntryAutoFilter;
+
+  $('#savedEntryFilter').onchange=e=>{
+    const f=saved.find(x=>x.id===e.target.value);
+    S.entryFilter=f||null;
+    renderEntries();
+  };
+
+  if($('#clearEntryFilterToolbar'))$('#clearEntryFilterToolbar').onclick=()=>{
+    S.entryFilter=null;
+    renderEntries();
+  };
+
   $$('[data-open]').forEach(b=>b.onclick=()=>entryView(b.dataset.open));
+  $$('[data-duplicate-entry]').forEach(b=>b.onclick=()=>entryForm(null,b.dataset.duplicateEntry));
   $$('[data-edit-entry]').forEach(b=>b.onclick=()=>entryForm(b.dataset.editEntry));
   $$('[data-delete-entry]').forEach(b=>b.onclick=()=>deleteEntryModal(b.dataset.deleteEntry));
 }
-async function entryForm(editId=null){
-  let item=null;
+async function entryForm(editId=null,duplicateId=null){
+  let item=null,duplicateSource=null;
+
+  if(duplicateId){
+    try{
+      duplicateSource=(await api(`/api/journal-entries/${duplicateId}`)).entry;
+    }catch(x){
+      return toast(x.message,'error');
+    }
+  }
 
   if(editId){
     try{
@@ -1376,6 +1772,7 @@ async function entryForm(editId=null){
     }
   }
 
+  const seed=item||duplicateSource;
   const [a,c,h,b,br]=await Promise.all([accounts(),ccs(),histories(),batches(),branches()]);
   const oa=a.filter(x=>x.active&&x.analytic),ob=b.filter(x=>x.status==='OPEN');
 
@@ -1390,36 +1787,36 @@ async function entryForm(editId=null){
   const bro=br.filter(x=>x.active).map(x=>`<option value="${x.id}">${esc(x.code)} - ${esc(x.name)}</option>`).join('');
 
   openModal(
-    item?'Editar lançamento':'Novo lançamento',
+    item?'Editar lançamento':(duplicateSource?'Duplicar lançamento':'Novo lançamento'),
     item
       ?'As alterações são aplicadas diretamente ao lançamento contabilizado. Lançamentos no Lote 0 precisam ser desintegrados antes.'
-      :'Ao salvar, o lançamento será contabilizado imediatamente no lote selecionado.',
+      :(duplicateSource?'Revise os dados da cópia. Ao salvar, será criado um novo lançamento contabilizado e pendente para o Lote 0.':'Ao salvar, o lançamento será contabilizado imediatamente no lote selecionado.'),
     `<form id="entryForm">
       <div class="grid three">
         <label class="field"><span>Lote</span>
           <select name="batch_id" required>
             <option value="">Selecione</option>
-            ${ob.map(x=>`<option value="${x.id}" ${x.id===item?.batch_id?'selected':''}>${esc(x.code)} - ${esc(x.description)}</option>`).join('')}
+            ${ob.map(x=>`<option value="${x.id}" ${x.id===seed?.batch_id?'selected':''}>${esc(x.code)} - ${esc(x.description)}</option>`).join('')}
           </select>
         </label>
 
         <label class="field"><span>Filial</span>
           <select name="branch_id">
             <option value="">Sem filial</option>
-            ${br.filter(x=>x.active).map(x=>`<option value="${x.id}" ${x.id===item?.branch_id?'selected':''}>${esc(x.code)} - ${esc(x.name)}</option>`).join('')}
+            ${br.filter(x=>x.active).map(x=>`<option value="${x.id}" ${x.id===seed?.branch_id?'selected':''}>${esc(x.code)} - ${esc(x.name)}</option>`).join('')}
           </select>
         </label>
 
         <label class="field"><span>Data</span>
-          <input name="entry_date" type="date" required value="${item?.entry_date||new Date().toISOString().slice(0,10)}">
+          <input name="entry_date" type="date" required value="${seed?.entry_date||new Date().toISOString().slice(0,10)}">
         </label>
 
         <label class="field"><span>Documento</span>
-          <input name="document_number" value="${esc(item?.document_number||'')}">
+          <input name="document_number" value="${esc(seed?.document_number||'')}">
         </label>
 
         <label class="field full"><span>Descrição</span>
-          <input name="description" value="${esc(item?.description||'')}">
+          <input name="description" value="${esc(seed?.description||'')}">
         </label>
       </div>
 
@@ -1448,7 +1845,7 @@ async function entryForm(editId=null){
 
       <div class="form-actions">
         <button type="button" class="btn secondary" data-close>Cancelar</button>
-        <button class="btn primary">${item?'Salvar alterações':'Salvar lançamento'}</button>
+        <button class="btn primary">${item?'Salvar alterações':(duplicateSource?'Salvar duplicação':'Salvar lançamento')}</button>
       </div>
     </form>`,
     true
@@ -1527,8 +1924,8 @@ async function entryForm(editId=null){
     $('#bal').innerHTML=ok?'<b>Fechado</b>':'<b>Não fecha</b>';
   }
 
-  if(item?.lines?.length){
-    item.lines.forEach(l=>appendRow(l,l.side));
+  if(seed?.lines?.length){
+    seed.lines.forEach(l=>appendRow(l,l.side));
   }else{
     appendRow(null,'D');
     appendRow(null,'C');
@@ -1602,7 +1999,7 @@ async function entryForm(editId=null){
       });
 
       closeModal();
-      toast(item?'Lançamento atualizado.':'Lançamento contabilizado com sucesso.');
+      toast(item?'Lançamento atualizado.':(duplicateSource?'Lançamento duplicado e contabilizado.':'Lançamento contabilizado com sucesso.'));
       renderEntries();
     }catch(x){
       toast(x.message,'error');
@@ -1613,16 +2010,35 @@ async function entryView(id){
   try{
     const e=(await api('/api/journal-entries/'+id)).entry;
     const maintainable=e.status==='POSTED'&&e.official_status!=='INTEGRATED';
+    const company=currentCompany();
+
+    const historyText=l=>{
+      const base=l.history_description?(l.history_code?`${l.history_code} - ${l.history_description}`:l.history_description):'';
+      return base+(l.history_complement?`${base?' - ':''}${l.history_complement}`:'');
+    };
 
     openModal(
       'Lançamento contábil',
       `${dateBR(e.entry_date)} • ${e.document_number||'Sem documento'}`,
-      `<div class="grid three">
+      `<div style="padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:#f8fafc;margin-bottom:14px">
+        <div style="font-size:12px;color:var(--muted)">Empresa</div>
+        <div style="font-weight:700">${esc(company?.code||'')} ${company?.code?' - ':''}${esc(company?.legal_name||company?.trade_name||'')}</div>
+      </div>
+
+      <div class="grid three">
+        <div class="field"><span>Data</span><b>${dateBR(e.entry_date)}</b></div>
+        <div class="field"><span>Documento</span><b>${esc(e.document_number||'—')}</b></div>
+        <div class="field"><span>Período</span><b>${esc(e.period_code||'—')}</b></div>
+
+        <div class="field"><span>Lote</span><b>${esc(e.batch_code||'')} - ${esc(e.batch_description||'')}</b></div>
+        <div class="field"><span>Filial</span><b>${e.branch_code?`${esc(e.branch_code)} - ${esc(e.branch_name||'')}`:'Sem filial'}</b></div>
+        <div class="field"><span>Origem</span><b>${esc(e.source_module||'ACCOUNTING')}</b></div>
+
         <div class="field"><span>Situação</span><div>${badge(e.status)}</div></div>
         <div class="field"><span>Oficial</span><div>${e.status==='POSTED'?officialState(e.official_status):'<span class="badge gray">—</span>'}</div></div>
-        <div class="field"><span>Débito</span><b>${money(e.total_debit)}</b></div>
-        <div class="field"><span>Crédito</span><b>${money(e.total_credit)}</b></div>
-        <div class="field full"><span>Descrição</span><div>${esc(e.description||'')}</div></div>
+        <div class="field"><span>Referência de origem</span><b>${esc(e.source_reference||'—')}</b></div>
+
+        <div class="field full"><span>Descrição</span><div>${esc(e.description||'—')}</div></div>
       </div>
 
       ${e.official_status==='INTEGRATED'?`<div style="margin:12px 0;padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:#f8fbff;color:var(--muted)">
@@ -1631,17 +2047,40 @@ async function entryView(id){
 
       <div class="section-title">Partidas</div>
       <div class="table-wrap"><table class="table">
-        <thead><tr><th>#</th><th>D/C</th><th>Conta</th><th>Valor</th><th>Centro de custo</th><th>Histórico</th></tr></thead>
+        <thead><tr><th>#</th><th>D/C</th><th>Conta</th><th>Débito</th><th>Crédito</th><th>Centro de custo</th><th>Histórico / complemento</th></tr></thead>
         <tbody>${(e.lines||[]).map(l=>`<tr>
-          <td>${l.line_no}</td><td>${l.side}</td>
-          <td>${esc(l.account_code)} - ${esc(l.account_name)}</td>
-          <td>${money(l.amount)}</td>
-          <td>${esc(l.cost_center_code||'')} ${esc(l.cost_center_name||'')}</td>
-          <td>${esc(l.history_description ? (l.history_complement ? `${l.history_description} - ${l.history_complement}` : l.history_description) : (l.history_complement||''))}</td>
+          <td>${l.line_no}</td>
+          <td>${l.side}</td>
+          <td>
+            <b>${esc(l.account_code)}</b>${l.account_reduced_code?` <span style="color:var(--muted)">(${esc(l.account_reduced_code)})</span>`:''}
+            <div style="color:var(--muted);font-size:12px">${esc(l.account_name)}</div>
+          </td>
+          <td>${l.side==='D'?money(l.amount):''}</td>
+          <td>${l.side==='C'?money(l.amount):''}</td>
+          <td>${l.cost_center_code?`${esc(l.cost_center_code)} - ${esc(l.cost_center_name||'')}`:'—'}</td>
+          <td>${esc(historyText(l)||'—')}</td>
         </tr>`).join('')}</tbody>
       </table></div>
 
+      <div class="totals" style="margin-top:12px">
+        <span>Débito: <b>${money(e.total_debit)}</b></span>
+        <span>Crédito: <b>${money(e.total_credit)}</b></span>
+        <span class="balance-ok"><b>Fechado</b></span>
+      </div>
+
+      <div class="section-title">Rastreabilidade</div>
+      <div class="grid three">
+        <div class="field"><span>Criado por</span><div>${esc(e.created_by_name||'—')}</div><small style="color:var(--muted)">${dateTimeBR(e.created_at)}</small></div>
+        <div class="field"><span>Contabilizado por</span><div>${esc(e.posted_by_name||'—')}</div><small style="color:var(--muted)">${dateTimeBR(e.posted_at)}</small></div>
+        <div class="field"><span>Última edição</span><div>${esc(e.edited_by_name||'—')}</div><small style="color:var(--muted)">${e.edited_at?dateTimeBR(e.edited_at):'Sem alteração'}</small></div>
+        ${e.integrated_at?`<div class="field"><span>Integração Lote 0</span><div>${esc(e.integrated_by_name||'—')}</div><small style="color:var(--muted)">${dateTimeBR(e.integrated_at)}</small></div>`:''}
+        ${e.voided_at?`<div class="field"><span>Anulação</span><div>${esc(e.voided_by_name||'—')}</div><small style="color:var(--muted)">${dateTimeBR(e.voided_at)}</small></div>`:''}
+        ${e.void_reason?`<div class="field full"><span>Motivo da anulação</span><div>${esc(e.void_reason)}</div></div>`:''}
+      </div>
+
       <div class="form-actions">
+        <button id="printEntryBtn" class="btn secondary">Imprimir</button>
+        ${can('accounting.entry.create')?'<button id="duplicateEntryBtn" class="btn secondary">Duplicar</button>':''}
         ${maintainable&&can('accounting.entry.delete')?'<button id="deleteEntryBtn" class="btn danger">Excluir</button>':''}
         ${maintainable&&can('accounting.entry.void')?'<button id="voidBtn" class="btn secondary">Anular</button>':''}
         ${maintainable&&can('accounting.entry.edit')?'<button id="editEntryBtn" class="btn primary">Editar</button>':''}
@@ -1651,6 +2090,12 @@ async function entryView(id){
     );
 
     $('[data-close]').onclick=closeModal;
+    $('#printEntryBtn').onclick=()=>printEntry(e);
+
+    if($('#duplicateEntryBtn'))$('#duplicateEntryBtn').onclick=()=>{
+      closeModal();
+      entryForm(null,id);
+    };
 
     if($('#editEntryBtn'))$('#editEntryBtn').onclick=()=>{
       closeModal();
