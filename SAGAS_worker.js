@@ -2752,6 +2752,430 @@ async function updateRole(env, request, auth, companyId, roleId, body) {
 }
 
 
+
+// ===== purchasing.js =====
+const PURCHASE_PERMISSION_DEFS=[
+  ["purchasing.product.read","Consultar produtos e serviços"],
+  ["purchasing.product.manage","Gerenciar produtos e serviços"],
+  ["purchasing.supplier.read","Consultar fornecedores"],
+  ["purchasing.supplier.manage","Gerenciar fornecedores"],
+  ["purchasing.location.read","Consultar locais de estoque"],
+  ["purchasing.location.manage","Gerenciar locais de estoque"],
+  ["purchasing.request.read","Consultar solicitações de compra"],
+  ["purchasing.request.manage","Gerenciar solicitações de compra"],
+  ["purchasing.quotation.read","Consultar cotações"],
+  ["purchasing.quotation.manage","Gerenciar cotações"],
+  ["purchasing.order.read","Consultar ordens de compra"],
+  ["purchasing.order.manage","Gerenciar ordens de compra"],
+  ["purchasing.receipt.read","Consultar recebimentos"],
+  ["purchasing.receipt.manage","Registrar recebimentos"]
+];
+
+async function ensurePurchasingSchema(env) {
+  await env.DB.batch([
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS purchase_products (
+      id TEXT PRIMARY KEY, company_id TEXT NOT NULL, code TEXT NOT NULL, description TEXT NOT NULL,
+      item_type TEXT NOT NULL DEFAULT 'PRODUCT', unit TEXT NOT NULL DEFAULT 'UN', purchase_unit TEXT,
+      notes TEXT, active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, UNIQUE(company_id,code)
+    )`),
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS purchase_suppliers (
+      id TEXT PRIMARY KEY, company_id TEXT NOT NULL, code TEXT NOT NULL, name TEXT NOT NULL,
+      tax_id TEXT, email TEXT, phone TEXT, contact_name TEXT, notes TEXT, active INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(company_id,code)
+    )`),
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS purchase_locations (
+      id TEXT PRIMARY KEY, company_id TEXT NOT NULL, code TEXT NOT NULL, name TEXT NOT NULL,
+      active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, UNIQUE(company_id,code)
+    )`),
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS purchase_requests (
+      id TEXT PRIMARY KEY, company_id TEXT NOT NULL, number TEXT NOT NULL, branch_id TEXT,
+      request_date TEXT NOT NULL, needed_date TEXT, requester_name TEXT NOT NULL, notes TEXT,
+      status TEXT NOT NULL DEFAULT 'OPEN', created_by TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, UNIQUE(company_id,number)
+    )`),
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS purchase_request_items (
+      id TEXT PRIMARY KEY, company_id TEXT NOT NULL, request_id TEXT NOT NULL, line_no INTEGER NOT NULL,
+      product_id TEXT NOT NULL, description TEXT NOT NULL, quantity_milli INTEGER NOT NULL, unit TEXT NOT NULL,
+      cost_center_id TEXT, location_id TEXT, needed_date TEXT, notes TEXT,
+      ordered_qty_milli INTEGER NOT NULL DEFAULT 0, received_qty_milli INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, UNIQUE(request_id,line_no)
+    )`),
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS purchase_quotations (
+      id TEXT PRIMARY KEY, company_id TEXT NOT NULL, number TEXT NOT NULL, request_id TEXT NOT NULL,
+      buyer_name TEXT, quote_date TEXT NOT NULL, response_deadline TEXT, expected_delivery TEXT,
+      notes TEXT, status TEXT NOT NULL DEFAULT 'OPEN', created_by TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(company_id,number)
+    )`),
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS purchase_quotation_suppliers (
+      id TEXT PRIMARY KEY, company_id TEXT NOT NULL, quotation_id TEXT NOT NULL, supplier_id TEXT NOT NULL,
+      freight_cents INTEGER NOT NULL DEFAULT 0, payment_terms TEXT, notes TEXT,
+      status TEXT NOT NULL DEFAULT 'INVITED', created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(quotation_id,supplier_id)
+    )`),
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS purchase_quotation_items (
+      id TEXT PRIMARY KEY, company_id TEXT NOT NULL, quotation_id TEXT NOT NULL, request_item_id TEXT NOT NULL,
+      supplier_id TEXT NOT NULL, unit_price_cents INTEGER, delivery_date TEXT, selected INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(quotation_id,request_item_id,supplier_id)
+    )`),
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS purchase_orders (
+      id TEXT PRIMARY KEY, company_id TEXT NOT NULL, number TEXT NOT NULL, quotation_id TEXT,
+      request_id TEXT, supplier_id TEXT NOT NULL, branch_id TEXT, order_date TEXT NOT NULL,
+      expected_delivery TEXT, payment_terms TEXT, freight_cents INTEGER NOT NULL DEFAULT 0,
+      notes TEXT, status TEXT NOT NULL DEFAULT 'OPEN', created_by TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(company_id,number)
+    )`),
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS purchase_order_items (
+      id TEXT PRIMARY KEY, company_id TEXT NOT NULL, order_id TEXT NOT NULL, request_item_id TEXT,
+      product_id TEXT NOT NULL, description TEXT NOT NULL, quantity_milli INTEGER NOT NULL, unit TEXT NOT NULL,
+      unit_price_cents INTEGER NOT NULL, total_cents INTEGER NOT NULL, cost_center_id TEXT, location_id TEXT,
+      received_qty_milli INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )`),
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS purchase_receipts (
+      id TEXT PRIMARY KEY, company_id TEXT NOT NULL, number TEXT NOT NULL, order_id TEXT NOT NULL,
+      receipt_date TEXT NOT NULL, document_number TEXT, notes TEXT, created_by TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, UNIQUE(company_id,number)
+    )`),
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS purchase_receipt_items (
+      id TEXT PRIMARY KEY, company_id TEXT NOT NULL, receipt_id TEXT NOT NULL, order_item_id TEXT NOT NULL,
+      quantity_milli INTEGER NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )`),
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS stock_balances (
+      id TEXT PRIMARY KEY, company_id TEXT NOT NULL, product_id TEXT NOT NULL, location_id TEXT NOT NULL,
+      quantity_milli INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(company_id,product_id,location_id)
+    )`),
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS stock_movements (
+      id TEXT PRIMARY KEY, company_id TEXT NOT NULL, product_id TEXT NOT NULL, location_id TEXT NOT NULL,
+      movement_date TEXT NOT NULL, movement_type TEXT NOT NULL, quantity_milli INTEGER NOT NULL,
+      source_type TEXT, source_id TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )`),
+    env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_purchase_request_items_request ON purchase_request_items(company_id,request_id)`),
+    env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_purchase_quote_request ON purchase_quotations(company_id,request_id)`),
+    env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_purchase_order_request ON purchase_orders(company_id,request_id)`),
+    env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_purchase_receipt_order ON purchase_receipts(company_id,order_id)`)
+  ]);
+
+  for (const [code,description] of PURCHASE_PERMISSION_DEFS) {
+    const exists=await env.DB.prepare(`SELECT id FROM permissions WHERE code=?`).bind(code).first();
+    if (!exists) {
+      const id=uuid();
+      await env.DB.prepare(`INSERT INTO permissions (id,code,module,description) VALUES (?,?,'PURCHASES',?)`).bind(id,code,description).run();
+    }
+  }
+
+  // O perfil Administrador do sistema continua com acesso total às novas funções.
+  await env.DB.prepare(`
+    INSERT OR IGNORE INTO role_permissions (role_id,permission_id)
+    SELECT r.id,p.id FROM roles r CROSS JOIN permissions p
+    WHERE r.code='ADMIN' AND p.module='PURCHASES'
+  `).run();
+}
+
+function qtyToMilli(value, field='quantidade') {
+  if (typeof value==='number') {
+    if (!Number.isFinite(value) || value<=0) throw new HttpError(400,`${field} inválida.`,`VALIDATION_ERROR`);
+    return Math.round(value*1000);
+  }
+  const s=String(value??'').trim().replace(/\./g,'').replace(',','.');
+  if (!s || !/^\d+(\.\d{1,3})?$/.test(s) || Number(s)<=0) throw new HttpError(400,`${field} inválida.`,`VALIDATION_ERROR`);
+  return Math.round(Number(s)*1000);
+}
+function milliToQty(v){return Number(v||0)/1000;}
+
+async function purchaseEntity(env,table,id,companyId) {
+  const allowed=new Set([
+    'purchase_products','purchase_suppliers','purchase_locations','purchase_requests','purchase_quotations',
+    'purchase_orders','purchase_receipts','purchase_request_items','purchase_order_items'
+  ]);
+  if (!allowed.has(table)) throw new Error('Tabela de compras não permitida');
+  const row=await env.DB.prepare(`SELECT * FROM ${table} WHERE id=? AND company_id=?`).bind(id,companyId).first();
+  if (!row) throw new HttpError(404,'Registro de compras não encontrado.','NOT_FOUND');
+  return row;
+}
+
+async function nextPurchaseNumber(env,companyId,table,prefix) {
+  const row=await env.DB.prepare(`
+    SELECT MAX(CAST(SUBSTR(number,?) AS INTEGER)) AS max_no
+    FROM ${table} WHERE company_id=? AND number LIKE ?
+  `).bind(prefix.length+1,companyId,`${prefix}%`).first();
+  return prefix+String((Number(row?.max_no)||0)+1).padStart(6,'0');
+}
+
+function purchaseStatusLabel(s){
+  return ({OPEN:'Aberta',RELEASED:'Liberada',QUOTING:'Em cotação',ORDERED:'Pedido gerado',PARTIAL:'Parcial',FULFILLED:'Atendida',CANCELLED:'Cancelada',RECEIVED:'Recebida'})[s]||s;
+}
+
+async function listPurchaseMaster(env,companyId,table,columns) {
+  const res=await env.DB.prepare(`SELECT ${columns} FROM ${table} WHERE company_id=? ORDER BY code`).bind(companyId).all();
+  return res.results||[];
+}
+
+async function savePurchaseProduct(env,request,auth,companyId,id,body) {
+  await requirePermission(env,auth.user.id,companyId,'purchasing.product.manage');
+  const code=cleanText(required(body.code,'code'),50), description=cleanText(required(body.description,'description'),500);
+  const itemType=String(body.item_type||'PRODUCT').toUpperCase()==='SERVICE'?'SERVICE':'PRODUCT';
+  const unit=cleanText(required(body.unit,'unit'),20).toUpperCase();
+  const purchaseUnit=cleanText(body.purchase_unit||unit,20)?.toUpperCase();
+  const active=bool01(body.active,1), notes=cleanText(body.notes,1000);
+  if (id) {
+    const before=await purchaseEntity(env,'purchase_products',id,companyId);
+    await env.DB.prepare(`UPDATE purchase_products SET code=?,description=?,item_type=?,unit=?,purchase_unit=?,notes=?,active=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND company_id=?`)
+      .bind(code,description,itemType,unit,purchaseUnit,notes,active,id,companyId).run();
+    const after=await purchaseEntity(env,'purchase_products',id,companyId);
+    await audit(env,{companyId,userId:auth.user.id,action:'UPDATE',entity:'purchase_product',entityId:id,before,after,request}); return after;
+  }
+  const newId=uuid();
+  await env.DB.prepare(`INSERT INTO purchase_products (id,company_id,code,description,item_type,unit,purchase_unit,notes,active) VALUES (?,?,?,?,?,?,?,?,?)`)
+    .bind(newId,companyId,code,description,itemType,unit,purchaseUnit,notes,active).run();
+  const after=await purchaseEntity(env,'purchase_products',newId,companyId);
+  await audit(env,{companyId,userId:auth.user.id,action:'CREATE',entity:'purchase_product',entityId:newId,after,request}); return after;
+}
+
+async function savePurchaseSupplier(env,request,auth,companyId,id,body) {
+  await requirePermission(env,auth.user.id,companyId,'purchasing.supplier.manage');
+  const code=cleanText(required(body.code,'code'),50), name=cleanText(required(body.name,'name'),500);
+  const vals=[code,name,cleanText(body.tax_id,30),cleanText(body.email,250),cleanText(body.phone,60),cleanText(body.contact_name,250),cleanText(body.notes,1000),bool01(body.active,1)];
+  if (id) {
+    const before=await purchaseEntity(env,'purchase_suppliers',id,companyId);
+    await env.DB.prepare(`UPDATE purchase_suppliers SET code=?,name=?,tax_id=?,email=?,phone=?,contact_name=?,notes=?,active=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND company_id=?`).bind(...vals,id,companyId).run();
+    const after=await purchaseEntity(env,'purchase_suppliers',id,companyId); await audit(env,{companyId,userId:auth.user.id,action:'UPDATE',entity:'purchase_supplier',entityId:id,before,after,request}); return after;
+  }
+  const newId=uuid(); await env.DB.prepare(`INSERT INTO purchase_suppliers (id,company_id,code,name,tax_id,email,phone,contact_name,notes,active) VALUES (?,?,?,?,?,?,?,?,?,?)`).bind(newId,companyId,...vals).run();
+  const after=await purchaseEntity(env,'purchase_suppliers',newId,companyId); await audit(env,{companyId,userId:auth.user.id,action:'CREATE',entity:'purchase_supplier',entityId:newId,after,request}); return after;
+}
+
+async function savePurchaseLocation(env,request,auth,companyId,id,body) {
+  await requirePermission(env,auth.user.id,companyId,'purchasing.location.manage');
+  const code=cleanText(required(body.code,'code'),50), name=cleanText(required(body.name,'name'),300), active=bool01(body.active,1);
+  if (id) {
+    const before=await purchaseEntity(env,'purchase_locations',id,companyId);
+    await env.DB.prepare(`UPDATE purchase_locations SET code=?,name=?,active=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND company_id=?`).bind(code,name,active,id,companyId).run();
+    const after=await purchaseEntity(env,'purchase_locations',id,companyId); await audit(env,{companyId,userId:auth.user.id,action:'UPDATE',entity:'purchase_location',entityId:id,before,after,request}); return after;
+  }
+  const newId=uuid(); await env.DB.prepare(`INSERT INTO purchase_locations (id,company_id,code,name,active) VALUES (?,?,?,?,?)`).bind(newId,companyId,code,name,active).run();
+  const after=await purchaseEntity(env,'purchase_locations',newId,companyId); await audit(env,{companyId,userId:auth.user.id,action:'CREATE',entity:'purchase_location',entityId:newId,after,request}); return after;
+}
+
+async function deletePurchaseMaster(env,request,auth,companyId,type,id) {
+  const cfg={
+    product:{table:'purchase_products',perm:'purchasing.product.manage',checks:[['purchase_request_items','product_id'],['purchase_order_items','product_id']]},
+    supplier:{table:'purchase_suppliers',perm:'purchasing.supplier.manage',checks:[['purchase_quotation_suppliers','supplier_id'],['purchase_orders','supplier_id']]},
+    location:{table:'purchase_locations',perm:'purchasing.location.manage',checks:[['purchase_request_items','location_id'],['purchase_order_items','location_id']]}
+  }[type];
+  await requirePermission(env,auth.user.id,companyId,cfg.perm);
+  const before=await purchaseEntity(env,cfg.table,id,companyId);
+  for (const [table,col] of cfg.checks) {
+    const used=await env.DB.prepare(`SELECT 1 FROM ${table} WHERE company_id=? AND ${col}=? LIMIT 1`).bind(companyId,id).first();
+    if (used) {
+      await env.DB.prepare(`UPDATE ${cfg.table} SET active=0,updated_at=CURRENT_TIMESTAMP WHERE id=? AND company_id=?`).bind(id,companyId).run();
+      await audit(env,{companyId,userId:auth.user.id,action:'INACTIVATE',entity:type,entityId:id,before,request});
+      return {deleted:false,inactivated:true,id};
+    }
+  }
+  await env.DB.prepare(`DELETE FROM ${cfg.table} WHERE id=? AND company_id=?`).bind(id,companyId).run();
+  await audit(env,{companyId,userId:auth.user.id,action:'DELETE',entity:type,entityId:id,before,request});
+  return {deleted:true,id};
+}
+
+async function listPurchaseRequests(env,companyId) {
+  const res=await env.DB.prepare(`
+    SELECT r.id,r.number,r.request_date,r.needed_date,r.requester_name,r.status,r.notes,r.created_at,
+           b.code AS branch_code,b.name AS branch_name,COUNT(i.id) AS item_count
+    FROM purchase_requests r LEFT JOIN branches b ON b.id=r.branch_id
+    LEFT JOIN purchase_request_items i ON i.request_id=r.id AND i.company_id=r.company_id
+    WHERE r.company_id=? GROUP BY r.id ORDER BY r.request_date DESC,r.number DESC
+  `).bind(companyId).all();
+  return (res.results||[]).map(x=>({...x,item_count:Number(x.item_count||0)}));
+}
+
+async function getPurchaseRequest(env,companyId,id) {
+  const req=await env.DB.prepare(`SELECT r.*,b.code AS branch_code,b.name AS branch_name,u.name AS created_by_name FROM purchase_requests r LEFT JOIN branches b ON b.id=r.branch_id LEFT JOIN users u ON u.id=r.created_by WHERE r.id=? AND r.company_id=?`).bind(id,companyId).first();
+  if(!req)throw new HttpError(404,'Solicitação não encontrada.','NOT_FOUND');
+  const items=await env.DB.prepare(`
+    SELECT i.*,p.code AS product_code,p.description AS product_description,p.item_type,p.unit AS product_unit,
+           cc.code AS cost_center_code,cc.name AS cost_center_name,l.code AS location_code,l.name AS location_name
+    FROM purchase_request_items i JOIN purchase_products p ON p.id=i.product_id
+    LEFT JOIN cost_centers cc ON cc.id=i.cost_center_id LEFT JOIN purchase_locations l ON l.id=i.location_id
+    WHERE i.company_id=? AND i.request_id=? ORDER BY i.line_no
+  `).bind(companyId,id).all();
+  return {...req,items:(items.results||[]).map(x=>({...x,quantity:milliToQty(x.quantity_milli),ordered_qty:milliToQty(x.ordered_qty_milli),received_qty:milliToQty(x.received_qty_milli)}))};
+}
+
+async function validatePurchaseRequestItems(env,companyId,items) {
+  if(!Array.isArray(items)||!items.length)throw new HttpError(400,'Inclua pelo menos um item na solicitação.','VALIDATION_ERROR');
+  const out=[]; let no=1;
+  for(const raw of items){
+    const product=await purchaseEntity(env,'purchase_products',required(raw.product_id,'produto'),companyId);
+    if(!product.active)throw new HttpError(409,`Produto/serviço ${product.code} está inativo.`,'INACTIVE_PRODUCT');
+    let cc=null,loc=null;
+    if(raw.cost_center_id){ cc=await assertCompanyEntity(env,'cost_centers',raw.cost_center_id,companyId); if(!cc.active)throw new HttpError(409,'Centro de custo inativo.','INACTIVE_COST_CENTER'); }
+    if(raw.location_id){ loc=await purchaseEntity(env,'purchase_locations',raw.location_id,companyId); if(!loc.active)throw new HttpError(409,'Local de estoque inativo.','INACTIVE_LOCATION'); }
+    out.push({id:raw.id||uuid(),line_no:no++,product_id:product.id,description:cleanText(raw.description||product.description,500),quantity_milli:qtyToMilli(raw.quantity),unit:cleanText(raw.unit||product.purchase_unit||product.unit,20).toUpperCase(),cost_center_id:cc?.id||null,location_id:loc?.id||null,needed_date:raw.needed_date?isoDate(raw.needed_date,'data necessária do item'):null,notes:cleanText(raw.notes,1000)});
+  }
+  return out;
+}
+
+async function createPurchaseRequest(env,request,auth,companyId,body) {
+  await requirePermission(env,auth.user.id,companyId,'purchasing.request.manage');
+  const branchId=body.branch_id||null; if(branchId)await assertCompanyEntity(env,'branches',branchId,companyId);
+  const items=await validatePurchaseRequestItems(env,companyId,body.items);
+  const id=uuid(),number=await nextPurchaseNumber(env,companyId,'purchase_requests','SC-');
+  const requestDate=isoDate(body.request_date||new Date().toISOString().slice(0,10),'data da solicitação');
+  const neededDate=body.needed_date?isoDate(body.needed_date,'data necessária'):null;
+  const requester=cleanText(required(body.requester_name,'solicitante'),250),notes=cleanText(body.notes,2000);
+  const stmts=[env.DB.prepare(`INSERT INTO purchase_requests (id,company_id,number,branch_id,request_date,needed_date,requester_name,notes,status,created_by) VALUES (?,?,?,?,?,?,?,?, 'OPEN',?)`).bind(id,companyId,number,branchId,requestDate,neededDate,requester,notes,auth.user.id)];
+  for(const x of items)stmts.push(env.DB.prepare(`INSERT INTO purchase_request_items (id,company_id,request_id,line_no,product_id,description,quantity_milli,unit,cost_center_id,location_id,needed_date,notes) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`).bind(x.id,companyId,id,x.line_no,x.product_id,x.description,x.quantity_milli,x.unit,x.cost_center_id,x.location_id,x.needed_date,x.notes));
+  await env.DB.batch(stmts); const after=await getPurchaseRequest(env,companyId,id); await audit(env,{companyId,userId:auth.user.id,action:'CREATE',entity:'purchase_request',entityId:id,after:{number,status:'OPEN'},request}); return after;
+}
+
+async function updatePurchaseRequest(env,request,auth,companyId,id,body) {
+  await requirePermission(env,auth.user.id,companyId,'purchasing.request.manage');
+  const before=await getPurchaseRequest(env,companyId,id); if(before.status!=='OPEN')throw new HttpError(409,'Somente solicitação aberta pode ser editada.','INVALID_STATUS');
+  const branchId=body.branch_id||null; if(branchId)await assertCompanyEntity(env,'branches',branchId,companyId);
+  const items=await validatePurchaseRequestItems(env,companyId,body.items);
+  const requestDate=isoDate(body.request_date||before.request_date,'data da solicitação'),neededDate=body.needed_date?isoDate(body.needed_date,'data necessária'):null;
+  const stmts=[
+    env.DB.prepare(`DELETE FROM purchase_request_items WHERE company_id=? AND request_id=?`).bind(companyId,id),
+    env.DB.prepare(`UPDATE purchase_requests SET branch_id=?,request_date=?,needed_date=?,requester_name=?,notes=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND company_id=?`).bind(branchId,requestDate,neededDate,cleanText(required(body.requester_name,'solicitante'),250),cleanText(body.notes,2000),id,companyId)
+  ];
+  for(const x of items)stmts.push(env.DB.prepare(`INSERT INTO purchase_request_items (id,company_id,request_id,line_no,product_id,description,quantity_milli,unit,cost_center_id,location_id,needed_date,notes) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`).bind(x.id,companyId,id,x.line_no,x.product_id,x.description,x.quantity_milli,x.unit,x.cost_center_id,x.location_id,x.needed_date,x.notes));
+  await env.DB.batch(stmts); const after=await getPurchaseRequest(env,companyId,id); await audit(env,{companyId,userId:auth.user.id,action:'UPDATE',entity:'purchase_request',entityId:id,before:{number:before.number},after:{number:after.number},request}); return after;
+}
+
+async function setPurchaseRequestStatus(env,request,auth,companyId,id,target) {
+  await requirePermission(env,auth.user.id,companyId,'purchasing.request.manage');
+  const before=await purchaseEntity(env,'purchase_requests',id,companyId);
+  if(target==='RELEASED'&&before.status!=='OPEN')throw new HttpError(409,'Somente solicitação aberta pode ser liberada.','INVALID_STATUS');
+  if(target==='CANCELLED'&&!['OPEN','RELEASED'].includes(before.status))throw new HttpError(409,'Esta solicitação já possui processo de compra em andamento e não pode ser cancelada por aqui.','INVALID_STATUS');
+  await env.DB.prepare(`UPDATE purchase_requests SET status=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND company_id=?`).bind(target,id,companyId).run();
+  await audit(env,{companyId,userId:auth.user.id,action:target==='RELEASED'?'RELEASE':'CANCEL',entity:'purchase_request',entityId:id,before:{status:before.status},after:{status:target},request});
+  return getPurchaseRequest(env,companyId,id);
+}
+
+async function deletePurchaseRequest(env,request,auth,companyId,id) {
+  await requirePermission(env,auth.user.id,companyId,'purchasing.request.manage');
+  const before=await purchaseEntity(env,'purchase_requests',id,companyId); if(before.status!=='OPEN')throw new HttpError(409,'Somente solicitação aberta pode ser excluída.','INVALID_STATUS');
+  const quote=await env.DB.prepare(`SELECT 1 FROM purchase_quotations WHERE company_id=? AND request_id=? LIMIT 1`).bind(companyId,id).first(); if(quote)throw new HttpError(409,'A solicitação já está vinculada a cotação.','IN_USE');
+  await env.DB.batch([env.DB.prepare(`DELETE FROM purchase_request_items WHERE company_id=? AND request_id=?`).bind(companyId,id),env.DB.prepare(`DELETE FROM purchase_requests WHERE company_id=? AND id=?`).bind(companyId,id)]);
+  await audit(env,{companyId,userId:auth.user.id,action:'DELETE',entity:'purchase_request',entityId:id,before,request}); return {deleted:true,id};
+}
+
+async function listQuotations(env,companyId) {
+  const r=await env.DB.prepare(`
+    SELECT q.id,q.number,q.quote_date,q.response_deadline,q.expected_delivery,q.buyer_name,q.status,q.notes,
+           pr.number AS request_number,COUNT(DISTINCT qs.supplier_id) AS supplier_count
+    FROM purchase_quotations q JOIN purchase_requests pr ON pr.id=q.request_id
+    LEFT JOIN purchase_quotation_suppliers qs ON qs.quotation_id=q.id AND qs.company_id=q.company_id
+    WHERE q.company_id=? GROUP BY q.id ORDER BY q.quote_date DESC,q.number DESC
+  `).bind(companyId).all(); return (r.results||[]).map(x=>({...x,supplier_count:Number(x.supplier_count||0)}));
+}
+
+async function getQuotation(env,companyId,id) {
+  const q=await env.DB.prepare(`SELECT q.*,pr.number AS request_number,pr.requester_name,pr.branch_id FROM purchase_quotations q JOIN purchase_requests pr ON pr.id=q.request_id WHERE q.id=? AND q.company_id=?`).bind(id,companyId).first();
+  if(!q)throw new HttpError(404,'Cotação não encontrada.','NOT_FOUND');
+  const suppliers=await env.DB.prepare(`SELECT qs.*,s.code AS supplier_code,s.name AS supplier_name,s.tax_id FROM purchase_quotation_suppliers qs JOIN purchase_suppliers s ON s.id=qs.supplier_id WHERE qs.company_id=? AND qs.quotation_id=? ORDER BY s.code`).bind(companyId,id).all();
+  const req=await getPurchaseRequest(env,companyId,q.request_id);
+  const proposals=await env.DB.prepare(`SELECT qi.*,s.code AS supplier_code,s.name AS supplier_name FROM purchase_quotation_items qi JOIN purchase_suppliers s ON s.id=qi.supplier_id WHERE qi.company_id=? AND qi.quotation_id=?`).bind(companyId,id).all();
+  return {...q,request:req,suppliers:(suppliers.results||[]).map(x=>({...x,freight:centsToMoney(x.freight_cents)})),proposals:(proposals.results||[]).map(x=>({...x,unit_price:x.unit_price_cents==null?null:centsToMoney(x.unit_price_cents)}))};
+}
+
+async function createQuotation(env,request,auth,companyId,body) {
+  await requirePermission(env,auth.user.id,companyId,'purchasing.quotation.manage');
+  const req=await purchaseEntity(env,'purchase_requests',required(body.request_id,'solicitação'),companyId); if(req.status!=='RELEASED')throw new HttpError(409,'A solicitação precisa estar liberada para cotação.','INVALID_STATUS');
+  const supplierIds=[...new Set((Array.isArray(body.supplier_ids)?body.supplier_ids:[]).filter(Boolean))]; if(!supplierIds.length)throw new HttpError(400,'Selecione ao menos um fornecedor.','VALIDATION_ERROR');
+  for(const sid of supplierIds){const s=await purchaseEntity(env,'purchase_suppliers',sid,companyId);if(!s.active)throw new HttpError(409,`Fornecedor ${s.code} está inativo.`,'INACTIVE_SUPPLIER');}
+  const id=uuid(),number=await nextPurchaseNumber(env,companyId,'purchase_quotations','COT-'),quoteDate=isoDate(body.quote_date||new Date().toISOString().slice(0,10),'data da cotação');
+  const stmts=[env.DB.prepare(`INSERT INTO purchase_quotations (id,company_id,number,request_id,buyer_name,quote_date,response_deadline,expected_delivery,notes,status,created_by) VALUES (?,?,?,?,?,?,?,?,?,'OPEN',?)`).bind(id,companyId,number,req.id,cleanText(body.buyer_name,250),quoteDate,body.response_deadline?isoDate(body.response_deadline,'limite de resposta'):null,body.expected_delivery?isoDate(body.expected_delivery,'previsão de entrega'):null,cleanText(body.notes,2000),auth.user.id),env.DB.prepare(`UPDATE purchase_requests SET status='QUOTING',updated_at=CURRENT_TIMESTAMP WHERE id=? AND company_id=?`).bind(req.id,companyId)];
+  for(const sid of supplierIds)stmts.push(env.DB.prepare(`INSERT INTO purchase_quotation_suppliers (id,company_id,quotation_id,supplier_id) VALUES (?,?,?,?)`).bind(uuid(),companyId,id,sid));
+  await env.DB.batch(stmts); await audit(env,{companyId,userId:auth.user.id,action:'CREATE',entity:'purchase_quotation',entityId:id,after:{number,request_id:req.id},request}); return getQuotation(env,companyId,id);
+}
+
+async function saveQuotationProposals(env,request,auth,companyId,id,body) {
+  await requirePermission(env,auth.user.id,companyId,'purchasing.quotation.manage');
+  const q=await purchaseEntity(env,'purchase_quotations',id,companyId); if(q.status!=='OPEN')throw new HttpError(409,'Somente cotação aberta pode ser alterada.','INVALID_STATUS');
+  const details=await getQuotation(env,companyId,id),supplierSet=new Set(details.suppliers.map(x=>x.supplier_id)),itemSet=new Set(details.request.items.map(x=>x.id));
+  const proposals=Array.isArray(body.proposals)?body.proposals:[],supplierTerms=Array.isArray(body.suppliers)?body.suppliers:[];
+  const stmts=[env.DB.prepare(`DELETE FROM purchase_quotation_items WHERE company_id=? AND quotation_id=?`).bind(companyId,id)];
+  for(const st of supplierTerms){if(!supplierSet.has(st.supplier_id))continue;stmts.push(env.DB.prepare(`UPDATE purchase_quotation_suppliers SET freight_cents=?,payment_terms=?,notes=?,status=? WHERE company_id=? AND quotation_id=? AND supplier_id=?`).bind(moneyToCents(st.freight||0),cleanText(st.payment_terms,500),cleanText(st.notes,1000),st.responded===false?'INVITED':'RESPONDED',companyId,id,st.supplier_id));}
+  const selectedByItem=new Map();
+  for(const p of proposals){if(!supplierSet.has(p.supplier_id)||!itemSet.has(p.request_item_id))continue;const hasPrice=String(p.unit_price??'').trim()!=='';if(!hasPrice)continue;const cents=moneyToCents(p.unit_price);if(cents<0)throw new HttpError(400,'Preço unitário inválido.','VALIDATION_ERROR');const selected=!!p.selected;if(selected){if(selectedByItem.has(p.request_item_id))throw new HttpError(400,'Selecione apenas um fornecedor por item.','VALIDATION_ERROR');selectedByItem.set(p.request_item_id,p.supplier_id);}stmts.push(env.DB.prepare(`INSERT INTO purchase_quotation_items (id,company_id,quotation_id,request_item_id,supplier_id,unit_price_cents,delivery_date,selected) VALUES (?,?,?,?,?,?,?,?)`).bind(uuid(),companyId,id,p.request_item_id,p.supplier_id,cents,p.delivery_date?isoDate(p.delivery_date,'data de entrega proposta'):null,selected?1:0));}
+  await env.DB.batch(stmts); await audit(env,{companyId,userId:auth.user.id,action:'UPDATE_PROPOSALS',entity:'purchase_quotation',entityId:id,after:{proposals:proposals.length,selections:selectedByItem.size},request}); return getQuotation(env,companyId,id);
+}
+
+async function cancelQuotation(env,request,auth,companyId,id) {
+  await requirePermission(env,auth.user.id,companyId,'purchasing.quotation.manage'); const q=await purchaseEntity(env,'purchase_quotations',id,companyId); if(q.status!=='OPEN')throw new HttpError(409,'Somente cotação aberta pode ser cancelada.','INVALID_STATUS');
+  await env.DB.batch([env.DB.prepare(`UPDATE purchase_quotations SET status='CANCELLED',updated_at=CURRENT_TIMESTAMP WHERE id=? AND company_id=?`).bind(id,companyId),env.DB.prepare(`UPDATE purchase_requests SET status='RELEASED',updated_at=CURRENT_TIMESTAMP WHERE id=? AND company_id=? AND status='QUOTING'`).bind(q.request_id,companyId)]); await audit(env,{companyId,userId:auth.user.id,action:'CANCEL',entity:'purchase_quotation',entityId:id,request}); return getQuotation(env,companyId,id);
+}
+
+async function generateOrdersFromQuotation(env,request,auth,companyId,id) {
+  await requirePermission(env,auth.user.id,companyId,'purchasing.order.manage');
+  const q=await getQuotation(env,companyId,id); if(q.status!=='OPEN')throw new HttpError(409,'A cotação não está aberta para geração de ordem.','INVALID_STATUS');
+  const selected=q.proposals.filter(x=>Number(x.selected)===1&&x.unit_price_cents!=null); const allItems=q.request.items;
+  const selectedMap=new Map(selected.map(x=>[x.request_item_id,x])); const missing=allItems.filter(x=>!selectedMap.has(x.id)); if(missing.length)throw new HttpError(409,`Selecione o fornecedor vencedor de todos os ${allItems.length} itens antes de gerar as ordens.`,'MISSING_WINNERS');
+  const supplierConfig=new Map(q.suppliers.map(x=>[x.supplier_id,x])),groups=new Map();
+  for(const item of allItems){const p=selectedMap.get(item.id);if(!groups.has(p.supplier_id))groups.set(p.supplier_id,[]);groups.get(p.supplier_id).push({item,proposal:p});}
+  const created=[];
+  for(const [supplierId,rows] of groups){
+    const oid=uuid(),number=await nextPurchaseNumber(env,companyId,'purchase_orders','OC-'),sc=supplierConfig.get(supplierId)||{};
+    const stmts=[env.DB.prepare(`INSERT INTO purchase_orders (id,company_id,number,quotation_id,request_id,supplier_id,branch_id,order_date,expected_delivery,payment_terms,freight_cents,notes,status,created_by) VALUES (?,?,?,?,?,?,?,?,?,?,?,?, 'OPEN',?)`).bind(oid,companyId,number,q.id,q.request_id,supplierId,q.branch_id,new Date().toISOString().slice(0,10),q.expected_delivery||null,sc.payment_terms||null,Number(sc.freight_cents||0),q.notes||null,auth.user.id)];
+    for(const row of rows){const total=Math.round(Number(row.item.quantity_milli)*Number(row.proposal.unit_price_cents)/1000);stmts.push(env.DB.prepare(`INSERT INTO purchase_order_items (id,company_id,order_id,request_item_id,product_id,description,quantity_milli,unit,unit_price_cents,total_cents,cost_center_id,location_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`).bind(uuid(),companyId,oid,row.item.id,row.item.product_id,row.item.description,row.item.quantity_milli,row.item.unit,row.proposal.unit_price_cents,total,row.item.cost_center_id,row.item.location_id));stmts.push(env.DB.prepare(`UPDATE purchase_request_items SET ordered_qty_milli=ordered_qty_milli+? WHERE id=? AND company_id=?`).bind(row.item.quantity_milli,row.item.id,companyId));}
+    await env.DB.batch(stmts); created.push({id:oid,number,supplier_id:supplierId});
+  }
+  await env.DB.batch([env.DB.prepare(`UPDATE purchase_quotations SET status='ORDERED',updated_at=CURRENT_TIMESTAMP WHERE id=? AND company_id=?`).bind(id,companyId),env.DB.prepare(`UPDATE purchase_requests SET status='ORDERED',updated_at=CURRENT_TIMESTAMP WHERE id=? AND company_id=?`).bind(q.request_id,companyId)]);
+  await audit(env,{companyId,userId:auth.user.id,action:'GENERATE_ORDERS',entity:'purchase_quotation',entityId:id,after:{orders:created.map(x=>x.number)},request}); return {orders:created};
+}
+
+async function listOrders(env,companyId) {
+  const r=await env.DB.prepare(`SELECT o.id,o.number,o.order_date,o.expected_delivery,o.status,o.freight_cents,s.code AS supplier_code,s.name AS supplier_name,q.number AS quotation_number,r.number AS request_number,COUNT(i.id) AS item_count,COALESCE(SUM(i.total_cents),0)+o.freight_cents AS total_cents FROM purchase_orders o JOIN purchase_suppliers s ON s.id=o.supplier_id LEFT JOIN purchase_quotations q ON q.id=o.quotation_id LEFT JOIN purchase_requests r ON r.id=o.request_id LEFT JOIN purchase_order_items i ON i.order_id=o.id AND i.company_id=o.company_id WHERE o.company_id=? GROUP BY o.id ORDER BY o.order_date DESC,o.number DESC`).bind(companyId).all(); return (r.results||[]).map(x=>({...x,freight:centsToMoney(x.freight_cents),total:centsToMoney(x.total_cents),item_count:Number(x.item_count||0)}));
+}
+
+async function getOrder(env,companyId,id) {
+  const o=await env.DB.prepare(`SELECT o.*,s.code AS supplier_code,s.name AS supplier_name,s.tax_id,s.email,s.phone,q.number AS quotation_number,r.number AS request_number,b.code AS branch_code,b.name AS branch_name,u.name AS created_by_name FROM purchase_orders o JOIN purchase_suppliers s ON s.id=o.supplier_id LEFT JOIN purchase_quotations q ON q.id=o.quotation_id LEFT JOIN purchase_requests r ON r.id=o.request_id LEFT JOIN branches b ON b.id=o.branch_id LEFT JOIN users u ON u.id=o.created_by WHERE o.id=? AND o.company_id=?`).bind(id,companyId).first(); if(!o)throw new HttpError(404,'Ordem de compra não encontrada.','NOT_FOUND');
+  const items=await env.DB.prepare(`SELECT i.*,p.code AS product_code,p.item_type,cc.code AS cost_center_code,cc.name AS cost_center_name,l.code AS location_code,l.name AS location_name FROM purchase_order_items i JOIN purchase_products p ON p.id=i.product_id LEFT JOIN cost_centers cc ON cc.id=i.cost_center_id LEFT JOIN purchase_locations l ON l.id=i.location_id WHERE i.company_id=? AND i.order_id=? ORDER BY i.created_at`).bind(companyId,id).all();
+  const arr=(items.results||[]).map(x=>({...x,quantity:milliToQty(x.quantity_milli),received_qty:milliToQty(x.received_qty_milli),remaining_qty:milliToQty(Math.max(0,x.quantity_milli-x.received_qty_milli)),unit_price:centsToMoney(x.unit_price_cents),total:centsToMoney(x.total_cents)})); return {...o,freight:centsToMoney(o.freight_cents),items:arr,total:centsToMoney(arr.reduce((s,x)=>s+x.total_cents,Number(o.freight_cents||0)))};
+}
+
+async function cancelOrder(env,request,auth,companyId,id) {
+  await requirePermission(env,auth.user.id,companyId,'purchasing.order.manage'); const o=await purchaseEntity(env,'purchase_orders',id,companyId); if(!['OPEN'].includes(o.status))throw new HttpError(409,'Somente ordem aberta e sem recebimento pode ser cancelada.','INVALID_STATUS');
+  const receipt=await env.DB.prepare(`SELECT 1 FROM purchase_receipts WHERE company_id=? AND order_id=? LIMIT 1`).bind(companyId,id).first(); if(receipt)throw new HttpError(409,'A ordem já possui recebimento.','IN_USE');
+  const items=await env.DB.prepare(`SELECT request_item_id,quantity_milli FROM purchase_order_items WHERE company_id=? AND order_id=?`).bind(companyId,id).all(); const stmts=[env.DB.prepare(`UPDATE purchase_orders SET status='CANCELLED',updated_at=CURRENT_TIMESTAMP WHERE id=? AND company_id=?`).bind(id,companyId)]; for(const x of items.results||[])if(x.request_item_id)stmts.push(env.DB.prepare(`UPDATE purchase_request_items SET ordered_qty_milli=MAX(0,ordered_qty_milli-?) WHERE id=? AND company_id=?`).bind(x.quantity_milli,x.request_item_id,companyId)); await env.DB.batch(stmts); await audit(env,{companyId,userId:auth.user.id,action:'CANCEL',entity:'purchase_order',entityId:id,request}); return getOrder(env,companyId,id);
+}
+
+async function listReceipts(env,companyId) {
+  const r=await env.DB.prepare(`SELECT rec.id,rec.number,rec.receipt_date,rec.document_number,rec.created_at,o.number AS order_number,s.code AS supplier_code,s.name AS supplier_name,COUNT(ri.id) AS item_count FROM purchase_receipts rec JOIN purchase_orders o ON o.id=rec.order_id JOIN purchase_suppliers s ON s.id=o.supplier_id LEFT JOIN purchase_receipt_items ri ON ri.receipt_id=rec.id AND ri.company_id=rec.company_id WHERE rec.company_id=? GROUP BY rec.id ORDER BY rec.receipt_date DESC,rec.number DESC`).bind(companyId).all(); return (r.results||[]).map(x=>({...x,item_count:Number(x.item_count||0)}));
+}
+
+async function getReceipt(env,companyId,id) {
+  const rec=await env.DB.prepare(`SELECT rec.*,o.number AS order_number,s.code AS supplier_code,s.name AS supplier_name,u.name AS created_by_name FROM purchase_receipts rec JOIN purchase_orders o ON o.id=rec.order_id JOIN purchase_suppliers s ON s.id=o.supplier_id LEFT JOIN users u ON u.id=rec.created_by WHERE rec.id=? AND rec.company_id=?`).bind(id,companyId).first(); if(!rec)throw new HttpError(404,'Recebimento não encontrado.','NOT_FOUND');
+  const items=await env.DB.prepare(`SELECT ri.*,oi.description,oi.unit,p.code AS product_code,l.code AS location_code,l.name AS location_name FROM purchase_receipt_items ri JOIN purchase_order_items oi ON oi.id=ri.order_item_id JOIN purchase_products p ON p.id=oi.product_id LEFT JOIN purchase_locations l ON l.id=oi.location_id WHERE ri.company_id=? AND ri.receipt_id=?`).bind(companyId,id).all(); return {...rec,items:(items.results||[]).map(x=>({...x,quantity:milliToQty(x.quantity_milli)}))};
+}
+
+async function refreshRequestFulfillment(env,companyId,requestId) {
+  if(!requestId)return;
+  const x=await env.DB.prepare(`SELECT COUNT(*) AS total,SUM(CASE WHEN ordered_qty_milli>0 AND received_qty_milli>=ordered_qty_milli THEN 1 ELSE 0 END) AS done,SUM(received_qty_milli) AS received FROM purchase_request_items WHERE company_id=? AND request_id=?`).bind(companyId,requestId).first();
+  const status=Number(x?.total||0)>0&&Number(x?.done||0)===Number(x?.total||0)?'FULFILLED':(Number(x?.received||0)>0?'PARTIAL':'ORDERED'); await env.DB.prepare(`UPDATE purchase_requests SET status=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND company_id=? AND status<>'CANCELLED'`).bind(status,requestId,companyId).run();
+}
+
+async function createReceipt(env,request,auth,companyId,body) {
+  await requirePermission(env,auth.user.id,companyId,'purchasing.receipt.manage'); const order=await purchaseEntity(env,'purchase_orders',required(body.order_id,'ordem de compra'),companyId); if(!['OPEN','PARTIAL'].includes(order.status))throw new HttpError(409,'A ordem não está aberta para recebimento.','INVALID_STATUS');
+  const orderDetails=await getOrder(env,companyId,order.id),map=new Map(orderDetails.items.map(x=>[x.id,x])); const rows=Array.isArray(body.items)?body.items:[]; if(!rows.length)throw new HttpError(400,'Informe ao menos um item recebido.','VALIDATION_ERROR');
+  const valid=[]; for(const raw of rows){const oi=map.get(raw.order_item_id);if(!oi)continue;const q=qtyToMilli(raw.quantity,'quantidade recebida');const remaining=oi.quantity_milli-oi.received_qty_milli;if(q>remaining)throw new HttpError(409,`Quantidade recebida de ${oi.description} excede o saldo da ordem.`,'QUANTITY_EXCEEDED');valid.push({oi,q});} if(!valid.length)throw new HttpError(400,'Nenhuma quantidade de recebimento válida.','VALIDATION_ERROR');
+  const rid=uuid(),number=await nextPurchaseNumber(env,companyId,'purchase_receipts','REC-'),date=isoDate(body.receipt_date||new Date().toISOString().slice(0,10),'data do recebimento'); const stmts=[env.DB.prepare(`INSERT INTO purchase_receipts (id,company_id,number,order_id,receipt_date,document_number,notes,created_by) VALUES (?,?,?,?,?,?,?,?)`).bind(rid,companyId,number,order.id,date,cleanText(body.document_number,120),cleanText(body.notes,2000),auth.user.id)];
+  for(const {oi,q} of valid){stmts.push(env.DB.prepare(`INSERT INTO purchase_receipt_items (id,company_id,receipt_id,order_item_id,quantity_milli) VALUES (?,?,?,?,?)`).bind(uuid(),companyId,rid,oi.id,q));stmts.push(env.DB.prepare(`UPDATE purchase_order_items SET received_qty_milli=received_qty_milli+? WHERE id=? AND company_id=?`).bind(q,oi.id,companyId));if(oi.request_item_id)stmts.push(env.DB.prepare(`UPDATE purchase_request_items SET received_qty_milli=received_qty_milli+? WHERE id=? AND company_id=?`).bind(q,oi.request_item_id,companyId));if(oi.item_type==='PRODUCT'&&oi.location_id){const bal=await env.DB.prepare(`SELECT id FROM stock_balances WHERE company_id=? AND product_id=? AND location_id=?`).bind(companyId,oi.product_id,oi.location_id).first();if(bal)stmts.push(env.DB.prepare(`UPDATE stock_balances SET quantity_milli=quantity_milli+?,updated_at=CURRENT_TIMESTAMP WHERE id=?`).bind(q,bal.id));else stmts.push(env.DB.prepare(`INSERT INTO stock_balances (id,company_id,product_id,location_id,quantity_milli) VALUES (?,?,?,?,?)`).bind(uuid(),companyId,oi.product_id,oi.location_id,q));stmts.push(env.DB.prepare(`INSERT INTO stock_movements (id,company_id,product_id,location_id,movement_date,movement_type,quantity_milli,source_type,source_id) VALUES (?,?,?,?,?,'PURCHASE_RECEIPT',?,'PURCHASE_RECEIPT',?)`).bind(uuid(),companyId,oi.product_id,oi.location_id,date,q,rid));}}
+  await env.DB.batch(stmts);
+  const after=await getOrder(env,companyId,order.id),full=after.items.every(x=>x.received_qty_milli>=x.quantity_milli); await env.DB.prepare(`UPDATE purchase_orders SET status=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND company_id=?`).bind(full?'RECEIVED':'PARTIAL',order.id,companyId).run(); await refreshRequestFulfillment(env,companyId,order.request_id); await audit(env,{companyId,userId:auth.user.id,action:'RECEIVE',entity:'purchase_order',entityId:order.id,after:{receipt:number},request}); return getReceipt(env,companyId,rid);
+}
+
+async function listStockBalances(env,companyId) {
+  const r=await env.DB.prepare(`SELECT sb.id,p.code AS product_code,p.description,p.unit,l.code AS location_code,l.name AS location_name,sb.quantity_milli,sb.updated_at FROM stock_balances sb JOIN purchase_products p ON p.id=sb.product_id JOIN purchase_locations l ON l.id=sb.location_id WHERE sb.company_id=? ORDER BY p.code,l.code`).bind(companyId).all(); return (r.results||[]).map(x=>({...x,quantity:milliToQty(x.quantity_milli)}));
+}
+
 async function route(request, env) {
   const url=new URL(request.url), path=url.pathname.replace(/\/+$/,"" )||"/", method=request.method.toUpperCase();
   if (method==="OPTIONS") return new Response(null,{status:204});
@@ -2789,6 +3213,7 @@ async function route(request, env) {
 
   const companyId=await currentCompany(request,env,auth);
   await ensureEntryMaintenanceSchema(env);
+  await ensurePurchasingSchema(env);
 
   if (method==="GET" && path==="/api/auth/permissions") return ok({permissions:await getEffectivePermissions(env,auth.user.id,companyId)});
 
@@ -2902,6 +3327,52 @@ async function route(request, env) {
   if (p && method==="POST") return ok({entry:await postEntry(env,request,auth,companyId,p.id)});
   p=routeMatch(path,"/api/journal-entries/:id/void");
   if (p && method==="POST") { const b=await readJson(request); return ok({entry:await voidEntry(env,request,auth,companyId,p.id,b.reason)}); }
+
+
+  // ---- Compras / Materiais ----
+  if (method==="GET" && path==="/api/purchase-products") { await requirePermission(env,auth.user.id,companyId,"purchasing.product.read"); return ok({products:await listPurchaseMaster(env,companyId,"purchase_products","id,code,description,item_type,unit,purchase_unit,notes,active,created_at")}); }
+  if (method==="POST" && path==="/api/purchase-products") return ok({product:await savePurchaseProduct(env,request,auth,companyId,null,await readJson(request))},201);
+  p=routeMatch(path,"/api/purchase-products/:id");
+  if (p && method==="PATCH") return ok({product:await savePurchaseProduct(env,request,auth,companyId,p.id,await readJson(request))});
+  if (p && method==="DELETE") return ok(await deletePurchaseMaster(env,request,auth,companyId,"product",p.id));
+
+  if (method==="GET" && path==="/api/purchase-suppliers") { await requirePermission(env,auth.user.id,companyId,"purchasing.supplier.read"); return ok({suppliers:await listPurchaseMaster(env,companyId,"purchase_suppliers","id,code,name,tax_id,email,phone,contact_name,notes,active,created_at")}); }
+  if (method==="POST" && path==="/api/purchase-suppliers") return ok({supplier:await savePurchaseSupplier(env,request,auth,companyId,null,await readJson(request))},201);
+  p=routeMatch(path,"/api/purchase-suppliers/:id");
+  if (p && method==="PATCH") return ok({supplier:await savePurchaseSupplier(env,request,auth,companyId,p.id,await readJson(request))});
+  if (p && method==="DELETE") return ok(await deletePurchaseMaster(env,request,auth,companyId,"supplier",p.id));
+
+  if (method==="GET" && path==="/api/purchase-locations") { await requirePermission(env,auth.user.id,companyId,"purchasing.location.read"); return ok({locations:await listPurchaseMaster(env,companyId,"purchase_locations","id,code,name,active,created_at")}); }
+  if (method==="POST" && path==="/api/purchase-locations") return ok({location:await savePurchaseLocation(env,request,auth,companyId,null,await readJson(request))},201);
+  p=routeMatch(path,"/api/purchase-locations/:id");
+  if (p && method==="PATCH") return ok({location:await savePurchaseLocation(env,request,auth,companyId,p.id,await readJson(request))});
+  if (p && method==="DELETE") return ok(await deletePurchaseMaster(env,request,auth,companyId,"location",p.id));
+
+  if (method==="GET" && path==="/api/purchase-requests") { await requirePermission(env,auth.user.id,companyId,"purchasing.request.read"); return ok({requests:await listPurchaseRequests(env,companyId)}); }
+  if (method==="POST" && path==="/api/purchase-requests") return ok({request:await createPurchaseRequest(env,request,auth,companyId,await readJson(request))},201);
+  p=routeMatch(path,"/api/purchase-requests/:id/release"); if(p&&method==="POST")return ok({request:await setPurchaseRequestStatus(env,request,auth,companyId,p.id,"RELEASED")});
+  p=routeMatch(path,"/api/purchase-requests/:id/cancel"); if(p&&method==="POST")return ok({request:await setPurchaseRequestStatus(env,request,auth,companyId,p.id,"CANCELLED")});
+  p=routeMatch(path,"/api/purchase-requests/:id");
+  if(p&&method==="GET"){await requirePermission(env,auth.user.id,companyId,"purchasing.request.read");return ok({request:await getPurchaseRequest(env,companyId,p.id)});}
+  if(p&&method==="PATCH")return ok({request:await updatePurchaseRequest(env,request,auth,companyId,p.id,await readJson(request))});
+  if(p&&method==="DELETE")return ok(await deletePurchaseRequest(env,request,auth,companyId,p.id));
+
+  if(method==="GET"&&path==="/api/purchase-quotations"){await requirePermission(env,auth.user.id,companyId,"purchasing.quotation.read");return ok({quotations:await listQuotations(env,companyId)});}
+  if(method==="POST"&&path==="/api/purchase-quotations")return ok({quotation:await createQuotation(env,request,auth,companyId,await readJson(request))},201);
+  p=routeMatch(path,"/api/purchase-quotations/:id/proposals"); if(p&&method==="PATCH")return ok({quotation:await saveQuotationProposals(env,request,auth,companyId,p.id,await readJson(request))});
+  p=routeMatch(path,"/api/purchase-quotations/:id/generate-orders"); if(p&&method==="POST")return ok(await generateOrdersFromQuotation(env,request,auth,companyId,p.id));
+  p=routeMatch(path,"/api/purchase-quotations/:id/cancel"); if(p&&method==="POST")return ok({quotation:await cancelQuotation(env,request,auth,companyId,p.id)});
+  p=routeMatch(path,"/api/purchase-quotations/:id"); if(p&&method==="GET"){await requirePermission(env,auth.user.id,companyId,"purchasing.quotation.read");return ok({quotation:await getQuotation(env,companyId,p.id)});}
+
+  if(method==="GET"&&path==="/api/purchase-orders"){await requirePermission(env,auth.user.id,companyId,"purchasing.order.read");return ok({orders:await listOrders(env,companyId)});}
+  p=routeMatch(path,"/api/purchase-orders/:id/cancel"); if(p&&method==="POST")return ok({order:await cancelOrder(env,request,auth,companyId,p.id)});
+  p=routeMatch(path,"/api/purchase-orders/:id"); if(p&&method==="GET"){await requirePermission(env,auth.user.id,companyId,"purchasing.order.read");return ok({order:await getOrder(env,companyId,p.id)});}
+
+  if(method==="GET"&&path==="/api/purchase-receipts"){await requirePermission(env,auth.user.id,companyId,"purchasing.receipt.read");return ok({receipts:await listReceipts(env,companyId)});}
+  if(method==="POST"&&path==="/api/purchase-receipts")return ok({receipt:await createReceipt(env,request,auth,companyId,await readJson(request))},201);
+  p=routeMatch(path,"/api/purchase-receipts/:id"); if(p&&method==="GET"){await requirePermission(env,auth.user.id,companyId,"purchasing.receipt.read");return ok({receipt:await getReceipt(env,companyId,p.id)});}
+
+  if(method==="GET"&&path==="/api/stock-balances"){await requirePermission(env,auth.user.id,companyId,"purchasing.location.read");return ok({balances:await listStockBalances(env,companyId)});}
 
   if (method==="GET" && path==="/api/audit") {
     await requirePermission(env,auth.user.id,companyId,"core.audit.read");
