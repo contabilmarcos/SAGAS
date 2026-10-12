@@ -1,10 +1,11 @@
 
 <!DOCTYPE html>
+<!-- SAGAS v26 - Layout modular no padrão visual do projeto de referência; funcionalidades preservadas da v25 -->
 <html lang="pt-BR">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>SAGAS</title>
+  <title>SAGAS · Gestão Integrada</title>
   <style>
 :root{--blue:#1557d6;--blue2:#1048b4;--blueSoft:#edf3ff;--bg:#f5f7fb;--surface:#fff;--line:#dfe5ee;--line2:#edf1f5;--text:#172033;--muted:#697386;--danger:#c53d32;--success:#207a50;--warn:#956200;--side:238px;--shadow:0 18px 55px rgba(20,28,45,.16)}
 *{box-sizing:border-box}html,body{margin:0;min-height:100%;font-family:Segoe UI,Inter,Arial,sans-serif;background:var(--bg);color:var(--text)}button,input,select,textarea{font:inherit}button{cursor:pointer}.hidden{display:none!important}.muted{color:var(--muted)}
@@ -19,22 +20,92 @@
 @media(max-width:900px){.sidebar{transform:translateX(-100%);transition:.2s}.sidebar.open{transform:translateX(0)}.main{margin-left:0;width:100%}.mobile{display:inline-flex}.topbar{padding:0 14px}.title-wrap p,.user-info,.company span{display:none}.company select{min-width:130px;max-width:155px}.content{padding:16px}}@media(max-width:650px){.grid,.grid.three{grid-template-columns:1fr}.toolbar{flex-direction:column}.search{width:100%;max-width:none}}
 
 </style>
+
+<style id="sagas-rm-shell-v26">
+/* ===== SAGAS v26 · layout e divisão de módulos no padrão visual do projeto de referência ===== */
+:root{
+  --rm-top:#087b9f;--rm-top-dark:#066a89;--rm-top-darker:#045672;--rm-ribbon:#f2f3f4;
+  --rm-line:#c8cdd1;--rm-line2:#d9dde0;--rm-text:#2d3c43;--rm-muted:#62737b;--rm-workspace:#eef0f2;
+  --rm-tab:#f3f4f5;--rm-active:#fff;--rm-cyan:#00b7de;
+}
+html,body{width:100%;height:100%;overflow:hidden;font-family:"Segoe UI",Tahoma,Arial,sans-serif;font-size:12px;background:#d9dde0;color:var(--rm-text)}
+
+/* Login no mesmo desenho geral do projeto de referência */
+.sagas-cloud-login{display:flex;flex-direction:column;min-height:100vh;padding:0!important;background:#f3f5f6!important;overflow:auto}
+.sagas-login-topbar{height:70px;min-height:70px;background:#fff;border-bottom:1px solid #e6eaee;display:flex;align-items:center;justify-content:space-between;padding:0 28px}
+.sagas-login-brand{display:flex;align-items:center;gap:11px;font-weight:750;color:#0b1730;letter-spacing:.04em}
+.sagas-login-badge{width:34px;height:34px;border-radius:11px;background:#087b9f;color:#fff;display:grid;place-items:center;font-size:16px;box-shadow:0 10px 20px rgba(8,123,159,.18)}
+.sagas-login-access{border:1px solid #d5dde3;background:#fff;color:#23404a;border-radius:999px;padding:11px 20px;font-weight:650;cursor:pointer}
+.sagas-login-stage{flex:1;display:grid;grid-template-columns:minmax(0,1.25fr) minmax(360px,.75fr);gap:54px;align-items:center;padding:40px 7vw;background:radial-gradient(circle at top right,rgba(0,183,222,.22),transparent 29%),radial-gradient(circle at bottom left,rgba(8,123,159,.20),transparent 24%),linear-gradient(105deg,#03102e 0%,#04394a 49%,#064943 100%)}
+.sagas-login-copy{color:#fff;max-width:720px;padding-left:5vw}.sagas-login-kicker{display:inline-block;margin-bottom:20px;color:#16f2ef;font-size:12px;font-weight:800;letter-spacing:.24em}
+.sagas-login-copy h1{margin:0 0 22px;font-size:clamp(38px,4.3vw,68px);line-height:1.02;letter-spacing:-.045em}.sagas-login-copy h1 em{font-style:normal;color:#19e8e1}.sagas-login-copy p{margin:0;max-width:620px;font-size:21px;line-height:1.5;color:rgba(255,255,255,.92)}
+.sagas-login-panel{width:100%;max-width:420px;justify-self:center}.sagas-login-panel .login-card{width:100%;border:1px solid rgba(14,35,39,.08);border-radius:22px;padding:28px;box-shadow:0 30px 80px rgba(0,0,0,.22)}
+.sagas-login-card-head b{display:block;font-size:12px;letter-spacing:.17em;text-transform:uppercase;color:#087b9f;margin-bottom:10px}.sagas-login-card-head h2{font-size:21px;color:#0b1730;margin:0}.sagas-login-card-head p{font-size:14px;color:#687985;margin:5px 0 20px}
+.sagas-login-panel .field input{height:42px;border-radius:10px;padding:0 13px}.sagas-login-panel .btn{height:44px;border-radius:10px;font-size:12px}.sagas-login-panel .btn.primary{background:#087b9f;border-color:#087b9f}.sagas-login-panel .link-btn{color:#087b9f}.sagas-login-panel .api-status{font-size:10px}.sagas-login-help{text-align:center;color:rgba(255,255,255,.78);font-size:11px;margin-top:15px;line-height:1.5}
+
+/* Shell principal */
+#app.app{height:100vh;min-height:0;width:100vw;display:flex;flex-direction:column;background:#fff;overflow:hidden}
+#app .sidebar{display:none!important}
+#app .main{margin:0!important;width:100%!important;min-width:0;min-height:0;flex:1;overflow:hidden;background:#fff}
+#app .topbar{display:none!important}
+#app .content{height:100%;min-height:0;padding:0 22px 24px 0!important;overflow:auto;background:#fff;display:flex;flex-direction:column}
+.sagas-windowbar{height:26px;min-height:26px;background:var(--rm-top);color:#fff;display:grid;grid-template-columns:245px 150px 1fr;align-items:center;border-bottom:1px solid rgba(255,255,255,.18);z-index:42}
+.sagas-quick{height:100%;display:flex;align-items:center;gap:3px;padding-left:7px}.sagas-quick button{border:0;background:transparent;color:#fff;height:22px;min-width:24px;border-radius:2px;padding:0 5px;opacity:.96}.sagas-quick button:hover{background:rgba(255,255,255,.14)}
+.sagas-brand-dot{width:14px;height:14px;border:2px solid #fff;border-radius:50%;display:inline-block;position:relative;vertical-align:-2px}.sagas-brand-dot:after{content:"";position:absolute;width:5px;height:2px;background:#fff;left:3px;top:4px}
+.sagas-window-mode{height:26px;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.12);font-size:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding:0 8px}
+.sagas-caption{display:flex;align-items:center;justify-content:flex-end;gap:12px;padding-right:5px;white-space:nowrap;overflow:hidden;font-size:10px}.sagas-caption-title{overflow:hidden;text-overflow:ellipsis;min-width:120px}.sagas-caption .top-actions{display:flex;align-items:center;gap:10px;height:26px}.sagas-caption .company{display:flex;flex-direction:row;align-items:center;gap:5px}.sagas-caption .company span{display:none}.sagas-caption .company select{height:21px;min-width:150px;max-width:220px;border:1px solid rgba(255,255,255,.45);border-radius:2px;background:#fff;color:#27404a;font-size:10px;padding:0 5px}.sagas-caption .user{gap:5px}.sagas-caption .avatar{width:18px;height:18px;font-size:9px;background:rgba(255,255,255,.16);color:#fff}.sagas-caption .user-info b{font-size:9px;color:#fff;font-weight:500}.sagas-caption .user-info small{display:none}.sagas-caption .icon-btn{height:22px;min-width:23px;padding:0 5px;color:#fff;font-size:13px}.sagas-caption .icon-btn:hover{background:rgba(255,255,255,.14);color:#fff}
+.sagas-navrow{height:34px;min-height:34px;background:var(--rm-top);display:flex;align-items:stretch;color:#fff;padding-left:34px;position:relative;z-index:41;overflow-x:auto;overflow-y:hidden;scrollbar-width:thin}.sagas-module-toggle{position:absolute;left:0;top:0;width:34px;height:34px;border:0;border-right:1px solid rgba(255,255,255,.16);background:rgba(0,0,0,.10);color:#fff;font-size:17px;display:grid;place-items:center;z-index:4}.sagas-module-toggle:hover,.sagas-module-toggle.open{background:rgba(0,0,0,.24)}
+.sagas-navtab{border:0;background:transparent;color:#fff;padding:0 14px;cursor:pointer;border-left:1px solid transparent;border-right:1px solid transparent;white-space:nowrap;font-size:11px}.sagas-navtab:hover{background:rgba(255,255,255,.09)}.sagas-navtab.active{background:#f3f3f3;color:#455157;border-color:#d4d8db;border-bottom:1px solid #f3f3f3}.sagas-module-caption{margin-left:auto;display:flex;align-items:center;padding:0 14px;color:#e7f5f8;font-size:10px;white-space:nowrap}
+.sagas-ribbon{height:122px;min-height:122px;background:var(--rm-ribbon);border-bottom:1px solid #bfc5c9;display:flex;align-items:stretch;overflow:hidden}.sagas-ribbon-scroll{display:flex;align-items:stretch;padding:4px 0 0 5px;min-width:0;overflow-x:auto;overflow-y:hidden;scrollbar-width:thin;flex:1}.sagas-ribbon-scroll::-webkit-scrollbar{height:5px}.sagas-ribbon-scroll::-webkit-scrollbar-thumb{background:#b5bec4}
+.sagas-group{height:112px;display:flex;flex-direction:column;justify-content:space-between;border-right:1px solid #c9ced2;padding:2px 7px 0;min-width:max-content}.sagas-group-items{display:flex;align-items:flex-start;height:88px;gap:3px}.sagas-group-title{text-align:center;color:#5f6b70;font-size:10px;height:18px;line-height:18px;white-space:nowrap}.sagas-ribbon-btn{width:68px;height:83px;border:1px solid transparent;background:transparent;border-radius:2px;cursor:pointer;color:#37464d;padding:3px 3px 2px;display:flex;flex-direction:column;align-items:center;justify-content:flex-start;gap:4px;line-height:1.1}.sagas-ribbon-btn.wide{width:88px}.sagas-ribbon-btn:hover{background:#e2edf2;border-color:#bbd2db}.sagas-ribbon-icon{width:33px;height:33px;display:grid;place-items:center;color:#087897;margin-top:1px}.sagas-ribbon-icon svg{width:31px;height:31px;stroke:currentColor;fill:none;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}.sagas-ribbon-label{text-align:center;font-size:10px;max-width:86px}
+.sagas-logo-zone{margin-left:auto;min-width:165px;display:flex;align-items:center;justify-content:center;background:#f2f3f4;padding:0 14px;border-left:1px solid #d2d6d8}.sagas-logo{display:flex;align-items:center;gap:7px;font-weight:800;font-size:20px;color:#087b9f}.sagas-logo-mark{width:34px;height:34px;border:4px solid #087b9f;border-radius:50%;position:relative}.sagas-logo-mark:before{content:"";position:absolute;left:5px;top:6px;width:17px;height:5px;background:#087b9f;transform:rotate(-35deg)}.sagas-logo small{font-size:8px;color:#7c8f83;font-weight:500;display:block;margin-top:-2px;letter-spacing:.6px}
+.sagas-document-tabs{height:27px;min-height:27px;background:#e7e9eb;border-bottom:1px solid #bac0c4;display:flex;align-items:end;padding-left:5px;overflow-x:auto;overflow-y:hidden;scrollbar-width:thin}.sagas-doc-tab{height:24px;min-width:112px;max-width:210px;display:flex;align-items:center;gap:5px;padding:0 7px;border:1px solid #c5cacf;border-bottom:0;background:#f1f2f3;color:#405057;cursor:pointer;white-space:nowrap;margin-right:2px;font-size:10px}.sagas-doc-tab.active{background:#fff;height:25px;color:#24343b}.sagas-doc-icon{color:#0a7d9e}.sagas-doc-title{overflow:hidden;text-overflow:ellipsis}.sagas-doc-close{margin-left:auto;color:#7b878c;font-size:11px;padding:0 2px}
+.sagas-workspace{position:relative;flex:1;min-height:0;background:#fff;overflow:hidden}.sagas-statusbar{height:22px;min-height:22px;background:#edf0f2;border-top:1px solid #c7cdd1;display:flex;align-items:center;color:#607078;font-size:10px;padding:0 7px;gap:16px}.sagas-status-pill{display:flex;align-items:center;gap:4px}.sagas-status-icon{width:8px;height:8px;border-radius:50%;background:#3aaa5c}
+.sagas-module-menu{position:fixed;left:0;top:60px;width:265px;background:#fff;border:1px solid #aeb8bd;border-top:0;box-shadow:2px 4px 10px rgba(0,0,0,.18);z-index:500;display:none;color:#233840;font-size:12px}.sagas-module-menu.show{display:block}.sagas-module-list{padding:2px 0 0}.sagas-module-item{height:40px;display:grid;grid-template-columns:38px 1fr 18px;align-items:center;padding:0 8px 0 5px;cursor:pointer;position:relative;background:#fff}.sagas-module-item:hover,.sagas-module-item.active-hover{background:#d9e8fb}.sagas-switch-icon{width:30px;height:30px;display:grid;place-items:center;color:#087b9f}.sagas-switch-icon svg{width:27px;height:27px;stroke:currentColor;fill:none;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}.sagas-module-arrow{text-align:center;color:#111;font-size:12px}.sagas-module-footer{height:38px;background:#006080;display:flex;align-items:center;justify-content:flex-end;gap:6px;padding:5px;border-top:1px solid #0b6c87}.sagas-module-footer button{height:26px;border:1px solid #88979d;background:#fff;color:#233840;padding:0 10px;cursor:pointer;font-size:10px}.sagas-module-submenu{position:absolute;left:264px;top:0;width:330px;background:#fff;border:1px solid #aeb8bd;box-shadow:2px 4px 10px rgba(0,0,0,.16);display:none;min-height:1px}.sagas-module-submenu.show{display:block}.sagas-sub-item{height:40px;display:grid;grid-template-columns:38px 1fr;align-items:center;padding:0 8px 0 5px;cursor:pointer}.sagas-sub-item:hover,.sagas-sub-item.current{background:#d9e8fb}.sagas-module-divider{height:1px;background:#d8dde0;margin:2px 0}
+
+/* Conteúdo interno aproximado ao mesmo padrão visual: grids, toolbars e modais */
+#app .toolbar{height:32px;min-height:32px;margin:0!important;border-bottom:1px solid #aeb7bc;background:#f7f8f8;display:flex;justify-content:flex-start;align-items:center;gap:4px;padding:3px 5px;position:relative;z-index:4}#app .toolbar #newBtn{order:-1}#app .toolbar .search{order:1}
+#app .search{height:24px;width:230px;max-width:360px;border:1px solid #b8c2c7;background:#fff;border-radius:0;padding:0 6px;font-size:10px;box-shadow:none}#app .search:focus{border-color:#118caf;box-shadow:none}
+#app .table-wrap{flex:1;min-height:0;background:#fff;border:0;border-radius:0;overflow:auto}#app .table{min-width:900px;font-size:10px;border-collapse:collapse}#app .table th{height:27px;background:#fff;border-right:1px solid #c2c9cc;border-bottom:1px solid #aeb8bc;text-transform:none;letter-spacing:0;color:#176f83;font-weight:500;padding:3px 6px;position:sticky;top:0;z-index:2}#app .table td{height:25px;padding:3px 6px;border-right:1px solid #d1d6d9;border-bottom:1px solid #d8dcde;font-size:10px;white-space:nowrap}#app .table tbody tr:nth-child(even) td{background:#f1f1f1}#app .table tbody tr:hover td{background:#edf6f8}
+#app .btn{min-height:24px;border-radius:2px;padding:3px 8px;font-size:10px;font-weight:500;box-shadow:none}#app .btn.primary{background:#f5f6f6;color:#087b9f;border-color:#aeb8bd}#app .btn.primary:hover{background:#e8f2f5;border-color:#8fb4c0}#app .btn.secondary{background:#fff;border-color:#b7c1c6;color:#33464e}#app .btn.danger{background:#fff;border-color:#cfaaa6;color:#b84439}#app .btn.success{background:#fff;border-color:#9fcbb0;color:#207a50}#app .btn.sm{padding:2px 6px;min-height:22px}
+#app .badge{border-radius:2px;padding:2px 5px;font-size:9px;font-weight:600}
+#app .empty{font-size:11px;color:#66777e;padding:28px 20px}#app .empty b{font-size:12px}
+#app .field{gap:2px}#app .field span{font-size:10px;font-weight:500;color:#263b43}#app .field input,#app .field select,#app .field textarea{border:1px solid #b7c1c6;border-radius:0;padding:2px 5px;font-size:10px;box-shadow:none}#app .field input,#app .field select{height:23px}#app .field input:focus,#app .field select:focus,#app .field textarea:focus{border-color:#118caf;box-shadow:inset 0 -1px 0 #118caf}
+#app .grid{gap:9px 12px}#app .section-title{font-size:11px;margin:14px 0 6px}
+.modal-backdrop{background:rgba(0,0,0,.08)!important}.modal-box{border:1px solid #aeb5b8!important;border-radius:7px!important;box-shadow:0 14px 34px rgba(0,0,0,.28)!important;background:#f8f8f8!important}.modal-box>header{height:auto;min-height:42px;padding:7px 10px!important;background:linear-gradient(#f6eeee,#f8f5f3);border-bottom:1px solid #d2d2d2!important}.modal-box h3{font-size:12px!important;font-weight:600}.modal-box header p{font-size:9px!important;margin:2px 0 0!important}.modal-body{background:#fff!important;padding:13px 15px!important}.modal-box .form-actions{height:38px;margin-top:16px;padding-top:8px;border-top:1px solid #c4c9cc}.modal-box .icon-btn{font-size:17px!important}
+#toasts{top:auto!important;bottom:34px!important;right:28px!important}.toast{border-radius:3px!important;font-size:10px!important;min-width:240px!important;box-shadow:0 4px 14px rgba(0,0,0,.2)!important}
+
+@media(max-height:760px){.sagas-ribbon{height:108px;min-height:108px}.sagas-group{height:98px}.sagas-group-items{height:75px}.sagas-ribbon-btn{height:71px}.sagas-ribbon-icon{width:28px;height:28px}.sagas-ribbon-icon svg{width:26px;height:26px}}
+@media(max-width:900px){.sagas-login-stage{grid-template-columns:1fr;gap:28px;padding:28px 22px}.sagas-login-copy{padding-left:0}.sagas-login-copy h1{font-size:40px}.sagas-windowbar{grid-template-columns:110px 120px 1fr}.sagas-caption .user-info{display:none}.sagas-caption .company select{min-width:120px;max-width:150px}.sagas-logo-zone{min-width:125px}.sagas-logo{font-size:16px}.sagas-logo-mark{width:28px;height:28px}.sagas-module-caption{display:none}}
+</style>
+
 </head>
 <body>
   <div id="toasts"></div>
 
-  <section id="loginScreen" class="login-screen">
-    <div class="login-wrap">
-      <div class="brand"><div class="brand-icon">G</div><div><h1>SAGAS</h1><p>Sistema de Administração e Gestão</p></div></div>
-      <div class="login-card">
-        <h2>Entrar</h2><p class="muted">Acesse o ambiente da sua empresa.</p>
-        <form id="loginForm" class="stack">
-          <label class="field"><span>E-mail</span><input id="loginEmail" type="email" autocomplete="username" required></label>
-          <label class="field"><span>Senha</span><input id="loginPassword" type="password" autocomplete="current-password" required></label>
-          <button class="btn primary block">Entrar</button>
-        </form>
-        <div class="login-links"><button id="apiConfigLogin" class="link-btn">Configurar API</button><button id="bootstrapBtn" class="link-btn">Primeiro acesso</button></div>
-        <div id="apiStatus" class="api-status">API não configurada</div>
+  <section id="loginScreen" class="login-screen sagas-cloud-login">
+    <div class="sagas-login-topbar">
+      <div class="sagas-login-brand"><span class="sagas-login-badge">S</span><span>SAGAS</span></div>
+      <button type="button" class="sagas-login-access" onclick="document.getElementById('loginEmail')?.focus()">Acessar sistema <span>→</span></button>
+    </div>
+    <div class="sagas-login-stage">
+      <div class="sagas-login-copy">
+        <span class="sagas-login-kicker">GESTÃO INTEGRADA</span>
+        <h1>Sua gestão em ordem.<br><em>Suas decisões mais claras.</em></h1>
+        <p>Contabilidade, financeiro, estoque, compras e faturamento integrados em um só ambiente.</p>
+      </div>
+      <div class="sagas-login-panel">
+        <div class="login-card">
+          <div class="sagas-login-card-head"><b>Bem-vindo de volta</b><h2>Acesse sua conta</h2><p>Entre para continuar de onde parou.</p></div>
+          <form id="loginForm" class="stack">
+            <label class="field"><span>E-mail</span><input id="loginEmail" type="email" autocomplete="username" placeholder="voce@empresa.com.br" required></label>
+            <label class="field"><span>Senha</span><input id="loginPassword" type="password" autocomplete="current-password" placeholder="Digite sua senha" required></label>
+            <button class="btn primary block">Entrar</button>
+          </form>
+          <div class="login-links"><button id="apiConfigLogin" class="link-btn">Configurar API</button><button id="bootstrapBtn" class="link-btn">Primeiro acesso</button></div>
+          <div id="apiStatus" class="api-status">API não configurada</div>
+        </div>
+        <div class="sagas-login-help">Seus dados de acesso são pessoais. Não compartilhe sua senha.</div>
       </div>
     </div>
   </section>
@@ -61,7 +132,6 @@
         <button class="nav" data-page="movement-events">⇄ <span>Eventos Contábeis</span></button>
         <button class="nav" data-page="purchase-products">▦ <span>Produtos / Serviços</span></button>
         <button class="nav" data-page="purchase-suppliers">● <span>Fornecedores</span></button>
-        <button class="nav" data-page="purchase-locations">▣ <span>Almoxarifados</span></button>
         <button class="nav" data-page="purchase-requests">≡ <span>Solicitações</span></button>
         <button class="nav" data-page="purchase-quotations">◇ <span>Cotações</span></button>
         <button class="nav" data-page="purchase-orders">▤ <span>Ordens de Compra</span></button>
@@ -106,12 +176,11 @@ const meta={companies:['Empresas','Empresas disponíveis para o usuário'], 'bra
   'movement-events':['Eventos Contábeis','Regras contábeis vinculadas aos Tipos de Movimento'],
   'purchase-products':['Produtos / Serviços','Cadastro de produtos e serviços com Natureza padrão'],
   'purchase-suppliers':['Fornecedores','Cadastro de fornecedores do processo de compras'],
-  'purchase-locations':['Almoxarifados','Locais de estoque utilizados pelos movimentos'],
   'purchase-requests':['Solicitações de Compra','Movimentos de solicitação de compra'],
   'purchase-quotations':['Cotações','Cotação vinculada aos itens da solicitação'],
   'purchase-orders':['Ordens de Compra','Movimentos gerados a partir da cotação e do relacionamento entre Tipos de Movimento'],
   'purchase-receipts':['Recebimentos','Movimentos de entrada gerados a partir da Ordem de Compra'],
-  'stock-balances':['Estoque Atual','Saldo físico por produto e local de estoque'],
+  'stock-balances':['Estoque Atual','Saldo físico por produto'],
   'financial-payables':['Contas a Pagar','Títulos financeiros gerados pelos Tipos de Movimento configurados para financeiro']};
 function toast(m,t='success'){const e=document.createElement('div');e.className='toast '+t;e.textContent=m;$('#toasts').appendChild(e);setTimeout(()=>e.remove(),4200)}
 function money(v){return new Intl.NumberFormat('pt-BR',{style:'currency',currency:'BRL'}).format(Number(v||0))}
@@ -141,11 +210,11 @@ function badge(s){const m={OPEN:['Aberto','green'],CLOSED:['Fechado','gray'],LOC
 function empty(cols,t,x){return`<tr><td colspan="${cols}"><div class="empty"><b>${esc(t)}</b>${esc(x)}</div></td></tr>`}
 function tablePage({newLabel,onNew,cols,rows,emptyTitle,emptyText,placeholder='Pesquisar...'}){const newButton=newLabel&&onNew?`<button id="newBtn" class="btn primary">+ ${esc(newLabel)}</button>`:'';$('#content').innerHTML=`<div class="toolbar"><input id="search" class="search" placeholder="${esc(placeholder)}">${newButton}</div><div class="table-wrap"><table class="table"><thead><tr>${cols.map(x=>`<th>${esc(x)}</th>`).join('')}</tr></thead><tbody id="tbody">${rows||empty(cols.length,emptyTitle,emptyText)}</tbody></table></div>`;if($('#newBtn'))$('#newBtn').onclick=onNew;$('#search').oninput=e=>{const q=e.target.value.toLowerCase().trim();$$('#tbody tr').forEach(r=>r.style.display=!q||r.innerText.toLowerCase().includes(q)?'':'none')}}
 
-const pagePermission={companies:'core.company.manage','branches-admin':'core.branch.read',users:'core.user.read',roles:'core.role.manage',accounts:'accounting.account.read','cost-centers':'accounting.cost_center.read',history:'accounting.history.read',periods:'accounting.period.read',batches:'accounting.batch.read',entries:'accounting.entry.read','movement-types':'purchasing.movement_type.read','budget-natures':'purchasing.nature.read','movement-events':'purchasing.accounting_event.read','purchase-products':'purchasing.product.read','purchase-suppliers':'purchasing.supplier.read','purchase-locations':'purchasing.location.read','purchase-requests':'purchasing.request.read','purchase-quotations':'purchasing.quotation.read','purchase-orders':'purchasing.order.read','purchase-receipts':'purchasing.receipt.read','stock-balances':'purchasing.location.read','financial-payables':'financial.payable.read'};
-const navGroups={admin:['companies','branches-admin','users','roles'],accounting:['accounts','cost-centers','history','periods','batches','entries'],purchases:['movement-types','budget-natures','movement-events','purchase-products','purchase-suppliers','purchase-locations','purchase-requests','purchase-quotations','purchase-orders','purchase-receipts','stock-balances'],finance:['financial-payables']};
+const pagePermission={companies:'core.company.manage','branches-admin':'core.branch.read',users:'core.user.read',roles:'core.role.manage',accounts:'accounting.account.read','cost-centers':'accounting.cost_center.read',history:'accounting.history.read',periods:'accounting.period.read',batches:'accounting.batch.read',entries:'accounting.entry.read','movement-types':'purchasing.movement_type.read','budget-natures':'purchasing.nature.read','movement-events':'purchasing.accounting_event.read','purchase-products':'purchasing.product.read','purchase-suppliers':'purchasing.supplier.read','purchase-requests':'purchasing.request.read','purchase-quotations':'purchasing.quotation.read','purchase-orders':'purchasing.order.read','purchase-receipts':'purchasing.receipt.read','stock-balances':'purchasing.location.read','financial-payables':'financial.payable.read'};
+const navGroups={admin:['companies','branches-admin','users','roles'],accounting:['accounts','cost-centers','history','periods','batches','entries'],purchases:['movement-types','budget-natures','movement-events','purchase-products','purchase-suppliers','purchase-requests','purchase-quotations','purchase-orders','purchase-receipts','stock-balances'],finance:['financial-payables']};
 function can(code){return S.permissions.includes(code)}
 function canPage(page){const code=pagePermission[page];return !code||can(code)}
-function firstAllowedPage(){return ['companies','branches-admin','users','roles','accounts','cost-centers','history','periods','batches','entries','movement-types','budget-natures','movement-events','purchase-products','purchase-suppliers','purchase-locations','purchase-requests','purchase-quotations','purchase-orders','purchase-receipts','stock-balances','financial-payables'].find(canPage)||'accounts'}
+function firstAllowedPage(){return ['companies','branches-admin','users','roles','accounts','cost-centers','history','periods','batches','entries','movement-types','budget-natures','movement-events','purchase-products','purchase-suppliers','purchase-requests','purchase-quotations','purchase-orders','purchase-receipts','stock-balances','financial-payables'].find(canPage)||'accounts'}
 function applyMenuAccess(){$$('.nav[data-page]').forEach(btn=>btn.classList.toggle('hidden',!canPage(btn.dataset.page)));Object.entries(navGroups).forEach(([group,pages])=>{const title=$(`[data-nav-section="${group}"]`);if(title)title.classList.toggle('hidden',!pages.some(canPage))})}
 async function loadPermissions(){if(!S.companyId){S.permissions=[];applyMenuAccess();return}const d=await api('/api/auth/permissions');S.permissions=d.permissions||[];applyMenuAccess()}
 
@@ -153,7 +222,7 @@ function showLogin(){$('#app').classList.add('hidden');$('#loginScreen').classLi
 async function showApp(){$('#loginScreen').classList.add('hidden');$('#app').classList.remove('hidden');chrome();await loadPermissions();if(!canPage(S.page))S.page=firstAllowedPage();await nav(S.page)}
 function chrome(){$('#userName').textContent=S.user?.name||'Usuário';$('#userEmail').textContent=S.user?.email||'';$('#avatar').textContent=(S.user?.name||'U').trim()[0].toUpperCase();$('#companySelect').innerHTML=S.companies.map(c=>`<option value="${esc(c.id)}">${esc(c.code)} - ${esc(c.legal_name)}</option>`).join('');$('#companySelect').value=S.companyId}
 function apiStatus(){$('#apiStatus').textContent=S.api?'API: '+S.api:'API não configurada'}
-async function nav(p){if(!canPage(p))p=firstAllowedPage();S.page=p;$('#pageTitle').textContent=meta[p][0];$('#pageSub').textContent=meta[p][1];$$('.nav[data-page]').forEach(b=>b.classList.toggle('active',b.dataset.page===p));$('#content').innerHTML='<div class="empty"><b>Carregando...</b></div>';try{if(p==='companies')await renderCompanies();if(p==='branches-admin')await renderBranchesAdmin();if(p==='users')await renderUsers();if(p==='roles')await renderRoles();if(p==='accounts')await renderAccounts();if(p==='cost-centers')await renderCC();if(p==='history')await renderHistory();if(p==='periods')await renderPeriods();if(p==='batches')await renderBatches();if(p==='entries')await renderEntries();if(p==='movement-types')await renderMovementTypes();if(p==='budget-natures')await renderBudgetNatures();if(p==='movement-events')await renderMovementEvents();if(p==='purchase-products')await renderPurchaseProducts();if(p==='purchase-suppliers')await renderPurchaseSuppliers();if(p==='purchase-locations')await renderPurchaseLocations();if(p==='purchase-requests')await renderPurchaseRequests();if(p==='purchase-quotations')await renderPurchaseQuotations();if(p==='purchase-orders')await renderPurchaseOrders();if(p==='purchase-receipts')await renderPurchaseReceipts();if(p==='stock-balances')await renderStockBalances();if(p==='financial-payables')await renderFinancialPayables()}catch(e){$('#content').innerHTML=`<div class="empty"><b>Não foi possível carregar</b>${esc(e.message)}</div>`;if(e.status===401){clear();showLogin()}}}
+async function nav(p){if(!canPage(p))p=firstAllowedPage();S.page=p;$('#pageTitle').textContent=meta[p][0];$('#pageSub').textContent=meta[p][1];$$('.nav[data-page]').forEach(b=>b.classList.toggle('active',b.dataset.page===p));$('#content').innerHTML='<div class="empty"><b>Carregando...</b></div>';try{if(p==='companies')await renderCompanies();if(p==='branches-admin')await renderBranchesAdmin();if(p==='users')await renderUsers();if(p==='roles')await renderRoles();if(p==='accounts')await renderAccounts();if(p==='cost-centers')await renderCC();if(p==='history')await renderHistory();if(p==='periods')await renderPeriods();if(p==='batches')await renderBatches();if(p==='entries')await renderEntries();if(p==='movement-types')await renderMovementTypes();if(p==='budget-natures')await renderBudgetNatures();if(p==='movement-events')await renderMovementEvents();if(p==='purchase-products')await renderPurchaseProducts();if(p==='purchase-suppliers')await renderPurchaseSuppliers();if(p==='purchase-requests')await renderPurchaseRequests();if(p==='purchase-quotations')await renderPurchaseQuotations();if(p==='purchase-orders')await renderPurchaseOrders();if(p==='purchase-receipts')await renderPurchaseReceipts();if(p==='stock-balances')await renderStockBalances();if(p==='financial-payables')await renderFinancialPayables()}catch(e){$('#content').innerHTML=`<div class="empty"><b>Não foi possível carregar</b>${esc(e.message)}</div>`;if(e.status===401){clear();showLogin()}}}
 
 async function refreshSession(){const d=await api('/api/auth/me',{company:false});S.user=d.user;S.companies=d.companies||[];if(!S.companies.length){loseSession('Seu usuário não possui acesso ativo a nenhuma empresa.');return}if(!S.companies.some(c=>c.id===S.companyId))S.companyId=S.companies[0]?.id||'';save();chrome();await loadPermissions()}
 async function companyList(force=false){if(!force&&S.cache.companies)return S.cache.companies;const d=await api('/api/companies',{company:false});return S.cache.companies=d.companies||[]}
@@ -280,9 +349,10 @@ function resetUserPasswordForm(u){
 }
 
 
-function permLabel(c){return({'core.company.manage':'Gerenciar empresa','core.branch.read':'Consultar filiais','core.branch.manage':'Gerenciar filiais','core.user.read':'Consultar usuários','core.user.manage':'Gerenciar usuários','core.role.manage':'Gerenciar perfis e permissões','core.audit.read':'Consultar auditoria','accounting.period.read':'Consultar períodos contábeis','accounting.period.manage':'Gerenciar períodos contábeis','accounting.account.read':'Consultar plano de contas','accounting.account.manage':'Gerenciar plano de contas','accounting.cost_center.read':'Consultar centros de custo','accounting.cost_center.manage':'Gerenciar centros de custo','accounting.history.read':'Consultar históricos padrão','accounting.history.manage':'Gerenciar históricos padrão','accounting.batch.read':'Consultar lotes','accounting.batch.manage':'Gerenciar lotes','accounting.entry.read':'Consultar lançamentos','accounting.entry.create':'Criar lançamentos','accounting.entry.edit':'Editar lançamentos','accounting.entry.delete':'Excluir lançamentos','accounting.entry.post':'Contabilizar lançamentos','accounting.entry.void':'Anular lançamentos','purchasing.movement_type.read':'Consultar tipos de movimento','purchasing.movement_type.manage':'Gerenciar tipos de movimento','purchasing.nature.read':'Consultar naturezas orçamentárias/financeiras','purchasing.nature.manage':'Gerenciar naturezas orçamentárias/financeiras','purchasing.accounting_event.read':'Consultar eventos contábeis de movimentos','purchasing.accounting_event.manage':'Gerenciar eventos contábeis de movimentos','purchasing.product.read':'Consultar produtos e serviços','purchasing.product.manage':'Gerenciar produtos e serviços','purchasing.supplier.read':'Consultar fornecedores','purchasing.supplier.manage':'Gerenciar fornecedores','purchasing.location.read':'Consultar locais de estoque','purchasing.location.manage':'Gerenciar locais de estoque','purchasing.request.read':'Consultar solicitações de compra','purchasing.request.manage':'Gerenciar solicitações de compra','purchasing.quotation.read':'Consultar cotações','purchasing.quotation.manage':'Gerenciar cotações','purchasing.order.read':'Consultar ordens de compra','purchasing.order.manage':'Gerenciar ordens de compra','purchasing.receipt.read':'Consultar recebimentos','purchasing.receipt.manage':'Registrar recebimentos','purchasing.integration.read':'Consultar integração de compras','purchasing.integration.manage':'Configurar integração de compras','financial.payable.read':'Consultar contas a pagar','financial.payable.manage':'Gerenciar contas a pagar'})[c]||c}
+function permLabel(c){return({'core.company.manage':'Gerenciar empresa','core.branch.read':'Consultar filiais','core.branch.manage':'Gerenciar filiais','core.user.read':'Consultar usuários','core.user.manage':'Gerenciar usuários','core.role.manage':'Gerenciar perfis e permissões','core.audit.read':'Consultar auditoria','accounting.period.read':'Consultar períodos contábeis','accounting.period.manage':'Gerenciar períodos contábeis','accounting.account.read':'Consultar plano de contas','accounting.account.manage':'Gerenciar plano de contas','accounting.cost_center.read':'Consultar centros de custo','accounting.cost_center.manage':'Gerenciar centros de custo','accounting.history.read':'Consultar históricos padrão','accounting.history.manage':'Gerenciar históricos padrão','accounting.batch.read':'Consultar lotes','accounting.batch.manage':'Gerenciar lotes','accounting.entry.read':'Consultar lançamentos','accounting.entry.create':'Criar lançamentos','accounting.entry.edit':'Editar lançamentos','accounting.entry.delete':'Excluir lançamentos','accounting.entry.post':'Contabilizar lançamentos','accounting.entry.void':'Anular lançamentos','purchasing.movement_type.read':'Consultar tipos de movimento','purchasing.movement_type.manage':'Gerenciar tipos de movimento','purchasing.nature.read':'Consultar naturezas orçamentárias/financeiras','purchasing.nature.manage':'Gerenciar naturezas orçamentárias/financeiras','purchasing.accounting_event.read':'Consultar eventos contábeis de movimentos','purchasing.accounting_event.manage':'Gerenciar eventos contábeis de movimentos','purchasing.product.read':'Consultar produtos e serviços','purchasing.product.manage':'Gerenciar produtos e serviços','purchasing.supplier.read':'Consultar fornecedores','purchasing.supplier.manage':'Gerenciar fornecedores','purchasing.request.read':'Consultar solicitações de compra','purchasing.request.manage':'Gerenciar solicitações de compra','purchasing.quotation.read':'Consultar cotações','purchasing.quotation.manage':'Gerenciar cotações','purchasing.order.read':'Consultar ordens de compra','purchasing.order.manage':'Gerenciar ordens de compra','purchasing.receipt.read':'Consultar recebimentos','purchasing.receipt.manage':'Registrar recebimentos','purchasing.integration.read':'Consultar integração de compras','purchasing.integration.manage':'Configurar integração de compras','financial.payable.read':'Consultar contas a pagar','financial.payable.manage':'Gerenciar contas a pagar'})[c]||c}
 async function renderRoles(){const [a,p]=await Promise.all([roleList(true),permissionList(true)]);tablePage({newLabel:'Novo perfil',onNew:()=>roleForm(p),cols:['Código','Perfil','Descrição','Tipo',''],rows:a.length?a.map(x=>`<tr><td class="code">${esc(x.code)}</td><td>${esc(x.name)}</td><td>${esc(x.description||'')}</td><td>${x.system_role?'<span class="badge blue">Sistema</span>':'<span class="badge gray">Personalizado</span>'}</td><td><div class="actions">${x.system_role?'':`<button class="btn secondary sm" data-edit-role="${x.id}">Editar</button>`}</div></td></tr>`).join(''):null,emptyTitle:'Nenhum perfil cadastrado',emptyText:'Crie perfis para controlar o acesso dos usuários.',placeholder:'Pesquisar perfil...'});$$('[data-edit-role]').forEach(b=>b.onclick=async()=>{try{const d=await api(`/api/roles/${b.dataset.editRole}`);roleForm(p,d.role)}catch(x){toast(x.message,'error')}})}
 function roleForm(p,role=null){
+  p=p.filter(x=>!['purchasing.location.read','purchasing.location.manage'].includes(x.code));
   const editing=!!role;
   const selected=new Set(role?.permissions||[]);
   const g={};p.forEach(x=>(g[x.module]??=[]).push(x));
@@ -317,7 +387,7 @@ function accountClass(v){return({ASSET:'Ativo',LIABILITY:'Passivo',EQUITY:'Patri
 async function load(k,path,key,force=false){if(!force&&S.cache[k])return S.cache[k];const d=await api(path);return S.cache[k]=d[key]||[]}
 const accounts=f=>load('accounts','/api/accounts','accounts',f), ccs=f=>load('ccs','/api/cost-centers','cost_centers',f), histories=f=>load('hist','/api/history-templates','history_templates',f), periods=f=>load('periods','/api/accounting-periods','periods',f), batches=f=>load('batches','/api/journal-batches','batches',f), branches=f=>load('branches','/api/branches','branches',f);
 const movementTypes=f=>load('movementTypes','/api/movement-types','movement_types',f), budgetNatures=f=>load('budgetNatures','/api/budget-natures','natures',f), movementEvents=f=>load('movementEvents','/api/movement-accounting-events','events',f);
-const purchaseProducts=f=>load('purchaseProducts','/api/purchase-products','products',f), purchaseSuppliers=f=>load('purchaseSuppliers','/api/purchase-suppliers','suppliers',f), purchaseLocations=f=>load('purchaseLocations','/api/purchase-locations','locations',f);
+const purchaseProducts=f=>load('purchaseProducts','/api/purchase-products','products',f), purchaseSuppliers=f=>load('purchaseSuppliers','/api/purchase-suppliers','suppliers',f);
 
 const ACCOUNT_MASK_WIDTHS=[1,2,2,2,4];
 const ACCOUNT_MASK_CUMULATIVE=[1,3,5,7,11];
@@ -2217,12 +2287,11 @@ async function renderMovementTypes(){
 }
 
 async function movementTypeForm(id=null){
-  const [allTypes,events,centers,locations]=await Promise.all([movementTypes(true),movementEvents(true),ccs(),purchaseLocations()]);
+  const [allTypes,events,centers]=await Promise.all([movementTypes(true),movementEvents(true),ccs()]);
   const x=id?(await api(`/api/movement-types/${id}`)).movement_type:null;
   const destSet=new Set((x?.destinations||[]).map(d=>String(d.id)));
   const activeEvents=events.filter(e=>e.active||e.id===x?.accounting_event_id);
   const activeCenters=centers.filter(c=>c.active);
-  const activeLocations=locations.filter(l=>l.active);
   openModal(x?'Editar Tipo de Movimento':'Novo Tipo de Movimento',
     'Parametrização funcional baseada em Tipo de Movimento, Evento Contábil, Natureza e relacionamento de movimentos.',
     `<form id="movementTypeForm">
@@ -2232,7 +2301,6 @@ async function movementTypeForm(id=null){
         <label class="field"><span>Status inicial</span><input name="initial_status" value="${esc(x?.initial_status||'OPEN')}"></label>
         <label class="field" style="grid-column:span 2"><span>Evento Contábil</span><select name="accounting_event_id"><option value="">Sem evento</option>${activeEvents.map(e=>`<option value="${e.id}" ${e.id===x?.accounting_event_id?'selected':''}>${esc(e.code)} - ${esc(e.name)}</option>`).join('')}</select></label>
         <label class="field"><span>Centro de Custo padrão</span><select name="default_cost_center_id"><option value="">Sem padrão</option>${activeCenters.map(c=>`<option value="${c.id}" ${c.id===x?.default_cost_center_id?'selected':''}>${esc(c.code)} - ${esc(c.name)}</option>`).join('')}</select></label>
-        <label class="field"><span>Local padrão</span><select name="default_location_id"><option value="">Sem padrão</option>${activeLocations.map(l=>`<option value="${l.id}" ${l.id===x?.default_location_id?'selected':''}>${esc(l.code)} - ${esc(l.name)}</option>`).join('')}</select></label>
         <label class="field"><span>Efeito no saldo físico</span><select name="stock_effect"><option value="NONE" ${x?.stock_effect==='NONE'||!x?'selected':''}>Sem efeito</option><option value="IN" ${x?.stock_effect==='IN'?'selected':''}>Entrada</option><option value="OUT" ${x?.stock_effect==='OUT'?'selected':''}>Saída</option></select></label>
       </div>
       <div class="section-title">Comportamento do movimento</div>
@@ -2258,7 +2326,6 @@ async function movementTypeForm(id=null){
       code:f.get('code'),name:f.get('name'),initial_status:f.get('initial_status'),
       accounting_event_id:f.get('accounting_event_id')||null,
       default_cost_center_id:f.get('default_cost_center_id')||null,
-      default_location_id:f.get('default_location_id')||null,
       stock_effect:f.get('stock_effect'),
       require_accounting_event:e.target.require_accounting_event.checked,
       allow_edit_accounting_event:e.target.allow_edit_accounting_event.checked,
@@ -2410,9 +2477,7 @@ async function purchaseProductForm(x=null){
 async function renderPurchaseSuppliers(){const a=await purchaseSuppliers(true),manage=can('purchasing.supplier.manage');tablePage({newLabel:manage?'Novo fornecedor':null,onNew:manage?()=>purchaseSupplierForm():null,cols:['Código','Fornecedor','CNPJ/CPF','Contato','Situação','Ações'],rows:a.length?a.map(x=>`<tr><td class="code">${esc(x.code)}</td><td>${esc(x.name)}</td><td>${esc(x.tax_id||'')}</td><td>${esc(x.contact_name||x.email||'')}</td><td>${x.active?'<span class="badge green">Ativo</span>':'<span class="badge red">Inativo</span>'}</td><td><div class="actions">${manage?`<button class="btn secondary sm" data-edit-supplier="${x.id}">Editar</button><button class="btn danger sm" data-del-supplier="${x.id}">Excluir</button>`:''}</div></td></tr>`).join(''):null,emptyTitle:'Nenhum fornecedor',emptyText:'Cadastre fornecedores para participar das cotações.'});$$('[data-edit-supplier]').forEach(b=>b.onclick=()=>purchaseSupplierForm(a.find(x=>x.id===b.dataset.editSupplier)));$$('[data-del-supplier]').forEach(b=>b.onclick=()=>purchaseDeleteMaster('supplier',b.dataset.delSupplier,'Fornecedor',renderPurchaseSuppliers))}
 function purchaseSupplierForm(x=null){openModal(x?'Editar fornecedor':'Novo fornecedor','Dados usados nas cotações e ordens de compra.',`<form id="purchaseSupplierForm"><div class="grid"><label class="field"><span>Código</span><input name="code" value="${esc(x?.code||'')}" required></label><label class="field"><span>CNPJ/CPF</span><input name="tax_id" value="${esc(x?.tax_id||'')}"></label><label class="field full"><span>Nome / Razão social</span><input name="name" value="${esc(x?.name||'')}" required></label><label class="field"><span>Contato</span><input name="contact_name" value="${esc(x?.contact_name||'')}"></label><label class="field"><span>Telefone</span><input name="phone" value="${esc(x?.phone||'')}"></label><label class="field full"><span>E-mail</span><input name="email" type="email" value="${esc(x?.email||'')}"></label><label class="field full"><span>Observações</span><textarea name="notes" rows="3">${esc(x?.notes||'')}</textarea></label><label class="check full"><input name="active" type="checkbox" ${x?.active!==0?'checked':''}> Ativo</label></div><div class="form-actions"><button type="button" class="btn secondary" data-close>Cancelar</button><button class="btn primary">Salvar</button></div></form>`);$('[data-close]').onclick=closeModal;$('#purchaseSupplierForm').onsubmit=async e=>{e.preventDefault();const body=Object.fromEntries(new FormData(e.target));body.active=e.target.active.checked;try{await api(x?`/api/purchase-suppliers/${x.id}`:'/api/purchase-suppliers',{method:x?'PATCH':'POST',body});S.cache.purchaseSuppliers=null;closeModal();toast('Fornecedor salvo.');renderPurchaseSuppliers()}catch(err){toast(err.message,'error')}}}
 
-async function renderPurchaseLocations(){const [a,balances]=await Promise.all([purchaseLocations(true),api('/api/stock-balances').catch(()=>({balances:[]}))]),manage=can('purchasing.location.manage');const counts={};(balances.balances||[]).forEach(x=>counts[x.location_code]=(counts[x.location_code]||0)+1);tablePage({newLabel:manage?'Novo local':null,onNew:manage?()=>purchaseLocationForm():null,cols:['Código','Local','Itens com saldo','Situação','Ações'],rows:a.length?a.map(x=>`<tr><td class="code">${esc(x.code)}</td><td>${esc(x.name)}</td><td>${counts[x.code]||0}</td><td>${x.active?'<span class="badge green">Ativo</span>':'<span class="badge red">Inativo</span>'}</td><td><div class="actions">${manage?`<button class="btn secondary sm" data-edit-location="${x.id}">Editar</button><button class="btn danger sm" data-del-location="${x.id}">Excluir</button>`:''}</div></td></tr>`).join(''):null,emptyTitle:'Nenhum almoxarifado',emptyText:'Cadastre os almoxarifados utilizados pelos movimentos.'});$$('[data-edit-location]').forEach(b=>b.onclick=()=>purchaseLocationForm(a.find(x=>x.id===b.dataset.editLocation)));$$('[data-del-location]').forEach(b=>b.onclick=()=>purchaseDeleteMaster('location',b.dataset.delLocation,'Local',renderPurchaseLocations))}
-function purchaseLocationForm(x=null){openModal(x?'Editar almoxarifado':'Novo almoxarifado','Local utilizado pelos movimentos de estoque.',`<form id="purchaseLocationForm"><div class="grid"><label class="field"><span>Código</span><input name="code" value="${esc(x?.code||'')}" required></label><label class="field"><span>Nome</span><input name="name" value="${esc(x?.name||'')}" required></label><label class="check full"><input name="active" type="checkbox" ${x?.active!==0?'checked':''}> Ativo</label></div><div class="form-actions"><button type="button" class="btn secondary" data-close>Cancelar</button><button class="btn primary">Salvar</button></div></form>`);$('[data-close]').onclick=closeModal;$('#purchaseLocationForm').onsubmit=async e=>{e.preventDefault();const body=Object.fromEntries(new FormData(e.target));body.active=e.target.active.checked;try{await api(x?`/api/purchase-locations/${x.id}`:'/api/purchase-locations',{method:x?'PATCH':'POST',body});S.cache.purchaseLocations=null;closeModal();toast('Local salvo.');renderPurchaseLocations()}catch(err){toast(err.message,'error')}}}
-async function purchaseDeleteMaster(type,id,label,rerender){purchaseConfirm(`Excluir ${label.toLowerCase()}`,`Confirma a exclusão deste ${label.toLowerCase()}? Se já houver movimentação, o cadastro será apenas inativado.`,async()=>{try{const d=await api(`/api/purchase-${type==='product'?'products':type==='supplier'?'suppliers':'locations'}/${id}`,{method:'DELETE'});S.cache.purchaseProducts=S.cache.purchaseSuppliers=S.cache.purchaseLocations=null;closeModal();toast(d.inactivated?'Cadastro em uso: foi inativado.':'Cadastro excluído.');rerender()}catch(e){toast(e.message,'error')}})}
+async function purchaseDeleteMaster(type,id,label,rerender){purchaseConfirm(`Excluir ${label.toLowerCase()}`,`Confirma a exclusão deste ${label.toLowerCase()}? Se já houver movimentação, o cadastro será apenas inativado.`,async()=>{try{const d=await api(`/api/purchase-${type==='product'?'products':'suppliers'}/${id}`,{method:'DELETE'});S.cache.purchaseProducts=S.cache.purchaseSuppliers=null;closeModal();toast(d.inactivated?'Cadastro em uso: foi inativado.':'Cadastro excluído.');rerender()}catch(e){toast(e.message,'error')}})}
 
 async function renderPurchaseRequests(){
   const d=await api('/api/purchase-requests'),a=d.requests||[],manage=can('purchasing.request.manage');
@@ -2432,8 +2497,8 @@ async function purchaseRequestAction(id,action,msg){try{await api(`/api/purchase
 
 async function purchaseRequestForm(id=null){
   let item=null;if(id)item=(await api(`/api/purchase-requests/${id}`)).request;
-  const [p,c,l,b,mt,nat]=await Promise.all([purchaseProducts(),ccs(),purchaseLocations(),branches(),movementTypes(),budgetNatures()]);
-  const products=p.filter(x=>x.active),centers=c.filter(x=>x.active&&parseCostCenterMaskLocal(x.code)?.analytic),locations=l.filter(x=>x.active),br=b.filter(x=>x.active),types=mt.filter(x=>x.active||x.id===item?.movement_type_id),natures=nat.filter(x=>x.active&&x.synthetic_analytic==='ANALYTIC');
+  const [p,c,b,mt,nat]=await Promise.all([purchaseProducts(),ccs(),branches(),movementTypes(),budgetNatures()]);
+  const products=p.filter(x=>x.active),centers=c.filter(x=>x.active&&parseCostCenterMaskLocal(x.code)?.analytic),br=b.filter(x=>x.active),types=mt.filter(x=>x.active||x.id===item?.movement_type_id),natures=nat.filter(x=>x.active&&x.synthetic_analytic==='ANALYTIC');
   if(!types.length)return toast('Cadastre primeiro um Tipo de Movimento ativo para a solicitação.','error');
   openModal(item?'Editar solicitação':'Nova solicitação','A solicitação é um movimento e utiliza a parametrização do Tipo de Movimento.',`<form id="purchaseRequestForm"><div class="grid three">
     <label class="field"><span>Número</span><input value="${esc(item?.number||'Gerado pelo Tipo de Movimento')}" readonly></label>
@@ -2446,7 +2511,7 @@ async function purchaseRequestForm(id=null){
   </div>
   <div id="prTypeInfo" class="help" style="margin-top:10px"></div>
   <div class="section-title">Itens</div>
-  <div class="table-wrap"><table class="table"><thead><tr><th>Produto/Serviço</th><th>Qtd.</th><th>Un.</th><th>Natureza Orçamentária / Financeira</th><th>Centro de Custo</th><th>Local</th><th>Necessário em</th><th></th></tr></thead><tbody id="prItemBody"></tbody></table></div>
+  <div class="table-wrap"><table class="table"><thead><tr><th>Produto/Serviço</th><th>Qtd.</th><th>Un.</th><th>Natureza Orçamentária / Financeira</th><th>Centro de Custo</th><th>Necessário em</th><th></th></tr></thead><tbody id="prItemBody"></tbody></table></div>
   <div style="margin-top:9px"><button id="addPrItem" type="button" class="btn secondary sm">+ Adicionar item</button></div>
   <div class="form-actions"><button type="button" class="btn secondary" data-close>Cancelar</button><button class="btn primary">Salvar solicitação</button></div></form>`,true);
   $('[data-close]').onclick=closeModal;
@@ -2456,14 +2521,13 @@ async function purchaseRequestForm(id=null){
   function currentType(){return typeById.get(String(typeSel.value))||null}
   function syncTypeInfo(){
     const t=currentType();const el=$('#prTypeInfo');if(!t){el.textContent='Selecione o Tipo de Movimento.';return}
-    el.textContent=`Natureza: ${t.fetch_product_nature?'busca o padrão do Produto/Serviço':'não busca automaticamente'} • edição da Natureza no item: ${t.allow_edit_item_nature?'permitida':'bloqueada'}${t.default_cost_center_id?' • possui Centro de Custo padrão':''}${t.default_location_id?' • possui Local padrão':''}.`;
+    el.textContent=`Natureza: ${t.fetch_product_nature?'busca o padrão do Produto/Serviço':'não busca automaticamente'} • edição da Natureza no item: ${t.allow_edit_item_nature?'permitida':'bloqueada'}${t.default_cost_center_id?' • possui Centro de Custo padrão':''}.`;
     $$('#prItemBody tr').forEach(syncRowByType);
   }
   function syncRowByType(tr){
-    const t=currentType(),ps=$('.pr-product',tr),ns=$('.pr-nature',tr),ccs=$('.pr-cc',tr),locs=$('.pr-loc',tr),prod=prodById.get(String(ps.value));
+    const t=currentType(),ps=$('.pr-product',tr),ns=$('.pr-nature',tr),ccs=$('.pr-cc',tr),prod=prodById.get(String(ps.value));
     if(t?.fetch_product_nature&&prod?.budget_nature_id)ns.value=prod.budget_nature_id;
     if(t?.default_cost_center_id&&!ccs.value)ccs.value=t.default_cost_center_id;
-    if(t?.default_location_id&&!locs.value)locs.value=t.default_location_id;
     ns.disabled=!!t&&!t.allow_edit_item_nature;
   }
   function addRow(row=null){
@@ -2473,7 +2537,6 @@ async function purchaseRequestForm(id=null){
       <td><input class="pr-unit" value="${esc(row?.unit||'')}" style="width:65px"></td>
       <td><select class="pr-nature">${natOptions(row?.budget_nature_id||'')}</select></td>
       <td><select class="pr-cc"><option value="">Sem centro</option>${centers.map(x=>`<option value="${x.id}" ${x.id===row?.cost_center_id?'selected':''}>${esc(x.code)} - ${esc(x.name)}</option>`).join('')}</select></td>
-      <td><select class="pr-loc"><option value="">Sem local</option>${locations.map(x=>`<option value="${x.id}" ${x.id===row?.location_id?'selected':''}>${esc(x.code)} - ${esc(x.name)}</option>`).join('')}</select></td>
       <td><input class="pr-date" type="date" value="${row?.needed_date||item?.needed_date||''}"></td>
       <td><button type="button" class="remove-line pr-remove">×</button></td>`;
     tbody.appendChild(tr);
@@ -2486,7 +2549,7 @@ async function purchaseRequestForm(id=null){
   $('#addPrItem').onclick=()=>addRow();typeSel.onchange=syncTypeInfo;syncTypeInfo();
   $('#purchaseRequestForm').onsubmit=async e=>{
     e.preventDefault();const f=new FormData(e.target);
-    const items=$$('#prItemBody tr').map(tr=>({id:tr.dataset.id||undefined,product_id:$('.pr-product',tr).value,description:$('.pr-desc',tr).value,quantity:$('.pr-qty',tr).value,unit:$('.pr-unit',tr).value,budget_nature_id:$('.pr-nature',tr).value||null,cost_center_id:$('.pr-cc',tr).value||null,location_id:$('.pr-loc',tr).value||null,needed_date:$('.pr-date',tr).value||null}));
+    const items=$$('#prItemBody tr').map(tr=>({id:tr.dataset.id||undefined,product_id:$('.pr-product',tr).value,description:$('.pr-desc',tr).value,quantity:$('.pr-qty',tr).value,unit:$('.pr-unit',tr).value,budget_nature_id:$('.pr-nature',tr).value||null,cost_center_id:$('.pr-cc',tr).value||null,needed_date:$('.pr-date',tr).value||null}));
     const body={movement_type_id:f.get('movement_type_id'),branch_id:f.get('branch_id')||null,request_date:f.get('request_date'),needed_date:f.get('needed_date')||null,requester_name:f.get('requester_name'),notes:f.get('notes'),items};
     try{await api(item?`/api/purchase-requests/${item.id}`:'/api/purchase-requests',{method:item?'PATCH':'POST',body});closeModal();toast('Solicitação salva.');renderPurchaseRequests()}catch(err){toast(err.message,'error')}
   };
@@ -2496,7 +2559,7 @@ async function purchaseRequestView(id){
   try{
     const r=(await api(`/api/purchase-requests/${id}`)).request;
     openModal(`Solicitação ${r.number}`,`${dateBR(r.request_date)} • ${r.requester_name}`,`<div class="grid three"><div class="field"><span>Situação</span>${badge(r.status)}</div><div class="field"><span>Tipo de Movimento</span><b>${esc(r.movement_type_code?r.movement_type_code+' - '+r.movement_type_name:'—')}</b></div><div class="field"><span>Filial</span><b>${esc(r.branch_code?r.branch_code+' - '+r.branch_name:'—')}</b></div><div class="field"><span>Necessário em</span><b>${dateBR(r.needed_date)||'—'}</b></div><div class="field full"><span>Observações</span><div>${esc(r.notes||'—')}</div></div></div>
-      <div class="section-title">Itens</div><div class="table-wrap"><table class="table"><thead><tr><th>#</th><th>Produto/Serviço</th><th>Qtd.</th><th>Natureza</th><th>Centro de Custo</th><th>Local</th><th>Pedido</th><th>Recebido</th></tr></thead><tbody>${r.items.map(x=>`<tr><td>${x.line_no}</td><td><b>${esc(x.product_code)}</b> - ${esc(x.description)}</td><td>${qtyBR(x.quantity)} ${esc(x.unit)}</td><td>${esc(x.nature_code?x.nature_code+' - '+x.nature_description:'—')}</td><td>${esc(x.cost_center_code?x.cost_center_code+' - '+x.cost_center_name:'—')}</td><td>${esc(x.location_code?x.location_code+' - '+x.location_name:'—')}</td><td>${qtyBR(x.ordered_qty)}</td><td>${qtyBR(x.received_qty)}</td></tr>`).join('')}</tbody></table></div>
+      <div class="section-title">Itens</div><div class="table-wrap"><table class="table"><thead><tr><th>#</th><th>Produto/Serviço</th><th>Qtd.</th><th>Natureza</th><th>Centro de Custo</th><th>Pedido</th><th>Recebido</th></tr></thead><tbody>${r.items.map(x=>`<tr><td>${x.line_no}</td><td><b>${esc(x.product_code)}</b> - ${esc(x.description)}</td><td>${qtyBR(x.quantity)} ${esc(x.unit)}</td><td>${esc(x.nature_code?x.nature_code+' - '+x.nature_description:'—')}</td><td>${esc(x.cost_center_code?x.cost_center_code+' - '+x.cost_center_name:'—')}</td><td>${qtyBR(x.ordered_qty)}</td><td>${qtyBR(x.received_qty)}</td></tr>`).join('')}</tbody></table></div>
       <div class="form-actions"><button class="btn secondary" data-close>Fechar</button>${can('purchasing.quotation.manage')&&r.status==='RELEASED'?'<button id="quoteFromRequest" class="btn primary">Criar cotação</button>':''}</div>`,true);
     $('[data-close]').onclick=closeModal;if($('#quoteFromRequest'))$('#quoteFromRequest').onclick=()=>{closeModal();purchaseQuotationForm(r.id)}
   }catch(e){toast(e.message,'error')}
@@ -2552,7 +2615,7 @@ async function purchaseOrderView(id){
   try{
     const o=(await api(`/api/purchase-orders/${id}`)).order;
     openModal(`Ordem de Compra ${o.number}`,`${o.supplier_code} - ${o.supplier_name}`,`<div class="grid three"><div class="field"><span>Situação</span>${badge(o.status)}</div><div class="field"><span>Tipo de Movimento</span><b>${esc(o.movement_type_code?o.movement_type_code+' - '+o.movement_type_name:'—')}</b></div><div class="field"><span>Data</span><b>${dateBR(o.order_date)}</b></div><div class="field"><span>Entrega prevista</span><b>${dateBR(o.expected_delivery)||'—'}</b></div><div class="field"><span>Solicitação</span><b>${esc(o.request_number||'—')}</b></div><div class="field"><span>Cotação</span><b>${esc(o.quotation_number||'—')}</b></div><div class="field"><span>Filial</span><b>${esc(o.branch_code?o.branch_code+' - '+o.branch_name:'—')}</b></div><div class="field"><span>Pagamento</span><b>${esc(o.payment_terms||'—')}</b></div><div class="field"><span>Frete</span><b>${money(o.freight)}</b></div><div class="field"><span>Total</span><b>${money(o.total)}</b></div></div>
-      <div class="section-title">Itens</div><div class="table-wrap"><table class="table"><thead><tr><th>Produto/Serviço</th><th>Qtd.</th><th>Preço</th><th>Total</th><th>Natureza</th><th>Centro de Custo</th><th>Local</th><th>Recebido</th><th>Saldo</th></tr></thead><tbody>${o.items.map(x=>`<tr><td><b>${esc(x.product_code)}</b> - ${esc(x.description)}</td><td>${qtyBR(x.quantity)} ${esc(x.unit)}</td><td>${money(x.unit_price)}</td><td>${money(x.total)}</td><td>${esc(x.nature_code?x.nature_code+' - '+x.nature_description:'—')}</td><td>${esc(x.cost_center_code?x.cost_center_code+' - '+x.cost_center_name:'—')}</td><td>${esc(x.location_code?x.location_code+' - '+x.location_name:'—')}</td><td>${qtyBR(x.received_qty)}</td><td>${qtyBR(x.remaining_qty)}</td></tr>`).join('')}</tbody></table></div>
+      <div class="section-title">Itens</div><div class="table-wrap"><table class="table"><thead><tr><th>Produto/Serviço</th><th>Qtd.</th><th>Preço</th><th>Total</th><th>Natureza</th><th>Centro de Custo</th><th>Recebido</th><th>Saldo</th></tr></thead><tbody>${o.items.map(x=>`<tr><td><b>${esc(x.product_code)}</b> - ${esc(x.description)}</td><td>${qtyBR(x.quantity)} ${esc(x.unit)}</td><td>${money(x.unit_price)}</td><td>${money(x.total)}</td><td>${esc(x.nature_code?x.nature_code+' - '+x.nature_description:'—')}</td><td>${esc(x.cost_center_code?x.cost_center_code+' - '+x.cost_center_name:'—')}</td><td>${qtyBR(x.received_qty)}</td><td>${qtyBR(x.remaining_qty)}</td></tr>`).join('')}</tbody></table></div>
       <div class="form-actions"><button class="btn secondary" data-close>Fechar</button>${can('purchasing.receipt.manage')&&['OPEN','PARTIAL'].includes(o.status)?'<button id="receiveThisOrder" class="btn primary">Gerar movimento de recebimento</button>':''}</div>`,true);
     $('[data-close]').onclick=closeModal;if($('#receiveThisOrder'))$('#receiveThisOrder').onclick=()=>{closeModal();purchaseReceiptForm(id)}
   }catch(e){toast(e.message,'error')}
@@ -2626,13 +2689,13 @@ async function purchaseReceiptView(id){
       <div class="field"><span>Lote contábil</span><b>${esc(r.accounting_batch_code?r.accounting_batch_code+' - '+r.accounting_batch_description:'—')}</b></div>
       <div class="field"><span>Registrado por</span><b>${esc(r.created_by_name||'—')}</b></div><div class="field full"><span>Observações</span><div>${esc(r.notes||'—')}</div></div></div>
       ${pi||ji?`<div class="section-title">Efeitos gerados pelo movimento</div><div class="grid">${pi?`<div class="field"><span>Contas a Pagar</span><b>${esc(pi.number)} • ${badge(pi.status)} • ${money(pi.amount)}</b></div>`:''}${ji?`<div class="field"><span>Lançamento contábil</span><b>${badge(ji.status)} • ${officialState(ji.official_status)} • ${money(ji.amount)}</b></div>`:''}</div>`:''}
-      <div class="section-title">Itens recebidos</div><div class="table-wrap"><table class="table"><thead><tr><th>Produto/Serviço</th><th>Natureza</th><th>Quantidade</th><th>Local</th></tr></thead><tbody>${r.items.map(x=>`<tr><td><b>${esc(x.product_code)}</b> - ${esc(x.description)}</td><td>${esc(x.nature_code?x.nature_code+' - '+x.nature_description:'—')}</td><td>${qtyBR(x.quantity)} ${esc(x.unit)}</td><td>${esc(x.location_code?x.location_code+' - '+x.location_name:'—')}</td></tr>`).join('')}</tbody></table></div>
+      <div class="section-title">Itens recebidos</div><div class="table-wrap"><table class="table"><thead><tr><th>Produto/Serviço</th><th>Natureza</th><th>Quantidade</th></tr></thead><tbody>${r.items.map(x=>`<tr><td><b>${esc(x.product_code)}</b> - ${esc(x.description)}</td><td>${esc(x.nature_code?x.nature_code+' - '+x.nature_description:'—')}</td><td>${qtyBR(x.quantity)} ${esc(x.unit)}</td></tr>`).join('')}</tbody></table></div>
       <div class="form-actions"><button class="btn secondary" data-close>Fechar</button>${pi&&can('financial.payable.read')?'<button id="openReceiptPayable" class="btn secondary">Abrir Contas a Pagar</button>':''}</div>`,true);
     $('[data-close]').onclick=closeModal;if($('#openReceiptPayable'))$('#openReceiptPayable').onclick=()=>{closeModal();nav('financial-payables')}
   }catch(e){toast(e.message,'error')}
 }
 
-async function renderStockBalances(){const d=await api('/api/stock-balances'),a=d.balances||[];tablePage({cols:['Produto','Descrição','Local','Saldo','Unidade','Atualizado em'],rows:a.length?a.map(x=>`<tr><td class="code">${esc(x.product_code)}</td><td>${esc(x.description)}</td><td>${esc(x.location_code)} - ${esc(x.location_name)}</td><td><b>${qtyBR(x.quantity)}</b></td><td>${esc(x.unit)}</td><td>${dateTimeBR(x.updated_at)}</td></tr>`).join(''):null,emptyTitle:'Nenhum saldo de estoque',emptyText:'Os saldos serão alimentados pelos recebimentos de produtos.'})}
+async function renderStockBalances(){const d=await api('/api/stock-balances'),a=d.balances||[];tablePage({cols:['Produto','Descrição','Saldo','Unidade','Atualizado em'],rows:a.length?a.map(x=>`<tr><td class="code">${esc(x.product_code)}</td><td>${esc(x.description)}</td><td><b>${qtyBR(x.quantity)}</b></td><td>${esc(x.unit)}</td><td>${dateTimeBR(x.updated_at)}</td></tr>`).join(''):null,emptyTitle:'Nenhum saldo de estoque',emptyText:'Os saldos serão alimentados pelos movimentos de estoque dos produtos.'})}
 
 function myAccount(){
   openModal('Minha conta','Altere seu nome e e-mail de acesso ao SAGAS.',`<form id="myAccountForm">
@@ -2753,5 +2816,184 @@ setInterval(()=>checkSessionAccess(),30000);
 (async()=>{apiStatus();if(S.token&&S.api){try{const d=await api('/api/auth/me',{company:false,authRedirect:false});S.user=d.user;S.companies=d.companies||[];if(!S.companies.some(x=>x.id===S.companyId))S.companyId=S.companies[0]?.id||'';save();if(S.user&&S.companies.length)return showApp()}catch{clear()}}showLogin()})();
 
 </script>
+
+<script id="sagas-rm-shell-script-v26">
+(()=>{
+  const app=document.getElementById('app');
+  const oldMain=app?.querySelector('.main');
+  const oldTopbar=app?.querySelector('.topbar');
+  if(!app||!oldMain||!oldTopbar)return;
+
+  const pageDef={
+    companies:{label:'Empresas',type:'grid'},
+    'branches-admin':{label:'Filiais',type:'grid'},users:{label:'Usuários',type:'people'},roles:{label:'Perfis e Permissões',type:'people'},
+    accounts:{label:'Plano de Contas',type:'book'},'cost-centers':{label:'Centros de Custo',type:'people'},history:{label:'Históricos Padrão',type:'doc'},periods:{label:'Períodos Contábeis',type:'doc'},batches:{label:'Lotes',type:'grid'},entries:{label:'Lançamentos',type:'file'},
+    'movement-types':{label:'Tipos de Movimento',type:'grid'},'budget-natures':{label:'Naturezas Orçamentárias',type:'calc'},'movement-events':{label:'Eventos Contábeis',type:'doc'},'purchase-products':{label:'Produtos / Serviços',type:'doc'},'purchase-suppliers':{label:'Fornecedores',type:'people'},
+    'purchase-requests':{label:'Solicitações',type:'doc'},'purchase-quotations':{label:'Cotações',type:'calc'},'purchase-orders':{label:'Ordens de Compra',type:'grid'},'purchase-receipts':{label:'Recebimentos',type:'file'},'stock-balances':{label:'Estoque Atual',type:'grid'},
+    'financial-payables':{label:'Contas a Pagar',type:'money'}
+  };
+
+  const modules={
+    'Administração':{icon:'people',tabs:{'Cadastros':[['Administração',['companies','branches-admin','users','roles']]]}},
+    'Gestão Contábil':{icon:'file',tabs:{
+      'Cadastros':[['Cadastros',['accounts','cost-centers','history']]],
+      'Lançamentos':[['Movimentação Contábil',['periods','batches','entries']]]
+    }},
+    'Gestão de Estoque, Compras e Faturamento':{icon:'grid',tabs:{
+      'Cadastros':[['Estoque, Compras e Faturamento',['movement-types','purchase-products','purchase-suppliers']],['Financeiros',['budget-natures']],['Contábeis',['movement-events']]],
+      'Compras':[['Processo de Compras',['purchase-requests','purchase-quotations','purchase-orders','purchase-receipts']]],
+      'Estoque':[['Estoque',['stock-balances']]]
+    }},
+    'Gestão Financeira':{icon:'chart',tabs:{'Contas a Pagar / Receber':[['Operações Financeiras',['financial-payables']]]}}
+  };
+
+  const pageToModule={};
+  Object.entries(modules).forEach(([m,md])=>Object.entries(md.tabs).forEach(([tab,groups])=>groups.forEach(([,pages])=>pages.forEach(p=>pageToModule[p]={module:m,tab}))));
+  let currentModule=pageToModule[S.page]?.module||'Gestão Contábil';
+  let currentTab=pageToModule[S.page]?.tab||Object.keys(modules[currentModule].tabs)[0];
+  let docs=[];
+  if(S.page&&pageDef[S.page])docs.push(S.page);
+
+  function icon(type){
+    const common='viewBox="0 0 32 32" aria-hidden="true"';
+    const map={
+      file:`<svg ${common}><path d="M8 4h11l5 5v19H8z"/><path d="M19 4v6h6M11 15h10M11 20h10M11 25h7"/></svg>`,
+      doc:`<svg ${common}><path d="M7 4h14l4 4v20H7z"/><path d="M21 4v5h5M11 14h10M11 19h10M11 24h6"/></svg>`,
+      grid:`<svg ${common}><rect x="5" y="5" width="9" height="9"/><rect x="18" y="5" width="9" height="9"/><rect x="5" y="18" width="9" height="9"/><rect x="18" y="18" width="9" height="9"/></svg>`,
+      people:`<svg ${common}><circle cx="12" cy="11" r="4"/><circle cx="22" cy="12" r="3"/><path d="M5 27c.7-5 3.3-8 7-8s6.3 3 7 8M19 20c4 0 6 2 7 6"/></svg>`,
+      calc:`<svg ${common}><rect x="6" y="4" width="20" height="24" rx="1"/><path d="M10 8h12v5H10zM10 18h3M16 18h3M22 18h1M10 23h3M16 23h3M22 23h1"/></svg>`,
+      money:`<svg ${common}><circle cx="16" cy="16" r="11"/><path d="M19 11c-1-1-2-2-4-2-2 0-4 1-4 3s2 3 5 4 5 2 5 4-2 4-5 4c-2 0-4-1-5-2M16 7v18"/></svg>`,
+      chart:`<svg ${common}><path d="M5 27V6M5 27h23"/><rect x="9" y="17" width="4" height="7"/><rect x="16" y="12" width="4" height="12"/><rect x="23" y="8" width="4" height="16"/></svg>`,
+      book:`<svg ${common}><path d="M5 7c5-2 8-1 11 2v18c-3-3-6-4-11-2zM27 7c-5-2-8-1-11 2v18c3-3 6-4 11-2z"/></svg>`
+    };
+    return map[type]||map.doc;
+  }
+
+  const shell=document.createDocumentFragment();
+  const windowbar=document.createElement('div');windowbar.className='sagas-windowbar';windowbar.innerHTML=`<div class="sagas-quick"><button title="Menu"><span class="sagas-brand-dot"></span></button><button title="Salvar">▣</button><button title="Imprimir">▱</button><button title="Atualizar" id="sagasQuickRefresh">↻</button><button title="Favoritos">☆</button><button title="Opções">▾</button></div><div class="sagas-window-mode" id="sagasWindowMode"></div><div class="sagas-caption"><span class="sagas-caption-title" id="sagasCaptionTitle">SAGAS</span><span id="sagasCompanyCaption"></span><div id="sagasTopActions"></div></div>`;
+  const navrow=document.createElement('div');navrow.className='sagas-navrow';navrow.id='sagasNavrow';navrow.innerHTML='<button class="sagas-module-toggle" id="sagasModuleToggle" title="Alternar módulo">☰</button>';
+  const ribbon=document.createElement('div');ribbon.className='sagas-ribbon';ribbon.innerHTML='<div class="sagas-ribbon-scroll" id="sagasRibbon"></div><div class="sagas-logo-zone"><div class="sagas-logo"><span class="sagas-logo-mark"></span><span>SAGAS<small>SISTEMA DE ADMINISTRAÇÃO E GESTÃO</small></span></div></div>';
+  const docTabs=document.createElement('div');docTabs.className='sagas-document-tabs';docTabs.id='sagasDocumentTabs';
+  const workspace=document.createElement('div');workspace.className='sagas-workspace';workspace.id='sagasWorkspace';
+  const status=document.createElement('div');status.className='sagas-statusbar';status.innerHTML='<span class="sagas-status-pill"><span class="sagas-status-icon"></span>Sistema</span><span id="sagasStatusModule">SAGAS</span><span style="margin-left:auto">Pronto</span>';
+  shell.append(windowbar,navrow,ribbon,docTabs,workspace,status);
+  app.prepend(shell);
+  workspace.appendChild(oldMain);
+
+  const topActions=oldTopbar.querySelector('.top-actions');
+  if(topActions)document.getElementById('sagasTopActions').appendChild(topActions);
+
+  const menu=document.createElement('div');menu.className='sagas-module-menu';menu.id='sagasModuleMenu';
+  menu.innerHTML=`<div class="sagas-module-list">
+    <div class="sagas-module-item" data-module-direct="Administração"><span class="sagas-switch-icon">${icon('people')}</span><span>Administração</span><span class="sagas-module-arrow"></span></div>
+    <div class="sagas-module-item" data-sub="backoffice"><span class="sagas-switch-icon">${icon('grid')}</span><span>BackOffice</span><span class="sagas-module-arrow">›</span></div>
+  </div><div class="sagas-module-footer"><button id="sagasAccountBtn">👤 Minha conta</button><button id="sagasApiBtn">⚙ API</button><button id="sagasLogoutBtn">❎ Sair</button></div><div class="sagas-module-submenu" id="sagasModuleSubmenu"></div>`;
+  document.body.appendChild(menu);
+
+  function allowed(page){try{return typeof canPage==='function'?canPage(page):true}catch{return true}}
+  function moduleHasAccess(name){const md=modules[name];return Object.values(md.tabs).some(groups=>groups.some(([,pages])=>pages.some(allowed)))}
+  function firstAllowedInModule(name){const md=modules[name];for(const [tab,groups] of Object.entries(md.tabs)){for(const [,pages] of groups){const p=pages.find(allowed);if(p)return {page:p,tab}}}return null}
+
+  function renderModuleTabs(preferred){
+    [...navrow.querySelectorAll('.sagas-navtab,.sagas-module-caption')].forEach(x=>x.remove());
+    const md=modules[currentModule];
+    const tabs=Object.entries(md.tabs).filter(([,groups])=>groups.some(([,pages])=>pages.some(allowed))).map(([t])=>t);
+    if(!tabs.includes(preferred))preferred=tabs.includes(currentTab)?currentTab:tabs[0];
+    currentTab=preferred||tabs[0]||'';
+    tabs.forEach(t=>{const b=document.createElement('button');b.className='sagas-navtab'+(t===currentTab?' active':'');b.textContent=t;b.onclick=()=>{currentTab=t;renderModuleTabs(t);renderRibbon()};navrow.appendChild(b)});
+    const c=document.createElement('span');c.className='sagas-module-caption';c.textContent=currentModule;navrow.appendChild(c);
+    document.getElementById('sagasWindowMode').textContent=currentModule;
+    document.getElementById('sagasStatusModule').textContent=currentModule;
+  }
+
+  function renderRibbon(){
+    const area=document.getElementById('sagasRibbon');area.innerHTML='';
+    const groups=modules[currentModule]?.tabs[currentTab]||[];
+    groups.forEach(([title,pages])=>{
+      const visible=pages.filter(allowed);if(!visible.length)return;
+      const g=document.createElement('div');g.className='sagas-group';
+      const gi=document.createElement('div');gi.className='sagas-group-items';
+      visible.forEach(p=>{const d=pageDef[p];const b=document.createElement('button');b.className='sagas-ribbon-btn'+(d.label.length>18?' wide':'');b.dataset.page=p;b.innerHTML=`<span class="sagas-ribbon-icon">${icon(d.type)}</span><span class="sagas-ribbon-label">${d.label}</span>`;b.onclick=()=>openPage(p);gi.appendChild(b)});
+      const gt=document.createElement('div');gt.className='sagas-group-title';gt.textContent=title;g.append(gi,gt);area.appendChild(g);
+    });
+  }
+
+  function renderDocs(){
+    const area=document.getElementById('sagasDocumentTabs');area.innerHTML='';
+    docs=docs.filter(p=>pageDef[p]&&allowed(p));
+    if(!docs.length&&S.page&&pageDef[S.page]&&allowed(S.page))docs=[S.page];
+    docs.forEach(p=>{const d=pageDef[p];const el=document.createElement('div');el.className='sagas-doc-tab'+(p===S.page?' active':'');el.innerHTML=`<span class="sagas-doc-icon">▣</span><span class="sagas-doc-title">${d.label}</span><span class="sagas-doc-close">×</span>`;el.onclick=e=>{if(e.target.classList.contains('sagas-doc-close')){e.stopPropagation();closeDoc(p)}else openPage(p)};area.appendChild(el)});
+  }
+
+  function closeDoc(p){
+    const i=docs.indexOf(p);if(i<0)return;docs.splice(i,1);
+    if(S.page===p){const next=docs[Math.max(0,i-1)]||firstAllowedInModule(currentModule)?.page||firstAllowedPage();openPage(next);return}
+    renderDocs();
+  }
+
+  async function openPage(p){
+    if(!allowed(p))return;
+    const loc=pageToModule[p];
+    if(loc&&(loc.module!==currentModule||loc.tab!==currentTab)){currentModule=loc.module;currentTab=loc.tab;renderModuleTabs(currentTab);renderRibbon()}
+    if(!docs.includes(p))docs.push(p);
+    await nav(p);
+  }
+
+  function syncPageChrome(p){
+    const d=pageDef[p]||{label:meta?.[p]?.[0]||p};
+    const loc=pageToModule[p];
+    if(loc&&(loc.module!==currentModule||loc.tab!==currentTab)){currentModule=loc.module;currentTab=loc.tab;renderModuleTabs(currentTab);renderRibbon()}
+    if(pageDef[p]&&!docs.includes(p))docs.push(p);
+    document.getElementById('sagasCaptionTitle').textContent=`${d.label} - SAGAS`;
+    renderDocs();
+  }
+
+  function switchModule(name){
+    if(!modules[name]||!moduleHasAccess(name))return;
+    const first=firstAllowedInModule(name);if(!first)return;
+    currentModule=name;currentTab=first.tab;renderModuleTabs(currentTab);renderRibbon();closeMenu();openPage(first.page);
+  }
+
+  const submenu=document.getElementById('sagasModuleSubmenu');
+  const direct=menu.querySelector('[data-module-direct]');
+  direct.onclick=e=>{e.stopPropagation();switchModule(direct.dataset.moduleDirect)};
+  const back=menu.querySelector('[data-sub="backoffice"]');
+  function showBackOffice(){
+    menu.querySelectorAll('.sagas-module-item').forEach(x=>x.classList.toggle('active-hover',x===back));
+    const items=['Gestão Contábil','Gestão de Estoque, Compras e Faturamento','Gestão Financeira'].filter(moduleHasAccess);
+    submenu.style.top=`${back.offsetTop}px`;
+    submenu.innerHTML=items.map(name=>`<div class="sagas-sub-item ${name===currentModule?'current':''}" data-module="${name}"><span class="sagas-switch-icon">${icon(modules[name].icon)}</span><span>${name}</span></div>`).join('');
+    submenu.classList.toggle('show',!!items.length);
+    submenu.querySelectorAll('[data-module]').forEach(el=>el.onclick=e=>{e.stopPropagation();switchModule(el.dataset.module)});
+  }
+  back.onmouseenter=showBackOffice;back.onclick=e=>{e.stopPropagation();showBackOffice()};
+
+  const toggle=document.getElementById('sagasModuleToggle');
+  function closeMenu(){menu.classList.remove('show');submenu.classList.remove('show');toggle.classList.remove('open')}
+  toggle.onclick=e=>{e.stopPropagation();const will=!menu.classList.contains('show');closeMenu();if(will){menu.classList.add('show');toggle.classList.add('open')}};
+  menu.onclick=e=>e.stopPropagation();document.addEventListener('click',closeMenu);
+  document.getElementById('sagasAccountBtn').onclick=()=>{closeMenu();document.getElementById('myAccountApp')?.click()};
+  document.getElementById('sagasApiBtn').onclick=()=>{closeMenu();document.getElementById('apiConfigApp')?.click()};
+  document.getElementById('sagasLogoutBtn').onclick=()=>{closeMenu();document.getElementById('logoutBtn')?.click()};
+  document.getElementById('sagasQuickRefresh').onclick=()=>{if(S.page)nav(S.page)};
+
+  const originalNav=nav;
+  nav=async function(p){const r=await originalNav(p);syncPageChrome(S.page||p);return r};
+  const originalApplyMenuAccess=applyMenuAccess;
+  applyMenuAccess=function(){const r=originalApplyMenuAccess();
+    if(!moduleHasAccess(currentModule)){const next=Object.keys(modules).find(moduleHasAccess);if(next){currentModule=next;const f=firstAllowedInModule(next);currentTab=f?.tab||Object.keys(modules[next].tabs)[0]}}
+    renderModuleTabs(currentTab);renderRibbon();renderDocs();return r};
+
+  const titleNode=document.getElementById('pageTitle');
+  if(titleNode)new MutationObserver(()=>{if(S.page)syncPageChrome(S.page)}).observe(titleNode,{childList:true,subtree:true});
+  const companyNode=document.getElementById('companySelect');
+  const companyCaption=document.getElementById('sagasCompanyCaption');
+  function syncCompanyCaption(){if(companyCaption&&companyNode)companyCaption.textContent=companyNode.options[companyNode.selectedIndex]?.text||''}
+  if(companyNode){companyNode.addEventListener('change',syncCompanyCaption);new MutationObserver(syncCompanyCaption).observe(companyNode,{childList:true,subtree:true});syncCompanyCaption()}
+
+  renderModuleTabs(currentTab);renderRibbon();renderDocs();syncPageChrome(S.page);
+})();
+</script>
+
 </body>
 </html>
