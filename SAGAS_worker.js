@@ -3153,7 +3153,9 @@ async function listReceipts(env,companyId) {
 
 async function getReceipt(env,companyId,id) {
   const rec=await env.DB.prepare(`SELECT rec.*,o.number AS order_number,s.code AS supplier_code,s.name AS supplier_name,u.name AS created_by_name FROM purchase_receipts rec JOIN purchase_orders o ON o.id=rec.order_id JOIN purchase_suppliers s ON s.id=o.supplier_id LEFT JOIN users u ON u.id=rec.created_by WHERE rec.id=? AND rec.company_id=?`).bind(id,companyId).first(); if(!rec)throw new HttpError(404,'Recebimento não encontrado.','NOT_FOUND');
-  const items=await env.DB.prepare(`SELECT ri.*,oi.description,oi.unit,p.code AS product_code,l.code AS location_code,l.name AS location_name FROM purchase_receipt_items ri JOIN purchase_order_items oi ON oi.id=ri.order_item_id JOIN purchase_products p ON p.id=oi.product_id LEFT JOIN purchase_locations l ON l.id=oi.location_id WHERE ri.company_id=? AND ri.receipt_id=?`).bind(companyId,id).all(); return {...rec,items:(items.results||[]).map(x=>({...x,quantity:milliToQty(x.quantity_milli)}))};
+  const items=await env.DB.prepare(`SELECT ri.*,oi.description,oi.unit,p.code AS product_code,l.code AS location_code,l.name AS location_name FROM purchase_receipt_items ri JOIN purchase_order_items oi ON oi.id=ri.order_item_id JOIN purchase_products p ON p.id=oi.product_id LEFT JOIN purchase_locations l ON l.id=oi.location_id WHERE ri.company_id=? AND ri.receipt_id=?`).bind(companyId,id).all();
+  const integrations=await receiptIntegrationLinks(env,companyId,id);
+  return {...rec,items:(items.results||[]).map(x=>({...x,quantity:milliToQty(x.quantity_milli)})),integrations};
 }
 
 async function refreshRequestFulfillment(env,companyId,requestId) {
@@ -3163,17 +3165,304 @@ async function refreshRequestFulfillment(env,companyId,requestId) {
 }
 
 async function createReceipt(env,request,auth,companyId,body) {
-  await requirePermission(env,auth.user.id,companyId,'purchasing.receipt.manage'); const order=await purchaseEntity(env,'purchase_orders',required(body.order_id,'ordem de compra'),companyId); if(!['OPEN','PARTIAL'].includes(order.status))throw new HttpError(409,'A ordem não está aberta para recebimento.','INVALID_STATUS');
-  const orderDetails=await getOrder(env,companyId,order.id),map=new Map(orderDetails.items.map(x=>[x.id,x])); const rows=Array.isArray(body.items)?body.items:[]; if(!rows.length)throw new HttpError(400,'Informe ao menos um item recebido.','VALIDATION_ERROR');
-  const valid=[]; for(const raw of rows){const oi=map.get(raw.order_item_id);if(!oi)continue;const q=qtyToMilli(raw.quantity,'quantidade recebida');const remaining=oi.quantity_milli-oi.received_qty_milli;if(q>remaining)throw new HttpError(409,`Quantidade recebida de ${oi.description} excede o saldo da ordem.`,'QUANTITY_EXCEEDED');valid.push({oi,q});} if(!valid.length)throw new HttpError(400,'Nenhuma quantidade de recebimento válida.','VALIDATION_ERROR');
-  const rid=uuid(),number=await nextPurchaseNumber(env,companyId,'purchase_receipts','REC-'),date=isoDate(body.receipt_date||new Date().toISOString().slice(0,10),'data do recebimento'); const stmts=[env.DB.prepare(`INSERT INTO purchase_receipts (id,company_id,number,order_id,receipt_date,document_number,notes,created_by) VALUES (?,?,?,?,?,?,?,?)`).bind(rid,companyId,number,order.id,date,cleanText(body.document_number,120),cleanText(body.notes,2000),auth.user.id)];
-  for(const {oi,q} of valid){stmts.push(env.DB.prepare(`INSERT INTO purchase_receipt_items (id,company_id,receipt_id,order_item_id,quantity_milli) VALUES (?,?,?,?,?)`).bind(uuid(),companyId,rid,oi.id,q));stmts.push(env.DB.prepare(`UPDATE purchase_order_items SET received_qty_milli=received_qty_milli+? WHERE id=? AND company_id=?`).bind(q,oi.id,companyId));if(oi.request_item_id)stmts.push(env.DB.prepare(`UPDATE purchase_request_items SET received_qty_milli=received_qty_milli+? WHERE id=? AND company_id=?`).bind(q,oi.request_item_id,companyId));if(oi.item_type==='PRODUCT'&&oi.location_id){const bal=await env.DB.prepare(`SELECT id FROM stock_balances WHERE company_id=? AND product_id=? AND location_id=?`).bind(companyId,oi.product_id,oi.location_id).first();if(bal)stmts.push(env.DB.prepare(`UPDATE stock_balances SET quantity_milli=quantity_milli+?,updated_at=CURRENT_TIMESTAMP WHERE id=?`).bind(q,bal.id));else stmts.push(env.DB.prepare(`INSERT INTO stock_balances (id,company_id,product_id,location_id,quantity_milli) VALUES (?,?,?,?,?)`).bind(uuid(),companyId,oi.product_id,oi.location_id,q));stmts.push(env.DB.prepare(`INSERT INTO stock_movements (id,company_id,product_id,location_id,movement_date,movement_type,quantity_milli,source_type,source_id) VALUES (?,?,?,?,?,'PURCHASE_RECEIPT',?,'PURCHASE_RECEIPT',?)`).bind(uuid(),companyId,oi.product_id,oi.location_id,date,q,rid));}}
+  await requirePermission(env,auth.user.id,companyId,'purchasing.receipt.manage');
+  const order=await purchaseEntity(env,'purchase_orders',required(body.order_id,'ordem de compra'),companyId);
+  if(!['OPEN','PARTIAL'].includes(order.status))throw new HttpError(409,'A ordem não está aberta para recebimento.','INVALID_STATUS');
+  const orderDetails=await getOrder(env,companyId,order.id),map=new Map(orderDetails.items.map(x=>[x.id,x]));
+  const rows=Array.isArray(body.items)?body.items:[];
+  if(!rows.length)throw new HttpError(400,'Informe ao menos um item recebido.','VALIDATION_ERROR');
+  const valid=[];
+  for(const raw of rows){
+    const oi=map.get(raw.order_item_id);if(!oi)continue;
+    const q=qtyToMilli(raw.quantity,'quantidade recebida'),remaining=oi.quantity_milli-oi.received_qty_milli;
+    if(q>remaining)throw new HttpError(409,`Quantidade recebida de ${oi.description} excede o saldo da ordem.`,'QUANTITY_EXCEEDED');
+    valid.push({oi,q});
+  }
+  if(!valid.length)throw new HttpError(400,'Nenhuma quantidade de recebimento válida.','VALIDATION_ERROR');
+
+  const selected=new Map(valid.map(x=>[x.oi.id,x.q]));
+  const willComplete=orderDetails.items.every(x=>Number(x.received_qty_milli)+(selected.get(x.id)||0)>=Number(x.quantity_milli));
+  const rid=uuid(),number=await nextPurchaseNumber(env,companyId,'purchase_receipts','REC-'),date=isoDate(body.receipt_date||new Date().toISOString().slice(0,10),'data do recebimento'),doc=cleanText(body.document_number,120);
+  const integration=await prepareReceiptIntegrations(env,auth,companyId,{order,orderDetails,valid,receiptId:rid,receiptNumber:number,receiptDate:date,documentNumber:doc,dueDate:body.due_date||null,willComplete});
+
+  const stmts=[env.DB.prepare(`INSERT INTO purchase_receipts (id,company_id,number,order_id,receipt_date,document_number,notes,created_by) VALUES (?,?,?,?,?,?,?,?)`).bind(rid,companyId,number,order.id,date,doc,cleanText(body.notes,2000),auth.user.id)];
+  for(const {oi,q} of valid){
+    stmts.push(env.DB.prepare(`INSERT INTO purchase_receipt_items (id,company_id,receipt_id,order_item_id,quantity_milli) VALUES (?,?,?,?,?)`).bind(uuid(),companyId,rid,oi.id,q));
+    stmts.push(env.DB.prepare(`UPDATE purchase_order_items SET received_qty_milli=received_qty_milli+? WHERE id=? AND company_id=?`).bind(q,oi.id,companyId));
+    if(oi.request_item_id)stmts.push(env.DB.prepare(`UPDATE purchase_request_items SET received_qty_milli=received_qty_milli+? WHERE id=? AND company_id=?`).bind(q,oi.request_item_id,companyId));
+    if(oi.item_type==='PRODUCT'&&oi.location_id){
+      const bal=await env.DB.prepare(`SELECT id FROM stock_balances WHERE company_id=? AND product_id=? AND location_id=?`).bind(companyId,oi.product_id,oi.location_id).first();
+      if(bal)stmts.push(env.DB.prepare(`UPDATE stock_balances SET quantity_milli=quantity_milli+?,updated_at=CURRENT_TIMESTAMP WHERE id=?`).bind(q,bal.id));
+      else stmts.push(env.DB.prepare(`INSERT INTO stock_balances (id,company_id,product_id,location_id,quantity_milli) VALUES (?,?,?,?,?)`).bind(uuid(),companyId,oi.product_id,oi.location_id,q));
+      stmts.push(env.DB.prepare(`INSERT INTO stock_movements (id,company_id,product_id,location_id,movement_date,movement_type,quantity_milli,source_type,source_id) VALUES (?,?,?,?,?,'PURCHASE_RECEIPT',?,'PURCHASE_RECEIPT',?)`).bind(uuid(),companyId,oi.product_id,oi.location_id,date,q,rid));
+    }
+  }
+  stmts.push(...integration.stmts);
+  stmts.push(env.DB.prepare(`UPDATE purchase_orders SET status=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND company_id=?`).bind(willComplete?'RECEIVED':'PARTIAL',order.id,companyId));
   await env.DB.batch(stmts);
-  const after=await getOrder(env,companyId,order.id),full=after.items.every(x=>x.received_qty_milli>=x.quantity_milli); await env.DB.prepare(`UPDATE purchase_orders SET status=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND company_id=?`).bind(full?'RECEIVED':'PARTIAL',order.id,companyId).run(); await refreshRequestFulfillment(env,companyId,order.request_id); await audit(env,{companyId,userId:auth.user.id,action:'RECEIVE',entity:'purchase_order',entityId:order.id,after:{receipt:number},request}); return getReceipt(env,companyId,rid);
+  await refreshRequestFulfillment(env,companyId,order.request_id);
+  if(integration.meta.journal_entry)await audit(env,{companyId,userId:auth.user.id,action:'CREATE_POSTED',entity:'journal_entry',entityId:integration.meta.journal_entry.id,after:{source:'PURCHASE_RECEIPT',receipt:number},request});
+  if(integration.meta.payable)await audit(env,{companyId,userId:auth.user.id,action:'CREATE',entity:'financial_payable',entityId:integration.meta.payable.id,after:integration.meta.payable,request});
+  await audit(env,{companyId,userId:auth.user.id,action:'RECEIVE',entity:'purchase_order',entityId:order.id,after:{receipt:number,integrations:integration.meta},request});
+  const receipt=await getReceipt(env,companyId,rid);
+  return {...receipt,integration_created:integration.meta};
 }
 
 async function listStockBalances(env,companyId) {
   const r=await env.DB.prepare(`SELECT sb.id,p.code AS product_code,p.description,p.unit,l.code AS location_code,l.name AS location_name,sb.quantity_milli,sb.updated_at FROM stock_balances sb JOIN purchase_products p ON p.id=sb.product_id JOIN purchase_locations l ON l.id=sb.location_id WHERE sb.company_id=? ORDER BY p.code,l.code`).bind(companyId).all(); return (r.results||[]).map(x=>({...x,quantity:milliToQty(x.quantity_milli)}));
+}
+
+
+
+// ===== purchase-finance-accounting-integration.js =====
+const PURCHASE_INTEGRATION_PERMISSION_DEFS=[
+  ["purchasing.integration.read","Consultar integração de compras"],
+  ["purchasing.integration.manage","Configurar integração de compras"]
+];
+const FINANCE_PERMISSION_DEFS=[
+  ["financial.payable.read","Consultar contas a pagar"],
+  ["financial.payable.manage","Gerenciar contas a pagar"]
+];
+
+async function ensurePurchaseIntegrationSchema(env){
+  await env.DB.batch([
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS purchase_integration_settings (
+      company_id TEXT PRIMARY KEY,
+      create_payable INTEGER NOT NULL DEFAULT 0,
+      auto_accounting INTEGER NOT NULL DEFAULT 0,
+      default_due_days INTEGER NOT NULL DEFAULT 30,
+      accounting_batch_id TEXT,
+      product_debit_account_id TEXT,
+      service_debit_account_id TEXT,
+      freight_debit_account_id TEXT,
+      payable_credit_account_id TEXT,
+      history_template_id TEXT,
+      updated_by TEXT,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )`),
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS financial_payables (
+      id TEXT PRIMARY KEY,
+      company_id TEXT NOT NULL,
+      number TEXT NOT NULL,
+      supplier_id TEXT NOT NULL,
+      source_type TEXT,
+      source_id TEXT,
+      receipt_id TEXT,
+      issue_date TEXT NOT NULL,
+      due_date TEXT NOT NULL,
+      document_number TEXT,
+      description TEXT,
+      amount_cents INTEGER NOT NULL,
+      balance_cents INTEGER NOT NULL,
+      status TEXT NOT NULL DEFAULT 'OPEN',
+      payment_date TEXT,
+      payment_notes TEXT,
+      paid_by TEXT,
+      paid_at TEXT,
+      created_by TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(company_id,number),
+      UNIQUE(company_id,source_type,source_id)
+    )`),
+    env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_financial_payables_company_status ON financial_payables(company_id,status,due_date)`),
+    env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_financial_payables_receipt ON financial_payables(company_id,receipt_id)`)
+  ]);
+
+  for(const [code,description] of [...PURCHASE_INTEGRATION_PERMISSION_DEFS,...FINANCE_PERMISSION_DEFS]){
+    const exists=await env.DB.prepare(`SELECT id FROM permissions WHERE code=?`).bind(code).first();
+    if(!exists){
+      const id=uuid(), module=code.startsWith('financial.')?'FINANCE':'PURCHASES';
+      await env.DB.prepare(`INSERT INTO permissions (id,code,module,description) VALUES (?,?,?,?)`).bind(id,code,module,description).run();
+    }
+  }
+  await env.DB.prepare(`
+    INSERT OR IGNORE INTO role_permissions (role_id,permission_id)
+    SELECT r.id,p.id FROM roles r CROSS JOIN permissions p
+    WHERE r.code='ADMIN' AND p.code IN ('purchasing.integration.read','purchasing.integration.manage','financial.payable.read','financial.payable.manage')
+  `).run();
+}
+
+function addDaysISO(dateString,days){
+  const d=new Date(String(dateString)+'T12:00:00Z');
+  d.setUTCDate(d.getUTCDate()+Number(days||0));
+  return d.toISOString().slice(0,10);
+}
+
+async function getPurchaseIntegrationSettings(env,companyId){
+  const row=await env.DB.prepare(`SELECT * FROM purchase_integration_settings WHERE company_id=?`).bind(companyId).first();
+  return row||{
+    company_id:companyId,create_payable:0,auto_accounting:0,default_due_days:30,
+    accounting_batch_id:null,product_debit_account_id:null,service_debit_account_id:null,
+    freight_debit_account_id:null,payable_credit_account_id:null,history_template_id:null
+  };
+}
+
+async function assertAnalyticActiveAccount(env,companyId,id,label){
+  if(!id) throw new HttpError(400,`Configure ${label}.`,'INTEGRATION_NOT_CONFIGURED');
+  const a=await assertCompanyEntity(env,'accounts',id,companyId);
+  if(!a.active||!a.analytic) throw new HttpError(409,`${label} deve ser uma conta analítica e ativa.`,'INVALID_ACCOUNT');
+  return a;
+}
+
+async function savePurchaseIntegrationSettings(env,request,auth,companyId,body){
+  await requirePermission(env,auth.user.id,companyId,'purchasing.integration.manage');
+  const createPayable=bool01(body.create_payable,0), autoAccounting=bool01(body.auto_accounting,0);
+  const due=Math.max(0,Math.min(3650,Number(body.default_due_days??30)||0));
+  const batchId=cleanText(body.accounting_batch_id,80), productDebit=cleanText(body.product_debit_account_id,80), serviceDebit=cleanText(body.service_debit_account_id,80), freightDebit=cleanText(body.freight_debit_account_id,80), payableCredit=cleanText(body.payable_credit_account_id,80), histId=cleanText(body.history_template_id,80);
+
+  if(batchId) await assertCompanyEntity(env,'journal_batches',batchId,companyId);
+  for(const [id,label] of [[productDebit,'a conta de débito para produtos'],[serviceDebit,'a conta de débito para serviços'],[freightDebit,'a conta de débito para frete'],[payableCredit,'a conta de crédito de fornecedores']]){
+    if(id) await assertAnalyticActiveAccount(env,companyId,id,label);
+  }
+  if(histId) await assertCompanyEntity(env,'history_templates',histId,companyId);
+  if(autoAccounting){
+    if(!batchId) throw new HttpError(400,'Selecione o lote contábil da integração.','INTEGRATION_NOT_CONFIGURED');
+    if(!payableCredit) throw new HttpError(400,'Selecione a conta de crédito de fornecedores.','INTEGRATION_NOT_CONFIGURED');
+    if(!productDebit&&!serviceDebit) throw new HttpError(400,'Configure ao menos uma conta de débito para produtos ou serviços.','INTEGRATION_NOT_CONFIGURED');
+  }
+
+  await env.DB.prepare(`
+    INSERT INTO purchase_integration_settings
+      (company_id,create_payable,auto_accounting,default_due_days,accounting_batch_id,product_debit_account_id,service_debit_account_id,freight_debit_account_id,payable_credit_account_id,history_template_id,updated_by,updated_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)
+    ON CONFLICT(company_id) DO UPDATE SET
+      create_payable=excluded.create_payable,
+      auto_accounting=excluded.auto_accounting,
+      default_due_days=excluded.default_due_days,
+      accounting_batch_id=excluded.accounting_batch_id,
+      product_debit_account_id=excluded.product_debit_account_id,
+      service_debit_account_id=excluded.service_debit_account_id,
+      freight_debit_account_id=excluded.freight_debit_account_id,
+      payable_credit_account_id=excluded.payable_credit_account_id,
+      history_template_id=excluded.history_template_id,
+      updated_by=excluded.updated_by,
+      updated_at=CURRENT_TIMESTAMP
+  `).bind(companyId,createPayable,autoAccounting,due,batchId||null,productDebit||null,serviceDebit||null,freightDebit||null,payableCredit||null,histId||null,auth.user.id).run();
+  const after=await getPurchaseIntegrationSettings(env,companyId);
+  await audit(env,{companyId,userId:auth.user.id,action:'UPDATE',entity:'purchase_integration_settings',entityId:companyId,after,request});
+  return after;
+}
+
+async function nextPayableNumber(env,companyId){
+  const prefix='CP-';
+  const row=await env.DB.prepare(`SELECT MAX(CAST(SUBSTR(number,?) AS INTEGER)) AS max_no FROM financial_payables WHERE company_id=? AND number LIKE 'CP-%'`).bind(prefix.length+1,companyId).first();
+  return prefix+String((Number(row?.max_no)||0)+1).padStart(6,'0');
+}
+
+async function listFinancialPayables(env,companyId){
+  const r=await env.DB.prepare(`
+    SELECT fp.*,s.code AS supplier_code,s.name AS supplier_name,rec.number AS receipt_number,o.number AS order_number
+    FROM financial_payables fp
+    JOIN purchase_suppliers s ON s.id=fp.supplier_id
+    LEFT JOIN purchase_receipts rec ON rec.id=fp.receipt_id
+    LEFT JOIN purchase_orders o ON o.id=rec.order_id
+    WHERE fp.company_id=?
+    ORDER BY CASE fp.status WHEN 'OPEN' THEN 0 WHEN 'PAID' THEN 1 ELSE 2 END,fp.due_date,fp.number
+  `).bind(companyId).all();
+  return (r.results||[]).map(x=>({...x,amount:centsToMoney(x.amount_cents),balance:centsToMoney(x.balance_cents)}));
+}
+
+async function getFinancialPayable(env,companyId,id){
+  const x=await env.DB.prepare(`
+    SELECT fp.*,s.code AS supplier_code,s.name AS supplier_name,s.tax_id,rec.number AS receipt_number,o.number AS order_number,
+           u.name AS created_by_name,pu.name AS paid_by_name
+    FROM financial_payables fp
+    JOIN purchase_suppliers s ON s.id=fp.supplier_id
+    LEFT JOIN purchase_receipts rec ON rec.id=fp.receipt_id
+    LEFT JOIN purchase_orders o ON o.id=rec.order_id
+    LEFT JOIN users u ON u.id=fp.created_by
+    LEFT JOIN users pu ON pu.id=fp.paid_by
+    WHERE fp.id=? AND fp.company_id=?
+  `).bind(id,companyId).first();
+  if(!x) throw new HttpError(404,'Conta a pagar não encontrada.','NOT_FOUND');
+  return {...x,amount:centsToMoney(x.amount_cents),balance:centsToMoney(x.balance_cents)};
+}
+
+async function payFinancialPayable(env,request,auth,companyId,id,body){
+  await requirePermission(env,auth.user.id,companyId,'financial.payable.manage');
+  const before=await getFinancialPayable(env,companyId,id);
+  if(before.status!=='OPEN') throw new HttpError(409,'Somente títulos em aberto podem ser pagos.','INVALID_STATUS');
+  const date=isoDate(body.payment_date||new Date().toISOString().slice(0,10),'data do pagamento');
+  await env.DB.prepare(`UPDATE financial_payables SET status='PAID',balance_cents=0,payment_date=?,payment_notes=?,paid_by=?,paid_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=? AND company_id=?`).bind(date,cleanText(body.payment_notes,1000),auth.user.id,id,companyId).run();
+  const after=await getFinancialPayable(env,companyId,id);
+  await audit(env,{companyId,userId:auth.user.id,action:'PAY',entity:'financial_payable',entityId:id,before,after,request});
+  return after;
+}
+
+async function cancelFinancialPayable(env,request,auth,companyId,id){
+  await requirePermission(env,auth.user.id,companyId,'financial.payable.manage');
+  const before=await getFinancialPayable(env,companyId,id);
+  if(before.status!=='OPEN') throw new HttpError(409,'Somente títulos em aberto podem ser cancelados.','INVALID_STATUS');
+  await env.DB.prepare(`UPDATE financial_payables SET status='CANCELLED',balance_cents=0,updated_at=CURRENT_TIMESTAMP WHERE id=? AND company_id=?`).bind(id,companyId).run();
+  const after=await getFinancialPayable(env,companyId,id);
+  await audit(env,{companyId,userId:auth.user.id,action:'CANCEL',entity:'financial_payable',entityId:id,before,after,request});
+  return after;
+}
+
+async function buildInternalPostedEntry(env,auth,companyId,body){
+  const v=await validateEntry(env,companyId,body),entryId=uuid();
+  const stmts=[env.DB.prepare(`
+    INSERT INTO journal_entries
+      (id,company_id,batch_id,branch_id,entry_date,document_number,description,source_module,source_reference,status,total_debit_cents,total_credit_cents,created_by,posted_by,posted_at)
+    VALUES (?,?,?,?,?,?,?,?,?,'POSTED',?,?,?,?,CURRENT_TIMESTAMP)
+  `).bind(entryId,companyId,v.batch.id,body.branch_id||null,v.date,cleanText(body.document_number,120),cleanText(body.description,1000),cleanText(body.source_module||'PURCHASES',50),cleanText(body.source_reference,200),v.debit,v.credit,auth.user.id,auth.user.id)];
+  for(const line of v.lines){
+    stmts.push(env.DB.prepare(`INSERT INTO journal_lines (id,company_id,entry_id,line_no,account_id,side,amount_cents,branch_id,cost_center_id,history_template_id,history_complement,document_number) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`).bind(line.id,companyId,entryId,line.line_no,line.account_id,line.side,line.amount_cents,line.branch_id,line.cost_center_id,line.history_template_id,line.history_complement,line.document_number));
+  }
+  return {entryId,stmts,total_cents:v.debit};
+}
+
+async function prepareReceiptIntegrations(env,auth,companyId,{order,orderDetails,valid,receiptId,receiptNumber,receiptDate,documentNumber,dueDate,willComplete}){
+  const settings=await getPurchaseIntegrationSettings(env,companyId),stmts=[],meta={payable:null,journal_entry:null};
+  if(!settings.create_payable&&!settings.auto_accounting) return {settings,stmts,meta};
+
+  let itemsTotal=0;
+  const debitRaw=[];
+  for(const {oi,q} of valid){
+    const amount=Math.round(Number(oi.unit_price_cents)*Number(q)/1000);
+    if(amount<=0) continue;
+    itemsTotal+=amount;
+    debitRaw.push({oi,q,amount});
+  }
+  const freightCents=willComplete?Number(orderDetails.freight_cents||0):0;
+  const totalCents=itemsTotal+freightCents;
+  if(totalCents<=0) throw new HttpError(409,'O recebimento não possui valor financeiro para integração.','INVALID_AMOUNT');
+
+  const finalDue=dueDate?isoDate(dueDate,'vencimento financeiro'):addDaysISO(receiptDate,settings.default_due_days);
+  if(settings.create_payable){
+    const payableId=uuid(),payableNumber=await nextPayableNumber(env,companyId);
+    stmts.push(env.DB.prepare(`INSERT INTO financial_payables (id,company_id,number,supplier_id,source_type,source_id,receipt_id,issue_date,due_date,document_number,description,amount_cents,balance_cents,status,created_by) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,'OPEN',?)`).bind(payableId,companyId,payableNumber,order.supplier_id,'PURCHASE_RECEIPT',receiptId,receiptId,receiptDate,finalDue,cleanText(documentNumber,120),`Compra ${order.number} / Recebimento ${receiptNumber}`,totalCents,totalCents,auth.user.id));
+    meta.payable={id:payableId,number:payableNumber,due_date:finalDue,amount:centsToMoney(totalCents)};
+  }
+
+  if(settings.auto_accounting){
+    if(!settings.accounting_batch_id) throw new HttpError(409,'Integração contábil ativa sem lote configurado.','INTEGRATION_NOT_CONFIGURED');
+    const credit=await assertAnalyticActiveAccount(env,companyId,settings.payable_credit_account_id,'a conta de crédito de fornecedores');
+    const lines=[];
+    for(const x of debitRaw){
+      const debitId=x.oi.item_type==='SERVICE'?settings.service_debit_account_id:settings.product_debit_account_id;
+      if(!debitId) throw new HttpError(409,`Não há conta de débito configurada para ${x.oi.item_type==='SERVICE'?'serviços':'produtos'}.`,'INTEGRATION_NOT_CONFIGURED');
+      await assertAnalyticActiveAccount(env,companyId,debitId,`a conta de débito de ${x.oi.item_type==='SERVICE'?'serviços':'produtos'}`);
+      lines.push({side:'D',account_id:debitId,amount:centsToMoney(x.amount),cost_center_id:x.oi.cost_center_id||null,history_template_id:settings.history_template_id||null,history_complement:`Compra ${receiptNumber} - ${orderDetails.supplier_name}`});
+    }
+    if(freightCents>0){
+      const freightAccount=settings.freight_debit_account_id||settings.product_debit_account_id||settings.service_debit_account_id;
+      await assertAnalyticActiveAccount(env,companyId,freightAccount,'a conta de débito de frete');
+      lines.push({side:'D',account_id:freightAccount,amount:centsToMoney(freightCents),history_template_id:settings.history_template_id||null,history_complement:`Frete da compra ${receiptNumber} - ${orderDetails.supplier_name}`});
+    }
+    lines.push({side:'C',account_id:credit.id,amount:centsToMoney(totalCents),history_template_id:settings.history_template_id||null,history_complement:`Fornecedor ${orderDetails.supplier_name} - ${receiptNumber}`});
+    const built=await buildInternalPostedEntry(env,auth,companyId,{batch_id:settings.accounting_batch_id,branch_id:order.branch_id||null,entry_date:receiptDate,document_number:documentNumber||receiptNumber,description:`Compra ${receiptNumber} - ${orderDetails.supplier_name}`,source_module:'PURCHASES',source_reference:`RECEIPT:${receiptId}`,lines});
+    stmts.push(...built.stmts);
+    meta.journal_entry={id:built.entryId,amount:centsToMoney(totalCents)};
+  }
+  return {settings,stmts,meta,total_cents:totalCents,due_date:finalDue};
+}
+
+async function receiptIntegrationLinks(env,companyId,receiptId){
+  const payable=await env.DB.prepare(`SELECT id,number,status,due_date,amount_cents,balance_cents FROM financial_payables WHERE company_id=? AND receipt_id=? LIMIT 1`).bind(companyId,receiptId).first();
+  const entry=await env.DB.prepare(`SELECT id,status,official_status,total_debit_cents FROM journal_entries WHERE company_id=? AND source_module='PURCHASES' AND source_reference=? ORDER BY created_at DESC LIMIT 1`).bind(companyId,`RECEIPT:${receiptId}`).first();
+  return {payable:payable?{...payable,amount:centsToMoney(payable.amount_cents),balance:centsToMoney(payable.balance_cents)}:null,journal_entry:entry?{...entry,amount:centsToMoney(entry.total_debit_cents)}:null};
 }
 
 async function route(request, env) {
@@ -3214,6 +3503,7 @@ async function route(request, env) {
   const companyId=await currentCompany(request,env,auth);
   await ensureEntryMaintenanceSchema(env);
   await ensurePurchasingSchema(env);
+  await ensurePurchaseIntegrationSchema(env);
 
   if (method==="GET" && path==="/api/auth/permissions") return ok({permissions:await getEffectivePermissions(env,auth.user.id,companyId)});
 
@@ -3371,6 +3661,16 @@ async function route(request, env) {
   if(method==="GET"&&path==="/api/purchase-receipts"){await requirePermission(env,auth.user.id,companyId,"purchasing.receipt.read");return ok({receipts:await listReceipts(env,companyId)});}
   if(method==="POST"&&path==="/api/purchase-receipts")return ok({receipt:await createReceipt(env,request,auth,companyId,await readJson(request))},201);
   p=routeMatch(path,"/api/purchase-receipts/:id"); if(p&&method==="GET"){await requirePermission(env,auth.user.id,companyId,"purchasing.receipt.read");return ok({receipt:await getReceipt(env,companyId,p.id)});}
+
+
+  // ---- Integração Compras / Financeiro / Contábil ----
+  if(method==="GET"&&path==="/api/purchase-integration-settings"){await requirePermission(env,auth.user.id,companyId,"purchasing.integration.read");return ok({settings:await getPurchaseIntegrationSettings(env,companyId)});}
+  if(method==="PUT"&&path==="/api/purchase-integration-settings")return ok({settings:await savePurchaseIntegrationSettings(env,request,auth,companyId,await readJson(request))});
+
+  if(method==="GET"&&path==="/api/financial-payables"){await requirePermission(env,auth.user.id,companyId,"financial.payable.read");return ok({payables:await listFinancialPayables(env,companyId)});}
+  p=routeMatch(path,"/api/financial-payables/:id/pay"); if(p&&method==="POST")return ok({payable:await payFinancialPayable(env,request,auth,companyId,p.id,await readJson(request))});
+  p=routeMatch(path,"/api/financial-payables/:id/cancel"); if(p&&method==="POST")return ok({payable:await cancelFinancialPayable(env,request,auth,companyId,p.id)});
+  p=routeMatch(path,"/api/financial-payables/:id"); if(p&&method==="GET"){await requirePermission(env,auth.user.id,companyId,"financial.payable.read");return ok({payable:await getFinancialPayable(env,companyId,p.id)});}
 
   if(method==="GET"&&path==="/api/stock-balances"){await requirePermission(env,auth.user.id,companyId,"purchasing.location.read");return ok({balances:await listStockBalances(env,companyId)});}
 
