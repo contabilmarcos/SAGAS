@@ -2759,8 +2759,6 @@ const PURCHASE_PERMISSION_DEFS=[
   ["purchasing.product.manage","Gerenciar produtos e serviços"],
   ["purchasing.supplier.read","Consultar fornecedores"],
   ["purchasing.supplier.manage","Gerenciar fornecedores"],
-  ["purchasing.location.read","Consultar locais de estoque"],
-  ["purchasing.location.manage","Gerenciar locais de estoque"],
   ["purchasing.request.read","Consultar solicitações de compra"],
   ["purchasing.request.manage","Gerenciar solicitações de compra"],
   ["purchasing.quotation.read","Consultar cotações"],
@@ -2785,11 +2783,6 @@ async function ensurePurchasingSchema(env) {
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       UNIQUE(company_id,code)
     )`),
-    env.DB.prepare(`CREATE TABLE IF NOT EXISTS purchase_locations (
-      id TEXT PRIMARY KEY, company_id TEXT NOT NULL, code TEXT NOT NULL, name TEXT NOT NULL,
-      active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, UNIQUE(company_id,code)
-    )`),
     env.DB.prepare(`CREATE TABLE IF NOT EXISTS purchase_requests (
       id TEXT PRIMARY KEY, company_id TEXT NOT NULL, number TEXT NOT NULL, branch_id TEXT,
       request_date TEXT NOT NULL, needed_date TEXT, requester_name TEXT NOT NULL, notes TEXT,
@@ -2799,7 +2792,7 @@ async function ensurePurchasingSchema(env) {
     env.DB.prepare(`CREATE TABLE IF NOT EXISTS purchase_request_items (
       id TEXT PRIMARY KEY, company_id TEXT NOT NULL, request_id TEXT NOT NULL, line_no INTEGER NOT NULL,
       product_id TEXT NOT NULL, description TEXT NOT NULL, quantity_milli INTEGER NOT NULL, unit TEXT NOT NULL,
-      cost_center_id TEXT, location_id TEXT, needed_date TEXT, notes TEXT,
+      cost_center_id TEXT, needed_date TEXT, notes TEXT,
       ordered_qty_milli INTEGER NOT NULL DEFAULT 0, received_qty_milli INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, UNIQUE(request_id,line_no)
     )`),
@@ -2833,7 +2826,7 @@ async function ensurePurchasingSchema(env) {
     env.DB.prepare(`CREATE TABLE IF NOT EXISTS purchase_order_items (
       id TEXT PRIMARY KEY, company_id TEXT NOT NULL, order_id TEXT NOT NULL, request_item_id TEXT,
       product_id TEXT NOT NULL, description TEXT NOT NULL, quantity_milli INTEGER NOT NULL, unit TEXT NOT NULL,
-      unit_price_cents INTEGER NOT NULL, total_cents INTEGER NOT NULL, cost_center_id TEXT, location_id TEXT,
+      unit_price_cents INTEGER NOT NULL, total_cents INTEGER NOT NULL, cost_center_id TEXT,
       received_qty_milli INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     )`),
     env.DB.prepare(`CREATE TABLE IF NOT EXISTS purchase_receipts (
@@ -2845,13 +2838,13 @@ async function ensurePurchasingSchema(env) {
       id TEXT PRIMARY KEY, company_id TEXT NOT NULL, receipt_id TEXT NOT NULL, order_item_id TEXT NOT NULL,
       quantity_milli INTEGER NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     )`),
-    env.DB.prepare(`CREATE TABLE IF NOT EXISTS stock_balances (
-      id TEXT PRIMARY KEY, company_id TEXT NOT NULL, product_id TEXT NOT NULL, location_id TEXT NOT NULL,
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS product_stock_balances (
+      id TEXT PRIMARY KEY, company_id TEXT NOT NULL, product_id TEXT NOT NULL,
       quantity_milli INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      UNIQUE(company_id,product_id,location_id)
+      UNIQUE(company_id,product_id)
     )`),
-    env.DB.prepare(`CREATE TABLE IF NOT EXISTS stock_movements (
-      id TEXT PRIMARY KEY, company_id TEXT NOT NULL, product_id TEXT NOT NULL, location_id TEXT NOT NULL,
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS product_stock_movements (
+      id TEXT PRIMARY KEY, company_id TEXT NOT NULL, product_id TEXT NOT NULL,
       movement_date TEXT NOT NULL, movement_type TEXT NOT NULL, quantity_milli INTEGER NOT NULL,
       source_type TEXT, source_id TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     )`),
@@ -2866,6 +2859,20 @@ async function ensurePurchasingSchema(env) {
     if (!exists) {
       const id=uuid();
       await env.DB.prepare(`INSERT INTO permissions (id,code,module,description) VALUES (?,?,'PURCHASES',?)`).bind(id,code,description).run();
+    }
+  }
+
+  // Local de estoque foi removido do SAGAS: elimina as permissões antigas da interface de segurança.
+  await env.DB.prepare(`DELETE FROM role_permissions WHERE permission_id IN (SELECT id FROM permissions WHERE code IN ('purchasing.location.read','purchasing.location.manage'))`).run();
+  await env.DB.prepare(`DELETE FROM permissions WHERE code IN ('purchasing.location.read','purchasing.location.manage')`).run();
+
+  // Migra uma única vez os saldos antigos por local para saldo consolidado por produto, quando existirem.
+  const legacyStock=await env.DB.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='stock_balances'`).first();
+  if(legacyStock){
+    const rows=await env.DB.prepare(`SELECT company_id,product_id,SUM(quantity_milli) AS quantity_milli,MAX(updated_at) AS updated_at FROM stock_balances GROUP BY company_id,product_id`).all();
+    for(const r of rows.results||[]){
+      const exists=await env.DB.prepare(`SELECT id FROM product_stock_balances WHERE company_id=? AND product_id=?`).bind(r.company_id,r.product_id).first();
+      if(!exists) await env.DB.prepare(`INSERT INTO product_stock_balances (id,company_id,product_id,quantity_milli,updated_at) VALUES (?,?,?,?,?)`).bind(uuid(),r.company_id,r.product_id,Number(r.quantity_milli||0),r.updated_at||new Date().toISOString()).run();
     }
   }
 
@@ -2890,7 +2897,7 @@ function milliToQty(v){return Number(v||0)/1000;}
 
 async function purchaseEntity(env,table,id,companyId) {
   const allowed=new Set([
-    'purchase_products','purchase_suppliers','purchase_locations','purchase_requests','purchase_quotations',
+    'purchase_products','purchase_suppliers','purchase_requests','purchase_quotations',
     'purchase_orders','purchase_receipts','purchase_request_items','purchase_order_items'
   ]);
   if (!allowed.has(table)) throw new Error('Tabela de compras não permitida');
@@ -2956,23 +2963,10 @@ async function savePurchaseSupplier(env,request,auth,companyId,id,body) {
   const after=await purchaseEntity(env,'purchase_suppliers',newId,companyId); await audit(env,{companyId,userId:auth.user.id,action:'CREATE',entity:'purchase_supplier',entityId:newId,after,request}); return after;
 }
 
-async function savePurchaseLocation(env,request,auth,companyId,id,body) {
-  await requirePermission(env,auth.user.id,companyId,'purchasing.location.manage');
-  const code=cleanText(required(body.code,'code'),50), name=cleanText(required(body.name,'name'),300), active=bool01(body.active,1);
-  if (id) {
-    const before=await purchaseEntity(env,'purchase_locations',id,companyId);
-    await env.DB.prepare(`UPDATE purchase_locations SET code=?,name=?,active=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND company_id=?`).bind(code,name,active,id,companyId).run();
-    const after=await purchaseEntity(env,'purchase_locations',id,companyId); await audit(env,{companyId,userId:auth.user.id,action:'UPDATE',entity:'purchase_location',entityId:id,before,after,request}); return after;
-  }
-  const newId=uuid(); await env.DB.prepare(`INSERT INTO purchase_locations (id,company_id,code,name,active) VALUES (?,?,?,?,?)`).bind(newId,companyId,code,name,active).run();
-  const after=await purchaseEntity(env,'purchase_locations',newId,companyId); await audit(env,{companyId,userId:auth.user.id,action:'CREATE',entity:'purchase_location',entityId:newId,after,request}); return after;
-}
-
 async function deletePurchaseMaster(env,request,auth,companyId,type,id) {
   const cfg={
     product:{table:'purchase_products',perm:'purchasing.product.manage',checks:[['purchase_request_items','product_id'],['purchase_order_items','product_id']]},
-    supplier:{table:'purchase_suppliers',perm:'purchasing.supplier.manage',checks:[['purchase_quotation_suppliers','supplier_id'],['purchase_orders','supplier_id']]},
-    location:{table:'purchase_locations',perm:'purchasing.location.manage',checks:[['purchase_request_items','location_id'],['purchase_order_items','location_id']]}
+    supplier:{table:'purchase_suppliers',perm:'purchasing.supplier.manage',checks:[['purchase_quotation_suppliers','supplier_id'],['purchase_orders','supplier_id']]}
   }[type];
   await requirePermission(env,auth.user.id,companyId,cfg.perm);
   const before=await purchaseEntity(env,cfg.table,id,companyId);
@@ -3017,12 +3011,11 @@ async function getPurchaseRequest(env,companyId,id) {
   const items=await env.DB.prepare(`
     SELECT i.*,p.code AS product_code,p.description AS product_description,p.item_type,p.unit AS product_unit,
            n.code AS nature_code,n.description AS nature_description,
-           cc.code AS cost_center_code,cc.name AS cost_center_name,l.code AS location_code,l.name AS location_name
+           cc.code AS cost_center_code,cc.name AS cost_center_name
     FROM purchase_request_items i
     JOIN purchase_products p ON p.id=i.product_id
     LEFT JOIN budget_natures n ON n.id=i.budget_nature_id
     LEFT JOIN cost_centers cc ON cc.id=i.cost_center_id
-    LEFT JOIN purchase_locations l ON l.id=i.location_id
     WHERE i.company_id=? AND i.request_id=? ORDER BY i.line_no
   `).bind(companyId,id).all();
   return {...req,items:(items.results||[]).map(x=>({...x,quantity:milliToQty(x.quantity_milli),ordered_qty:milliToQty(x.ordered_qty_milli),received_qty:milliToQty(x.received_qty_milli)}))};
@@ -3034,11 +3027,9 @@ async function validatePurchaseRequestItems(env,companyId,items,movementType) {
   for(const raw of items){
     const product=await purchaseEntity(env,'purchase_products',required(raw.product_id,'produto'),companyId);
     if(!product.active)throw new HttpError(409,`Produto/serviço ${product.code} está inativo.`,'INACTIVE_PRODUCT');
-    let cc=null,loc=null;
+    let cc=null;
     const ccId=raw.cost_center_id||movementType.default_cost_center_id||null;
-    const locId=raw.location_id||movementType.default_location_id||null;
     if(ccId){ cc=await assertCompanyEntity(env,'cost_centers',ccId,companyId); if(!cc.active)throw new HttpError(409,'Centro de custo inativo.','INACTIVE_COST_CENTER'); }
-    if(locId){ loc=await purchaseEntity(env,'purchase_locations',locId,companyId); if(!loc.active)throw new HttpError(409,'Local de estoque inativo.','INACTIVE_LOCATION'); }
 
     let natureId=cleanText(raw.budget_nature_id,80)||null;
     if(movementType.fetch_product_nature && product.budget_nature_id) natureId=product.budget_nature_id;
@@ -3050,7 +3041,7 @@ async function validatePurchaseRequestItems(env,companyId,items,movementType) {
     out.push({
       id:raw.id||uuid(),line_no:no++,product_id:product.id,description:cleanText(raw.description||product.description,500),
       quantity_milli:qtyToMilli(raw.quantity),unit:cleanText(raw.unit||product.purchase_unit||product.unit,20).toUpperCase(),
-      budget_nature_id:natureId,cost_center_id:cc?.id||null,location_id:loc?.id||null,
+      budget_nature_id:natureId,cost_center_id:cc?.id||null,
       needed_date:raw.needed_date?isoDate(raw.needed_date,'data necessária do item'):null,notes:cleanText(raw.notes,1000)
     });
   }
@@ -3074,9 +3065,9 @@ async function createPurchaseRequest(env,request,auth,companyId,body) {
   `).bind(id,companyId,number,branchId,requestDate,neededDate,requester,notes,auth.user.id,movementType.id)];
   for(const x of items)stmts.push(env.DB.prepare(`
     INSERT INTO purchase_request_items
-      (id,company_id,request_id,line_no,product_id,description,quantity_milli,unit,budget_nature_id,cost_center_id,location_id,needed_date,notes)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
-  `).bind(x.id,companyId,id,x.line_no,x.product_id,x.description,x.quantity_milli,x.unit,x.budget_nature_id,x.cost_center_id,x.location_id,x.needed_date,x.notes));
+      (id,company_id,request_id,line_no,product_id,description,quantity_milli,unit,budget_nature_id,cost_center_id,needed_date,notes)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+  `).bind(x.id,companyId,id,x.line_no,x.product_id,x.description,x.quantity_milli,x.unit,x.budget_nature_id,x.cost_center_id,x.needed_date,x.notes));
   await env.DB.batch(stmts);
   const after=await getPurchaseRequest(env,companyId,id);
   await audit(env,{companyId,userId:auth.user.id,action:'CREATE',entity:'purchase_request',entityId:id,after:{number,status:'OPEN',movement_type:movementType.code},request});
@@ -3098,9 +3089,9 @@ async function updatePurchaseRequest(env,request,auth,companyId,id,body) {
   ];
   for(const x of items)stmts.push(env.DB.prepare(`
     INSERT INTO purchase_request_items
-      (id,company_id,request_id,line_no,product_id,description,quantity_milli,unit,budget_nature_id,cost_center_id,location_id,needed_date,notes)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
-  `).bind(x.id,companyId,id,x.line_no,x.product_id,x.description,x.quantity_milli,x.unit,x.budget_nature_id,x.cost_center_id,x.location_id,x.needed_date,x.notes));
+      (id,company_id,request_id,line_no,product_id,description,quantity_milli,unit,budget_nature_id,cost_center_id,needed_date,notes)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+  `).bind(x.id,companyId,id,x.line_no,x.product_id,x.description,x.quantity_milli,x.unit,x.budget_nature_id,x.cost_center_id,x.needed_date,x.notes));
   await env.DB.batch(stmts);
   const after=await getPurchaseRequest(env,companyId,id);
   await audit(env,{companyId,userId:auth.user.id,action:'UPDATE',entity:'purchase_request',entityId:id,before:{number:before.number},after:{number:after.number},request});
@@ -3192,9 +3183,9 @@ async function generateOrdersFromQuotation(env,request,auth,companyId,id,body={}
       const total=Math.round(Number(row.item.quantity_milli)*Number(row.proposal.unit_price_cents)/1000);
       stmts.push(env.DB.prepare(`
         INSERT INTO purchase_order_items
-        (id,company_id,order_id,request_item_id,product_id,description,quantity_milli,unit,unit_price_cents,total_cents,budget_nature_id,cost_center_id,location_id)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
-      `).bind(uuid(),companyId,oid,row.item.id,row.item.product_id,row.item.description,row.item.quantity_milli,row.item.unit,row.proposal.unit_price_cents,total,row.item.budget_nature_id||null,row.item.cost_center_id,row.item.location_id));
+        (id,company_id,order_id,request_item_id,product_id,description,quantity_milli,unit,unit_price_cents,total_cents,budget_nature_id,cost_center_id)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+      `).bind(uuid(),companyId,oid,row.item.id,row.item.product_id,row.item.description,row.item.quantity_milli,row.item.unit,row.proposal.unit_price_cents,total,row.item.budget_nature_id||null,row.item.cost_center_id));
       stmts.push(env.DB.prepare(`UPDATE purchase_request_items SET ordered_qty_milli=ordered_qty_milli+? WHERE id=? AND company_id=?`).bind(row.item.quantity_milli,row.item.id,companyId));
     }
     await env.DB.batch(stmts); created.push({id:oid,number,supplier_id:supplierId,movement_type_id:destType.id,movement_type_code:destType.code});
@@ -3241,12 +3232,11 @@ async function getOrder(env,companyId,id) {
   if(!o)throw new HttpError(404,'Ordem de compra não encontrada.','NOT_FOUND');
   const items=await env.DB.prepare(`
     SELECT i.*,p.code AS product_code,p.item_type,n.code AS nature_code,n.description AS nature_description,
-           cc.code AS cost_center_code,cc.name AS cost_center_name,l.code AS location_code,l.name AS location_name
+           cc.code AS cost_center_code,cc.name AS cost_center_name
     FROM purchase_order_items i
     JOIN purchase_products p ON p.id=i.product_id
     LEFT JOIN budget_natures n ON n.id=i.budget_nature_id
     LEFT JOIN cost_centers cc ON cc.id=i.cost_center_id
-    LEFT JOIN purchase_locations l ON l.id=i.location_id
     WHERE i.company_id=? AND i.order_id=? ORDER BY i.created_at
   `).bind(companyId,id).all();
   const arr=(items.results||[]).map(x=>({...x,quantity:milliToQty(x.quantity_milli),received_qty:milliToQty(x.received_qty_milli),remaining_qty:milliToQty(Math.max(0,x.quantity_milli-x.received_qty_milli)),unit_price:centsToMoney(x.unit_price_cents),total:centsToMoney(x.total_cents)}));
@@ -3291,13 +3281,11 @@ async function getReceipt(env,companyId,id) {
   `).bind(id,companyId).first();
   if(!rec)throw new HttpError(404,'Recebimento não encontrado.','NOT_FOUND');
   const items=await env.DB.prepare(`
-    SELECT ri.*,oi.description,oi.unit,p.code AS product_code,n.code AS nature_code,n.description AS nature_description,
-           l.code AS location_code,l.name AS location_name
+    SELECT ri.*,oi.description,oi.unit,p.code AS product_code,n.code AS nature_code,n.description AS nature_description
     FROM purchase_receipt_items ri
     JOIN purchase_order_items oi ON oi.id=ri.order_item_id
     JOIN purchase_products p ON p.id=oi.product_id
     LEFT JOIN budget_natures n ON n.id=oi.budget_nature_id
-    LEFT JOIN purchase_locations l ON l.id=oi.location_id
     WHERE ri.company_id=? AND ri.receipt_id=?
   `).bind(companyId,id).all();
   const integrations=await receiptIntegrationLinks(env,companyId,id);
@@ -3323,8 +3311,6 @@ async function createReceipt(env,request,auth,companyId,body) {
     const oi=map.get(raw.order_item_id);if(!oi)continue;
     const q=qtyToMilli(raw.quantity,'quantidade recebida'),remaining=oi.quantity_milli-oi.received_qty_milli;
     if(q>remaining)throw new HttpError(409,`Quantidade recebida de ${oi.description} excede o saldo da ordem.`,'QUANTITY_EXCEEDED');
-    if(oi.item_type==='PRODUCT'&&movementType.stock_effect!=='NONE'&&!oi.location_id)
-      throw new HttpError(409,`O item ${oi.description} precisa de Local de Estoque para este Tipo de Movimento.`,'LOCATION_REQUIRED');
     valid.push({oi,q});
   }
   if(!valid.length)throw new HttpError(400,'Nenhuma quantidade de recebimento válida.','VALIDATION_ERROR');
@@ -3359,19 +3345,18 @@ async function createReceipt(env,request,auth,companyId,body) {
     stmts.push(env.DB.prepare(`INSERT INTO purchase_receipt_items (id,company_id,receipt_id,order_item_id,quantity_milli) VALUES (?,?,?,?,?)`).bind(uuid(),companyId,rid,oi.id,q));
     stmts.push(env.DB.prepare(`UPDATE purchase_order_items SET received_qty_milli=received_qty_milli+? WHERE id=? AND company_id=?`).bind(q,oi.id,companyId));
     if(oi.request_item_id)stmts.push(env.DB.prepare(`UPDATE purchase_request_items SET received_qty_milli=received_qty_milli+? WHERE id=? AND company_id=?`).bind(q,oi.request_item_id,companyId));
-
-    if(oi.item_type==='PRODUCT'&&oi.location_id&&movementType.stock_effect!=='NONE'){
+    if(oi.item_type==='PRODUCT'&&movementType.stock_effect!=='NONE'){
       const sign=movementType.stock_effect==='OUT'?-1:1;
       const delta=q*sign;
-      const bal=await env.DB.prepare(`SELECT id,quantity_milli FROM stock_balances WHERE company_id=? AND product_id=? AND location_id=?`).bind(companyId,oi.product_id,oi.location_id).first();
+      const bal=await env.DB.prepare(`SELECT id,quantity_milli FROM product_stock_balances WHERE company_id=? AND product_id=?`).bind(companyId,oi.product_id).first();
       if(sign<0 && Number(bal?.quantity_milli||0)<q) throw new HttpError(409,`Saldo insuficiente para movimentar ${oi.description}.`,'INSUFFICIENT_STOCK');
-      if(bal)stmts.push(env.DB.prepare(`UPDATE stock_balances SET quantity_milli=quantity_milli+?,updated_at=CURRENT_TIMESTAMP WHERE id=?`).bind(delta,bal.id));
-      else if(sign>0)stmts.push(env.DB.prepare(`INSERT INTO stock_balances (id,company_id,product_id,location_id,quantity_milli) VALUES (?,?,?,?,?)`).bind(uuid(),companyId,oi.product_id,oi.location_id,q));
+      if(bal) stmts.push(env.DB.prepare(`UPDATE product_stock_balances SET quantity_milli=quantity_milli+?,updated_at=CURRENT_TIMESTAMP WHERE id=?`).bind(delta,bal.id));
+      else if(sign>0) stmts.push(env.DB.prepare(`INSERT INTO product_stock_balances (id,company_id,product_id,quantity_milli) VALUES (?,?,?,?)`).bind(uuid(),companyId,oi.product_id,q));
       stmts.push(env.DB.prepare(`
-        INSERT INTO stock_movements
-        (id,company_id,product_id,location_id,movement_date,movement_type,quantity_milli,source_type,source_id)
-        VALUES (?,?,?,?,?,?,?,?,?)
-      `).bind(uuid(),companyId,oi.product_id,oi.location_id,date,movementType.code,delta,'PURCHASE_MOVEMENT',rid));
+        INSERT INTO product_stock_movements
+        (id,company_id,product_id,movement_date,movement_type,quantity_milli,source_type,source_id)
+        VALUES (?,?,?,?,?,?,?,?)
+      `).bind(uuid(),companyId,oi.product_id,date,movementType.code,delta,'PURCHASE_MOVEMENT',rid));
     }
   }
   stmts.push(...integration.stmts);
@@ -3386,7 +3371,8 @@ async function createReceipt(env,request,auth,companyId,body) {
 }
 
 async function listStockBalances(env,companyId) {
-  const r=await env.DB.prepare(`SELECT sb.id,p.code AS product_code,p.description,p.unit,l.code AS location_code,l.name AS location_name,sb.quantity_milli,sb.updated_at FROM stock_balances sb JOIN purchase_products p ON p.id=sb.product_id JOIN purchase_locations l ON l.id=sb.location_id WHERE sb.company_id=? ORDER BY p.code,l.code`).bind(companyId).all(); return (r.results||[]).map(x=>({...x,quantity:milliToQty(x.quantity_milli)}));
+  const r=await env.DB.prepare(`SELECT sb.id,p.code AS product_code,p.description,p.unit,sb.quantity_milli,sb.updated_at FROM product_stock_balances sb JOIN purchase_products p ON p.id=sb.product_id WHERE sb.company_id=? ORDER BY p.code`).bind(companyId).all();
+  return (r.results||[]).map(x=>({...x,quantity:milliToQty(x.quantity_milli)}));
 }
 
 
@@ -3484,7 +3470,6 @@ async function ensureRmPurchasingSchema(env){
       generate_financial INTEGER NOT NULL DEFAULT 0,
       stock_effect TEXT NOT NULL DEFAULT 'NONE',
       default_cost_center_id TEXT,
-      default_location_id TEXT,
       active INTEGER NOT NULL DEFAULT 1,
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -3536,12 +3521,10 @@ async function getMovementType(env,companyId,id){
   if(!id) throw new HttpError(400,'Informe o Tipo de Movimento.','VALIDATION_ERROR');
   const x=await env.DB.prepare(`
     SELECT mt.*,e.code AS accounting_event_code,e.name AS accounting_event_name,
-           cc.code AS default_cost_center_code,cc.name AS default_cost_center_name,
-           pl.code AS default_location_code,pl.name AS default_location_name
+           cc.code AS default_cost_center_code,cc.name AS default_cost_center_name
     FROM movement_types mt
     LEFT JOIN movement_accounting_events e ON e.id=mt.accounting_event_id
     LEFT JOIN cost_centers cc ON cc.id=mt.default_cost_center_id
-    LEFT JOIN purchase_locations pl ON pl.id=mt.default_location_id
     WHERE mt.id=? AND mt.company_id=?
   `).bind(id,companyId).first();
   if(!x) throw new HttpError(404,'Tipo de Movimento não encontrado.','NOT_FOUND');
@@ -3585,17 +3568,12 @@ async function saveMovementType(env,request,auth,companyId,id,body){
     const cc=await assertCompanyEntity(env,'cost_centers',defaultCc,companyId);
     if(!cc.active) throw new HttpError(409,'Centro de custo padrão está inativo.','INACTIVE_COST_CENTER');
   }
-  const defaultLoc=cleanText(body.default_location_id,80)||null;
-  if(defaultLoc){
-    const loc=await purchaseEntity(env,'purchase_locations',defaultLoc,companyId);
-    if(!loc.active) throw new HttpError(409,'Local de estoque padrão está inativo.','INACTIVE_LOCATION');
-  }
   const stockEffect=['NONE','IN','OUT'].includes(String(body.stock_effect||'NONE').toUpperCase())?String(body.stock_effect||'NONE').toUpperCase():'NONE';
   const vals=[
     code,name,cleanText(body.initial_status,40),
     eventId,bool01(body.require_accounting_event,0),bool01(body.allow_edit_accounting_event,0),
     bool01(body.fetch_product_nature,1),bool01(body.allow_edit_item_nature,1),
-    bool01(body.generate_financial,0),stockEffect,defaultCc,defaultLoc,bool01(body.active,1)
+    bool01(body.generate_financial,0),stockEffect,defaultCc,bool01(body.active,1)
   ];
   let target=id;
   if(id){
@@ -3603,7 +3581,7 @@ async function saveMovementType(env,request,auth,companyId,id,body){
     await env.DB.prepare(`
       UPDATE movement_types SET code=?,name=?,initial_status=?,accounting_event_id=?,require_accounting_event=?,
       allow_edit_accounting_event=?,fetch_product_nature=?,allow_edit_item_nature=?,generate_financial=?,
-      stock_effect=?,default_cost_center_id=?,default_location_id=?,active=?,updated_at=CURRENT_TIMESTAMP
+      stock_effect=?,default_cost_center_id=?,active=?,updated_at=CURRENT_TIMESTAMP
       WHERE id=? AND company_id=?
     `).bind(...vals,id,companyId).run();
   }else{
@@ -3612,8 +3590,8 @@ async function saveMovementType(env,request,auth,companyId,id,body){
       INSERT INTO movement_types
       (id,company_id,code,name,initial_status,accounting_event_id,require_accounting_event,
        allow_edit_accounting_event,fetch_product_nature,allow_edit_item_nature,generate_financial,
-       stock_effect,default_cost_center_id,default_location_id,active)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+       stock_effect,default_cost_center_id,active)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     `).bind(target,companyId,...vals).run();
   }
 
@@ -4435,12 +4413,6 @@ async function route(request, env) {
   if (p && method==="PATCH") return ok({supplier:await savePurchaseSupplier(env,request,auth,companyId,p.id,await readJson(request))});
   if (p && method==="DELETE") return ok(await deletePurchaseMaster(env,request,auth,companyId,"supplier",p.id));
 
-  if (method==="GET" && path==="/api/purchase-locations") { await requirePermission(env,auth.user.id,companyId,"purchasing.location.read"); return ok({locations:await listPurchaseMaster(env,companyId,"purchase_locations","id,code,name,active,created_at")}); }
-  if (method==="POST" && path==="/api/purchase-locations") return ok({location:await savePurchaseLocation(env,request,auth,companyId,null,await readJson(request))},201);
-  p=routeMatch(path,"/api/purchase-locations/:id");
-  if (p && method==="PATCH") return ok({location:await savePurchaseLocation(env,request,auth,companyId,p.id,await readJson(request))});
-  if (p && method==="DELETE") return ok(await deletePurchaseMaster(env,request,auth,companyId,"location",p.id));
-
   if (method==="GET" && path==="/api/purchase-requests") { await requirePermission(env,auth.user.id,companyId,"purchasing.request.read"); return ok({requests:await listPurchaseRequests(env,companyId)}); }
   if (method==="POST" && path==="/api/purchase-requests") return ok({request:await createPurchaseRequest(env,request,auth,companyId,await readJson(request))},201);
   p=routeMatch(path,"/api/purchase-requests/:id/release"); if(p&&method==="POST")return ok({request:await setPurchaseRequestStatus(env,request,auth,companyId,p.id,"RELEASED")});
@@ -4475,7 +4447,7 @@ async function route(request, env) {
   p=routeMatch(path,"/api/financial-payables/:id/cancel"); if(p&&method==="POST")return ok({payable:await cancelFinancialPayable(env,request,auth,companyId,p.id)});
   p=routeMatch(path,"/api/financial-payables/:id"); if(p&&method==="GET"){await requirePermission(env,auth.user.id,companyId,"financial.payable.read");return ok({payable:await getFinancialPayable(env,companyId,p.id)});}
 
-  if(method==="GET"&&path==="/api/stock-balances"){await requirePermission(env,auth.user.id,companyId,"purchasing.location.read");return ok({balances:await listStockBalances(env,companyId)});}
+  if(method==="GET"&&path==="/api/stock-balances"){await requirePermission(env,auth.user.id,companyId,"purchasing.product.read");return ok({balances:await listStockBalances(env,companyId)});}
 
   if (method==="GET" && path==="/api/audit") {
     await requirePermission(env,auth.user.id,companyId,"core.audit.read");
