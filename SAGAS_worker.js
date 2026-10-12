@@ -2118,24 +2118,243 @@ async function createEntry(env, request, auth, companyId, body) {
   return after;
 }
 
-async function listEntries(env, companyId, limit=100) {
+
+async function ensureViewFilterSchema(env) {
+  await env.DB.prepare(`
+    CREATE TABLE IF NOT EXISTS user_view_filters (
+      id TEXT PRIMARY KEY,
+      company_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      view_key TEXT NOT NULL,
+      name TEXT NOT NULL,
+      definition_json TEXT NOT NULL,
+      is_default INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(company_id,user_id,view_key,name)
+    )
+  `).run();
+
+  await env.DB.prepare(`
+    CREATE INDEX IF NOT EXISTS idx_user_view_filters_scope
+    ON user_view_filters(company_id,user_id,view_key)
+  `).run();
+}
+
+function normalizeEntryFilterDefinition(definition) {
+  const raw=Array.isArray(definition?.conditions)?definition.conditions:[];
+  const allowedFields=new Set([
+    "entry_date","batch_code","document_number","description","total_debit",
+    "total_credit","status","official_status","branch","account","cost_center"
+  ]);
+  const allowedOps=new Set([
+    "eq","neq","contains","starts","ends","gt","gte","lt","lte",
+    "blank","not_blank","between"
+  ]);
+
+  const conditions=[];
+  for (const item of raw.slice(0,20)) {
+    const field=String(item?.field||"");
+    const operator=String(item?.operator||"");
+    if (!allowedFields.has(field) || !allowedOps.has(operator)) continue;
+
+    conditions.push({
+      logic:String(item?.logic||"AND").toUpperCase()==="OR"?"OR":"AND",
+      field,
+      operator,
+      value:item?.value==null?"":String(item.value),
+      value2:item?.value2==null?"":String(item.value2)
+    });
+  }
+
+  return {conditions};
+}
+
+function entryFilterSql(definition) {
+  const def=normalizeEntryFilterDefinition(definition);
+  if (!def.conditions.length) return {sql:"",binds:[]};
+
+  const textFields={
+    batch_code:"b.code",
+    document_number:"COALESCE(e.document_number,'')",
+    description:"COALESCE(e.description,'')",
+    status:"e.status",
+    official_status:"COALESCE(e.official_status,'PENDING')",
+    branch:"COALESCE(br.code,'') || ' ' || COALESCE(br.name,'')",
+    account:`COALESCE((
+      SELECT GROUP_CONCAT(COALESCE(fa.code,'') || ' ' || COALESCE(fa.name,''),' ')
+      FROM journal_lines fjl
+      JOIN accounts fa ON fa.id=fjl.account_id
+      WHERE fjl.entry_id=e.id AND fjl.company_id=e.company_id
+    ),'')`,
+    cost_center:`COALESCE((
+      SELECT GROUP_CONCAT(COALESCE(fcc.code,'') || ' ' || COALESCE(fcc.name,''),' ')
+      FROM journal_lines fjl2
+      LEFT JOIN cost_centers fcc ON fcc.id=fjl2.cost_center_id
+      WHERE fjl2.entry_id=e.id AND fjl2.company_id=e.company_id
+    ),'')`
+  };
+
+  const dateFields={entry_date:"e.entry_date"};
+  const moneyFields={total_debit:"e.total_debit_cents",total_credit:"e.total_credit_cents"};
+
+  const parts=[];
+  const binds=[];
+
+  for (const [index,c] of def.conditions.entries()) {
+    let expr="", local=[];
+
+    if (textFields[c.field]) {
+      const col=textFields[c.field];
+
+      if (c.operator==="blank") expr=`TRIM(${col})=''`;
+      else if (c.operator==="not_blank") expr=`TRIM(${col})<>''`;
+      else if (c.operator==="eq") { expr=`LOWER(${col})=LOWER(?)`; local=[c.value]; }
+      else if (c.operator==="neq") { expr=`LOWER(${col})<>LOWER(?)`; local=[c.value]; }
+      else if (c.operator==="contains") { expr=`LOWER(${col}) LIKE LOWER(?)`; local=[`%${c.value}%`]; }
+      else if (c.operator==="starts") { expr=`LOWER(${col}) LIKE LOWER(?)`; local=[`${c.value}%`]; }
+      else if (c.operator==="ends") { expr=`LOWER(${col}) LIKE LOWER(?)`; local=[`%${c.value}`]; }
+      else if (["gt","gte","lt","lte"].includes(c.operator)) {
+        const op={gt:">",gte:">=",lt:"<",lte:"<="}[c.operator];
+        expr=`LOWER(${col}) ${op} LOWER(?)`;
+        local=[c.value];
+      } else if (c.operator==="between") {
+        expr=`LOWER(${col}) BETWEEN LOWER(?) AND LOWER(?)`;
+        local=[c.value,c.value2];
+      }
+    } else if (dateFields[c.field]) {
+      const col=dateFields[c.field];
+      if (c.operator==="blank") expr=`(${col} IS NULL OR ${col}='')`;
+      else if (c.operator==="not_blank") expr=`(${col} IS NOT NULL AND ${col}<>'')`;
+      else if (c.operator==="between") { expr=`${col} BETWEEN ? AND ?`; local=[c.value,c.value2]; }
+      else {
+        const op={eq:"=",neq:"<>",gt:">",gte:">=",lt:"<",lte:"<="}[c.operator];
+        if (op) { expr=`${col} ${op} ?`; local=[c.value]; }
+      }
+    } else if (moneyFields[c.field]) {
+      const col=moneyFields[c.field];
+      if (c.operator==="blank") expr=`${col} IS NULL`;
+      else if (c.operator==="not_blank") expr=`${col} IS NOT NULL`;
+      else if (c.operator==="between") {
+        expr=`${col} BETWEEN ? AND ?`;
+        local=[moneyToCents(c.value),moneyToCents(c.value2)];
+      } else {
+        const op={eq:"=",neq:"<>",gt:">",gte:">=",lt:"<",lte:"<="}[c.operator];
+        if (op) { expr=`${col} ${op} ?`; local=[moneyToCents(c.value)]; }
+      }
+    }
+
+    if (!expr) continue;
+
+    if (!parts.length) parts.push(`(${expr})`);
+    else parts.push(`${c.logic==="OR"?"OR":"AND"} (${expr})`);
+    binds.push(...local);
+  }
+
+  return {sql:parts.length?` AND (${parts.join(" ")})`:"",binds};
+}
+
+async function listUserViewFilters(env, companyId, userId, viewKey) {
+  await ensureViewFilterSchema(env);
+
+  const res=await env.DB.prepare(`
+    SELECT id,name,view_key,definition_json,is_default,created_at,updated_at
+    FROM user_view_filters
+    WHERE company_id=? AND user_id=? AND view_key=?
+    ORDER BY is_default DESC,name
+  `).bind(companyId,userId,viewKey).all();
+
+  return (res.results||[]).map(x=>({
+    ...x,
+    is_default:!!x.is_default,
+    definition:(()=>{
+      try{return normalizeEntryFilterDefinition(JSON.parse(x.definition_json||"{}"))}
+      catch{return {conditions:[]}}
+    })()
+  }));
+}
+
+async function saveUserViewFilter(env, companyId, userId, body) {
+  await ensureViewFilterSchema(env);
+
+  const viewKey=cleanText(body.view_key||"journal_entries",80);
+  if (viewKey!=="journal_entries") throw new HttpError(400,"Visão de filtro inválida.","VALIDATION_ERROR");
+
+  const name=cleanText(required(body.name,"name"),120);
+  const definition=normalizeEntryFilterDefinition(body.definition||{});
+  if (!definition.conditions.length) throw new HttpError(400,"Adicione pelo menos uma condição ao filtro.","VALIDATION_ERROR");
+
+  const isDefault=body.is_default?1:0;
+  const existing=await env.DB.prepare(`
+    SELECT id FROM user_view_filters
+    WHERE company_id=? AND user_id=? AND view_key=? AND name=?
+  `).bind(companyId,userId,viewKey,name).first();
+
+  if (isDefault) {
+    await env.DB.prepare(`
+      UPDATE user_view_filters
+      SET is_default=0,updated_at=CURRENT_TIMESTAMP
+      WHERE company_id=? AND user_id=? AND view_key=?
+    `).bind(companyId,userId,viewKey).run();
+  }
+
+  let id=existing?.id;
+  if (id) {
+    await env.DB.prepare(`
+      UPDATE user_view_filters
+      SET definition_json=?,is_default=?,updated_at=CURRENT_TIMESTAMP
+      WHERE id=? AND company_id=? AND user_id=?
+    `).bind(JSON.stringify(definition),isDefault,id,companyId,userId).run();
+  } else {
+    id=uuid();
+    await env.DB.prepare(`
+      INSERT INTO user_view_filters
+        (id,company_id,user_id,view_key,name,definition_json,is_default)
+      VALUES (?,?,?,?,?,?,?)
+    `).bind(id,companyId,userId,viewKey,name,JSON.stringify(definition),isDefault).run();
+  }
+
+  return (await listUserViewFilters(env,companyId,userId,viewKey)).find(x=>x.id===id);
+}
+
+async function deleteUserViewFilter(env, companyId, userId, id) {
+  await ensureViewFilterSchema(env);
+
+  const row=await env.DB.prepare(`
+    SELECT id FROM user_view_filters
+    WHERE id=? AND company_id=? AND user_id=? AND view_key='journal_entries'
+  `).bind(id,companyId,userId).first();
+
+  if (!row) throw new HttpError(404,"Filtro não encontrado.","NOT_FOUND");
+
+  await env.DB.prepare(`
+    DELETE FROM user_view_filters WHERE id=? AND company_id=? AND user_id=?
+  `).bind(id,companyId,userId).run();
+
+  return {deleted:true,id};
+}
+
+async function listEntries(env, companyId, limit=100, filterDefinition=null) {
   await ensureBatchIntegrationSchema(env);
   await migrateLegacyDraftEntries(env,companyId);
+
+  const f=entryFilterSql(filterDefinition);
 
   const res=await env.DB.prepare(`
     SELECT
       e.id,e.entry_date,e.document_number,e.description,e.source_module,e.source_reference,e.status,
       e.official_status,e.integration_id,e.integrated_at,
-      e.total_debit_cents,e.total_credit_cents,e.created_at,e.posted_at,
+      e.total_debit_cents,e.total_credit_cents,e.created_at,e.posted_at,e.edited_at,
       b.code AS batch_code,b.description AS batch_description,
       br.code AS branch_code,br.name AS branch_name
     FROM journal_entries e
     JOIN journal_batches b ON b.id=e.batch_id
     LEFT JOIN branches br ON br.id=e.branch_id
     WHERE e.company_id=?
+    ${f.sql}
     ORDER BY e.entry_date DESC,e.created_at DESC
     LIMIT ?
-  `).bind(companyId,Math.min(500,Math.max(1,Number(limit)||100))).all();
+  `).bind(companyId,...f.binds,Math.min(1000,Math.max(1,Number(limit)||300))).all();
 
   return (res.results||[]).map(x=>({
     ...x,
@@ -2147,19 +2366,78 @@ async function listEntries(env, companyId, limit=100) {
 async function getEntry(env, companyId, id) {
   await ensureBatchIntegrationSchema(env);
   await migrateLegacyDraftEntries(env,companyId);
-  const entry=await env.DB.prepare("SELECT * FROM journal_entries WHERE id=? AND company_id=?").bind(id,companyId).first();
+
+  const entry=await env.DB.prepare(`
+    SELECT
+      e.*,
+      b.code AS batch_code,
+      b.description AS batch_description,
+      b.status AS batch_status,
+      p.code AS period_code,
+      p.start_date AS period_start_date,
+      p.end_date AS period_end_date,
+      br.code AS branch_code,
+      br.name AS branch_name,
+      cu.name AS created_by_name,
+      pu.name AS posted_by_name,
+      eu.name AS edited_by_name,
+      iu.name AS integrated_by_name,
+      vu.name AS voided_by_name
+    FROM journal_entries e
+    JOIN journal_batches b ON b.id=e.batch_id
+    JOIN accounting_periods p ON p.id=b.period_id
+    LEFT JOIN branches br ON br.id=e.branch_id
+    LEFT JOIN users cu ON cu.id=e.created_by
+    LEFT JOIN users pu ON pu.id=e.posted_by
+    LEFT JOIN users eu ON eu.id=e.edited_by
+    LEFT JOIN users iu ON iu.id=e.integrated_by
+    LEFT JOIN users vu ON vu.id=e.voided_by
+    WHERE e.id=? AND e.company_id=?
+  `).bind(id,companyId).first();
+
   if (!entry) throw new HttpError(404,"Lançamento não encontrado.","NOT_FOUND");
-  const linesRes=await env.DB.prepare(`SELECT l.*,a.code AS account_code,a.name AS account_name,cc.code AS cost_center_code,cc.name AS cost_center_name,h.code AS history_code,h.description AS history_description FROM journal_lines l JOIN accounts a ON a.id=l.account_id LEFT JOIN cost_centers cc ON cc.id=l.cost_center_id LEFT JOIN history_templates h ON h.id=l.history_template_id WHERE l.entry_id=? AND l.company_id=? ORDER BY l.line_no`).bind(id,companyId).all();
+
+  const linesRes=await env.DB.prepare(`
+    SELECT
+      l.*,
+      a.code AS account_code,
+      a.reduced_code AS account_reduced_code,
+      a.name AS account_name,
+      cc.code AS cost_center_code,
+      cc.name AS cost_center_name,
+      h.code AS history_code,
+      h.description AS history_description
+    FROM journal_lines l
+    JOIN accounts a ON a.id=l.account_id
+    LEFT JOIN cost_centers cc ON cc.id=l.cost_center_id
+    LEFT JOIN history_templates h ON h.id=l.history_template_id
+    WHERE l.entry_id=? AND l.company_id=?
+    ORDER BY l.line_no
+  `).bind(id,companyId).all();
+
   const lines=[];
   for (const row of (linesRes.results||[])) {
-    const alloc=await env.DB.prepare(`SELECT al.*,cc.code AS cost_center_code,cc.name AS cost_center_name FROM allocation_lines al JOIN cost_centers cc ON cc.id=al.cost_center_id WHERE al.journal_line_id=? AND al.company_id=? ORDER BY cc.code`).bind(row.id,companyId).all();
+    const alloc=await env.DB.prepare(`
+      SELECT al.*,cc.code AS cost_center_code,cc.name AS cost_center_name
+      FROM allocation_lines al
+      JOIN cost_centers cc ON cc.id=al.cost_center_id
+      WHERE al.journal_line_id=? AND al.company_id=?
+      ORDER BY cc.code
+    `).bind(row.id,companyId).all();
+
     lines.push({
       ...row,
       amount:centsToMoney(row.amount_cents),
       allocations:(alloc.results||[]).map(a=>({...a,amount:centsToMoney(a.amount_cents)}))
     });
   }
-  return {...entry,total_debit:centsToMoney(entry.total_debit_cents),total_credit:centsToMoney(entry.total_credit_cents),lines};
+
+  return {
+    ...entry,
+    total_debit:centsToMoney(entry.total_debit_cents),
+    total_credit:centsToMoney(entry.total_credit_cents),
+    lines
+  };
 }
 
 async function postEntry(env, request, auth, companyId, id) {
@@ -2591,7 +2869,30 @@ async function route(request, env) {
     return ok({entries:await listOfficialEntries(env,companyId,url.searchParams.get("limit"))});
   }
 
-  if (method==="GET" && path==="/api/journal-entries") { await requirePermission(env,auth.user.id,companyId,"accounting.entry.read"); return ok({entries:await listEntries(env,companyId,url.searchParams.get("limit"))}); }
+  if (method==="GET" && path==="/api/journal-entry-filters") {
+    await requirePermission(env,auth.user.id,companyId,"accounting.entry.read");
+    return ok({filters:await listUserViewFilters(env,companyId,auth.user.id,"journal_entries")});
+  }
+  if (method==="POST" && path==="/api/journal-entry-filters") {
+    await requirePermission(env,auth.user.id,companyId,"accounting.entry.read");
+    return ok({filter:await saveUserViewFilter(env,companyId,auth.user.id,await readJson(request))},201);
+  }
+  p=routeMatch(path,"/api/journal-entry-filters/:id");
+  if (p && method==="DELETE") {
+    await requirePermission(env,auth.user.id,companyId,"accounting.entry.read");
+    return ok(await deleteUserViewFilter(env,companyId,auth.user.id,p.id));
+  }
+
+  if (method==="GET" && path==="/api/journal-entries") {
+    await requirePermission(env,auth.user.id,companyId,"accounting.entry.read");
+    let filterDefinition=null;
+    const rawFilter=url.searchParams.get("filter");
+    if (rawFilter) {
+      try { filterDefinition=JSON.parse(rawFilter); }
+      catch { throw new HttpError(400,"Filtro inválido.","VALIDATION_ERROR"); }
+    }
+    return ok({entries:await listEntries(env,companyId,url.searchParams.get("limit"),filterDefinition)});
+  }
   if (method==="POST" && path==="/api/journal-entries") return ok({entry:await createEntry(env,request,auth,companyId,await readJson(request))},201);
   p=routeMatch(path,"/api/journal-entries/:id");
   if (p && method==="GET") { await requirePermission(env,auth.user.id,companyId,"accounting.entry.read"); return ok({entry:await getEntry(env,companyId,p.id)}); }
