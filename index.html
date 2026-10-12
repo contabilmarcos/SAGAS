@@ -244,7 +244,7 @@ function resetUserPasswordForm(u){
 }
 
 
-function permLabel(c){return({'core.company.manage':'Gerenciar empresa','core.branch.read':'Consultar filiais','core.branch.manage':'Gerenciar filiais','core.user.read':'Consultar usuários','core.user.manage':'Gerenciar usuários','core.role.manage':'Gerenciar perfis e permissões','core.audit.read':'Consultar auditoria','accounting.period.read':'Consultar períodos contábeis','accounting.period.manage':'Gerenciar períodos contábeis','accounting.account.read':'Consultar plano de contas','accounting.account.manage':'Gerenciar plano de contas','accounting.cost_center.read':'Consultar centros de custo','accounting.cost_center.manage':'Gerenciar centros de custo','accounting.history.read':'Consultar históricos padrão','accounting.history.manage':'Gerenciar históricos padrão','accounting.batch.read':'Consultar lotes','accounting.batch.manage':'Gerenciar lotes','accounting.entry.read':'Consultar lançamentos','accounting.entry.create':'Criar lançamentos','accounting.entry.post':'Contabilizar lançamentos','accounting.entry.void':'Anular lançamentos'})[c]||c}
+function permLabel(c){return({'core.company.manage':'Gerenciar empresa','core.branch.read':'Consultar filiais','core.branch.manage':'Gerenciar filiais','core.user.read':'Consultar usuários','core.user.manage':'Gerenciar usuários','core.role.manage':'Gerenciar perfis e permissões','core.audit.read':'Consultar auditoria','accounting.period.read':'Consultar períodos contábeis','accounting.period.manage':'Gerenciar períodos contábeis','accounting.account.read':'Consultar plano de contas','accounting.account.manage':'Gerenciar plano de contas','accounting.cost_center.read':'Consultar centros de custo','accounting.cost_center.manage':'Gerenciar centros de custo','accounting.history.read':'Consultar históricos padrão','accounting.history.manage':'Gerenciar históricos padrão','accounting.batch.read':'Consultar lotes','accounting.batch.manage':'Gerenciar lotes','accounting.entry.read':'Consultar lançamentos','accounting.entry.create':'Criar lançamentos','accounting.entry.edit':'Editar lançamentos','accounting.entry.delete':'Excluir lançamentos','accounting.entry.post':'Contabilizar lançamentos','accounting.entry.void':'Anular lançamentos'})[c]||c}
 async function renderRoles(){const [a,p]=await Promise.all([roleList(true),permissionList(true)]);tablePage({newLabel:'Novo perfil',onNew:()=>roleForm(p),cols:['Código','Perfil','Descrição','Tipo',''],rows:a.length?a.map(x=>`<tr><td class="code">${esc(x.code)}</td><td>${esc(x.name)}</td><td>${esc(x.description||'')}</td><td>${x.system_role?'<span class="badge blue">Sistema</span>':'<span class="badge gray">Personalizado</span>'}</td><td><div class="actions">${x.system_role?'':`<button class="btn secondary sm" data-edit-role="${x.id}">Editar</button>`}</div></td></tr>`).join(''):null,emptyTitle:'Nenhum perfil cadastrado',emptyText:'Crie perfis para controlar o acesso dos usuários.',placeholder:'Pesquisar perfil...'});$$('[data-edit-role]').forEach(b=>b.onclick=async()=>{try{const d=await api(`/api/roles/${b.dataset.editRole}`);roleForm(p,d.role)}catch(x){toast(x.message,'error')}})}
 function roleForm(p,role=null){
   const editing=!!role;
@@ -1331,12 +1331,13 @@ function deleteBatchModal(item){
 }
 
 async function renderEntries(){
-  const d=await api('/api/journal-entries?limit=300'),a=d.entries||[],create=can('accounting.entry.create');
+  const d=await api('/api/journal-entries?limit=300'),a=d.entries||[];
+  const create=can('accounting.entry.create'),edit=can('accounting.entry.edit'),del=can('accounting.entry.delete');
 
   tablePage({
     newLabel:create?'Novo lançamento':null,
-    onNew:create?entryForm:null,
-    cols:['Data','Lote','Documento','Descrição','Débito','Crédito','Situação','Oficial',''],
+    onNew:create?()=>entryForm():null,
+    cols:['Data','Lote','Documento','Descrição','Débito','Crédito','Situação','Oficial','Ações'],
     rows:a.length?a.map(x=>`<tr>
       <td>${dateBR(x.entry_date)}</td>
       <td class="code">${esc(x.batch_code||'')}</td>
@@ -1346,19 +1347,40 @@ async function renderEntries(){
       <td>${money(x.total_credit)}</td>
       <td>${badge(x.status)}</td>
       <td>${x.status==='POSTED'?officialState(x.official_status):'<span class="badge gray">—</span>'}</td>
-      <td><div class="actions"><button class="btn secondary sm" data-open="${x.id}">Abrir</button></div></td>
+      <td><div class="actions">
+        <button class="btn secondary sm" data-open="${x.id}">Abrir</button>
+        ${x.status==='POSTED'&&x.official_status!=='INTEGRATED'&&edit?`<button class="btn secondary sm" data-edit-entry="${x.id}">Editar</button>`:''}
+        ${x.status==='POSTED'&&x.official_status!=='INTEGRATED'&&del?`<button class="btn danger sm" data-delete-entry="${x.id}">Excluir</button>`:''}
+      </div></td>
     </tr>`).join(''):null,
     emptyTitle:'Nenhum lançamento',
     emptyText:create?'Inclua o primeiro lançamento contábil.':'Nenhum lançamento disponível para consulta.'
   });
 
   $$('[data-open]').forEach(b=>b.onclick=()=>entryView(b.dataset.open));
+  $$('[data-edit-entry]').forEach(b=>b.onclick=()=>entryForm(b.dataset.editEntry));
+  $$('[data-delete-entry]').forEach(b=>b.onclick=()=>deleteEntryModal(b.dataset.deleteEntry));
 }
-async function entryForm(){
+async function entryForm(editId=null){
+  let item=null;
+
+  if(editId){
+    try{
+      item=(await api(`/api/journal-entries/${editId}`)).entry;
+    }catch(x){
+      return toast(x.message,'error');
+    }
+
+    if(item.official_status==='INTEGRATED'){
+      return toast('Desfaça a integração com o Lote 0 antes de editar.','error');
+    }
+  }
+
   const [a,c,h,b,br]=await Promise.all([accounts(),ccs(),histories(),batches(),branches()]);
   const oa=a.filter(x=>x.active&&x.analytic),ob=b.filter(x=>x.status==='OPEN');
 
-  if(ob.length===0)return toast('Crie primeiro um lote aberto.','error');
+  // Ao editar, mantém o lote atual disponível no select se ele continua aberto.
+  if(ob.length===0)return toast('Não existe lote aberto para o lançamento.','error');
   if(oa.length<2)return toast('Cadastre pelo menos duas contas analíticas ativas.','error');
 
   const ao=oa.map(x=>`<option value="${x.id}">${esc(x.code)} - ${esc(x.name)}</option>`).join('');
@@ -1367,14 +1389,38 @@ async function entryForm(){
   const ho=activeHist.map(x=>`<option value="${x.id}" data-required="${x.complement_required?1:0}">${esc(x.code)} - ${esc(x.description)}</option>`).join('');
   const bro=br.filter(x=>x.active).map(x=>`<option value="${x.id}">${esc(x.code)} - ${esc(x.name)}</option>`).join('');
 
-  openModal('Novo lançamento','Ao salvar, o lançamento será contabilizado imediatamente no lote selecionado.',`
-    <form id="entryForm">
+  openModal(
+    item?'Editar lançamento':'Novo lançamento',
+    item
+      ?'As alterações são aplicadas diretamente ao lançamento contabilizado. Lançamentos no Lote 0 precisam ser desintegrados antes.'
+      :'Ao salvar, o lançamento será contabilizado imediatamente no lote selecionado.',
+    `<form id="entryForm">
       <div class="grid three">
-        <label class="field"><span>Lote</span><select name="batch_id" required><option value="">Selecione</option>${ob.map(x=>`<option value="${x.id}">${esc(x.code)} - ${esc(x.description)}</option>`).join('')}</select></label>
-        <label class="field"><span>Filial</span><select name="branch_id"><option value="">Sem filial</option>${bro}</select></label>
-        <label class="field"><span>Data</span><input name="entry_date" type="date" required value="${new Date().toISOString().slice(0,10)}"></label>
-        <label class="field"><span>Documento</span><input name="document_number"></label>
-        <label class="field full"><span>Descrição</span><input name="description"></label>
+        <label class="field"><span>Lote</span>
+          <select name="batch_id" required>
+            <option value="">Selecione</option>
+            ${ob.map(x=>`<option value="${x.id}" ${x.id===item?.batch_id?'selected':''}>${esc(x.code)} - ${esc(x.description)}</option>`).join('')}
+          </select>
+        </label>
+
+        <label class="field"><span>Filial</span>
+          <select name="branch_id">
+            <option value="">Sem filial</option>
+            ${br.filter(x=>x.active).map(x=>`<option value="${x.id}" ${x.id===item?.branch_id?'selected':''}>${esc(x.code)} - ${esc(x.name)}</option>`).join('')}
+          </select>
+        </label>
+
+        <label class="field"><span>Data</span>
+          <input name="entry_date" type="date" required value="${item?.entry_date||new Date().toISOString().slice(0,10)}">
+        </label>
+
+        <label class="field"><span>Documento</span>
+          <input name="document_number" value="${esc(item?.document_number||'')}">
+        </label>
+
+        <label class="field full"><span>Descrição</span>
+          <input name="description" value="${esc(item?.description||'')}">
+        </label>
       </div>
 
       <div class="section-title">Partidas</div>
@@ -1383,13 +1429,7 @@ async function entryForm(){
         <table>
           <thead>
             <tr>
-              <th>D/C</th>
-              <th>Conta</th>
-              <th>Valor</th>
-              <th>Centro de custo</th>
-              <th>Histórico</th>
-              <th>Complemento</th>
-              <th></th>
+              <th>D/C</th><th>Conta</th><th>Valor</th><th>Centro de custo</th><th>Histórico</th><th>Complemento</th><th></th>
             </tr>
           </thead>
           <tbody id="lineBody"></tbody>
@@ -1408,44 +1448,65 @@ async function entryForm(){
 
       <div class="form-actions">
         <button type="button" class="btn secondary" data-close>Cancelar</button>
-        <button class="btn primary">Salvar lançamento</button>
+        <button class="btn primary">${item?'Salvar alterações':'Salvar lançamento'}</button>
       </div>
-    </form>`,true);
+    </form>`,
+    true
+  );
 
   $('[data-close]').onclick=closeModal;
   const body=$('#lineBody');
 
-  function row(side){
+  function row(line=null,defaultSide='D'){
+    const side=line?.side||defaultSide;
+
     return `<tr>
-      <td><select class="side"><option value="D" ${side==='D'?'selected':''}>D</option><option value="C" ${side==='C'?'selected':''}>C</option></select></td>
-      <td><select class="acct" required><option value="">Selecione</option>${ao}</select></td>
-      <td><input class="amt" inputmode="decimal" placeholder="0,00"></td>
-      <td><select class="cc"><option value="">Sem centro</option>${co}</select></td>
-      <td><select class="hist"><option value="">Sem histórico</option>${ho}</select></td>
-      <td><input class="comp" placeholder="Opcional"></td>
+      <td><select class="side">
+        <option value="D" ${side==='D'?'selected':''}>D</option>
+        <option value="C" ${side==='C'?'selected':''}>C</option>
+      </select></td>
+
+      <td><select class="acct" required>
+        <option value="">Selecione</option>
+        ${oa.map(x=>`<option value="${x.id}" ${x.id===line?.account_id?'selected':''}>${esc(x.code)} - ${esc(x.name)}</option>`).join('')}
+      </select></td>
+
+      <td><input class="amt" inputmode="decimal" placeholder="0,00" value="${line?String(line.amount).replace('.',','):''}"></td>
+
+      <td><select class="cc">
+        <option value="">Sem centro</option>
+        ${c.filter(x=>x.active&&parseCostCenterMaskLocal(x.code)?.analytic).map(x=>`<option value="${x.id}" ${x.id===line?.cost_center_id?'selected':''}>${esc(x.code)} - ${esc(x.name)}</option>`).join('')}
+      </select></td>
+
+      <td><select class="hist">
+        <option value="">Sem histórico</option>
+        ${activeHist.map(x=>`<option value="${x.id}" data-required="${x.complement_required?1:0}" ${x.id===line?.history_template_id?'selected':''}>${esc(x.code)} - ${esc(x.description)}</option>`).join('')}
+      </select></td>
+
+      <td><input class="comp" placeholder="Opcional" value="${esc(line?.history_complement||'')}"></td>
       <td><button type="button" class="remove-line">×</button></td>
     </tr>`;
   }
 
-  body.insertAdjacentHTML('beforeend',row('D'));
-  body.insertAdjacentHTML('beforeend',row('C'));
+  function appendRow(line=null,side='D'){
+    body.insertAdjacentHTML('beforeend',row(line,side));
+    const tr=body.lastElementChild;
+    tr._allocations=(line?.allocations||[]).map(a=>({
+      cost_center_id:a.cost_center_id,
+      amount:a.amount,
+      percentage_basis_points:a.percentage_basis_points
+    }));
+    updateHistoryRequirement(tr);
+  }
 
   function updateHistoryRequirement(tr){
-    const hist=$('.hist',tr);
-    const comp=$('.comp',tr);
+    const hist=$('.hist',tr),comp=$('.comp',tr);
     const option=hist.options[hist.selectedIndex];
     const required=option?.dataset?.required==='1';
-
     comp.required=required;
     comp.placeholder=required?'Obrigatório':'Opcional';
-
-    if(required){
-      comp.setAttribute('aria-label','Complemento obrigatório');
-      comp.style.borderColor='';
-    }else{
-      comp.removeAttribute('aria-label');
-      comp.style.borderColor='';
-    }
+    if(required)comp.setAttribute('aria-label','Complemento obrigatório');
+    else comp.removeAttribute('aria-label');
   }
 
   function num(v){
@@ -1466,12 +1527,17 @@ async function entryForm(){
     $('#bal').innerHTML=ok?'<b>Fechado</b>':'<b>Não fecha</b>';
   }
 
-  $$('#lineBody tr').forEach(updateHistoryRequirement);
+  if(item?.lines?.length){
+    item.lines.forEach(l=>appendRow(l,l.side));
+  }else{
+    appendRow(null,'D');
+    appendRow(null,'C');
+  }
+
+  totals();
 
   body.addEventListener('change',e=>{
-    if(e.target.classList.contains('hist')){
-      updateHistoryRequirement(e.target.closest('tr'));
-    }
+    if(e.target.classList.contains('hist'))updateHistoryRequirement(e.target.closest('tr'));
   });
 
   body.addEventListener('input',totals);
@@ -1484,10 +1550,7 @@ async function entryForm(){
     }
   });
 
-  $('#addLine').onclick=()=>{
-    body.insertAdjacentHTML('beforeend',row('D'));
-    updateHistoryRequirement(body.lastElementChild);
-  };
+  $('#addLine').onclick=()=>appendRow(null,'D');
 
   $('#entryForm').onsubmit=async e=>{
     e.preventDefault();
@@ -1515,7 +1578,8 @@ async function entryForm(){
         amount:$('.amt',r).value,
         cost_center_id:$('.cc',r).value||null,
         history_template_id:hist.value||null,
-        history_complement:complement||null
+        history_complement:complement||null,
+        allocations:r._allocations||[]
       };
     });
 
@@ -1532,9 +1596,13 @@ async function entryForm(){
     };
 
     try{
-      await api('/api/journal-entries',{method:'POST',body:payload});
+      await api(item?`/api/journal-entries/${item.id}`:'/api/journal-entries',{
+        method:item?'PATCH':'POST',
+        body:payload
+      });
+
       closeModal();
-      toast('Lançamento contabilizado com sucesso.');
+      toast(item?'Lançamento atualizado.':'Lançamento contabilizado com sucesso.');
       renderEntries();
     }catch(x){
       toast(x.message,'error');
@@ -1544,6 +1612,7 @@ async function entryForm(){
 async function entryView(id){
   try{
     const e=(await api('/api/journal-entries/'+id)).entry;
+    const maintainable=e.status==='POSTED'&&e.official_status!=='INTEGRATED';
 
     openModal(
       'Lançamento contábil',
@@ -1557,7 +1626,7 @@ async function entryView(id){
       </div>
 
       ${e.official_status==='INTEGRATED'?`<div style="margin:12px 0;padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:#f8fbff;color:var(--muted)">
-        Este lançamento faz parte do <b>Lote 0 Oficial</b>. Para anulá-lo, desfaça primeiro a integração no lote de origem.
+        Este lançamento faz parte do <b>Lote 0 Oficial</b>. Para editar, excluir ou anular, desfaça primeiro a integração no lote de origem.
       </div>`:''}
 
       <div class="section-title">Partidas</div>
@@ -1573,7 +1642,9 @@ async function entryView(id){
       </table></div>
 
       <div class="form-actions">
-        ${e.status==='POSTED'&&e.official_status!=='INTEGRATED'&&can('accounting.entry.void')?'<button id="voidBtn" class="btn danger">Anular</button>':''}
+        ${maintainable&&can('accounting.entry.delete')?'<button id="deleteEntryBtn" class="btn danger">Excluir</button>':''}
+        ${maintainable&&can('accounting.entry.void')?'<button id="voidBtn" class="btn secondary">Anular</button>':''}
+        ${maintainable&&can('accounting.entry.edit')?'<button id="editEntryBtn" class="btn primary">Editar</button>':''}
         <button class="btn secondary" data-close>Fechar</button>
       </div>`,
       true
@@ -1581,13 +1652,62 @@ async function entryView(id){
 
     $('[data-close]').onclick=closeModal;
 
+    if($('#editEntryBtn'))$('#editEntryBtn').onclick=()=>{
+      closeModal();
+      entryForm(id);
+    };
+
+    if($('#deleteEntryBtn'))$('#deleteEntryBtn').onclick=()=>{
+      closeModal();
+      deleteEntryModal(id);
+    };
+
     if($('#voidBtn'))$('#voidBtn').onclick=async()=>{
       const reason=prompt('Informe o motivo da anulação:');
       if(!reason)return;
+
       try{
         await api(`/api/journal-entries/${id}/void`,{method:'POST',body:{reason}});
         closeModal();
         toast('Lançamento anulado.');
+        renderEntries();
+      }catch(x){toast(x.message,'error')}
+    };
+  }catch(x){toast(x.message,'error')}
+}
+
+async function deleteEntryModal(id){
+  try{
+    const e=(await api(`/api/journal-entries/${id}`)).entry;
+
+    if(e.official_status==='INTEGRATED'){
+      return toast('Desfaça a integração com o Lote 0 antes de excluir.','error');
+    }
+
+    openModal(
+      'Excluir lançamento',
+      'Esta ação remove o lançamento da movimentação contábil. A exclusão continuará registrada na auditoria do SAGAS.',
+      `<div style="padding:8px 0">
+        <div style="padding:12px;border:1px solid var(--line);border-radius:8px;background:#f8fafc">
+          <div><b>${dateBR(e.entry_date)} • ${esc(e.document_number||'Sem documento')}</b></div>
+          <div style="margin-top:6px">${esc(e.description||'')}</div>
+          <div style="margin-top:8px;color:var(--muted)">Débito: ${money(e.total_debit)} • Crédito: ${money(e.total_credit)}</div>
+        </div>
+
+        <div class="form-actions">
+          <button type="button" class="btn secondary" data-close>Cancelar</button>
+          <button type="button" id="confirmDeleteEntry" class="btn danger">Excluir lançamento</button>
+        </div>
+      </div>`
+    );
+
+    $('[data-close]').onclick=closeModal;
+
+    $('#confirmDeleteEntry').onclick=async()=>{
+      try{
+        await api(`/api/journal-entries/${id}`,{method:'DELETE'});
+        closeModal();
+        toast('Lançamento excluído.');
         renderEntries();
       }catch(x){toast(x.message,'error')}
     };
