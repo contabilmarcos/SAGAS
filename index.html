@@ -1,10 +1,10 @@
 <!DOCTYPE html>
-<!-- SAGAS v27 - Lançamentos contábeis no modelo RM: visualização por lote; Lote 0 oficial separado -->
+<!-- SAGAS v28 - motor de fórmulas e condições nos Eventos Contábeis -->
 <html lang="pt-BR">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>SAGAS · Gestão Integrada · v27</title>
+  <title>SAGAS · Gestão Integrada · v28</title>
   <style>
 :root{--blue:#1557d6;--blue2:#1048b4;--blueSoft:#edf3ff;--bg:#f5f7fb;--surface:#fff;--line:#dfe5ee;--line2:#edf1f5;--text:#172033;--muted:#697386;--danger:#c53d32;--success:#207a50;--warn:#956200;--side:238px;--shadow:0 18px 55px rgba(20,28,45,.16)}
 *{box-sizing:border-box}html,body{margin:0;min-height:100%;font-family:Segoe UI,Inter,Arial,sans-serif;background:var(--bg);color:var(--text)}button,input,select,textarea{font:inherit}button{cursor:pointer}.hidden{display:none!important}.muted{color:var(--muted)}
@@ -2409,7 +2409,7 @@ async function movementEventForm(id=null){
   const x=id?(await api(`/api/movement-accounting-events/${id}`)).event:null;
   const accts=ar.filter(a=>a.active&&a.analytic),bs=br.filter(b=>b.active),centers=cc.filter(c=>c.active),hs=hi.filter(h=>h.active);
   openModal(x?'Editar Evento Contábil':'Novo Evento Contábil',
-    'O Evento determina as partidas. A origem da conta pode ser fixa ou vir do default da Natureza do item.',
+    'Configure as partidas com conta fixa ou Natureza do item. A fórmula é opcional; quando vazia, a Incidência continua sendo usada como antes.',
     `<form id="movementEventForm">
       <div class="grid">
         <label class="field"><span>Código</span><input name="code" value="${esc(x?.code||'')}" required></label>
@@ -2419,9 +2419,13 @@ async function movementEventForm(id=null){
         <label class="check"><input name="active" type="checkbox" ${x?.active!==0?'checked':''}> Ativo</label>
       </div>
       <div class="section-title">Itens do Evento Contábil</div>
-      <div class="table-wrap"><table class="table"><thead><tr><th>D/C</th><th>Incidência</th><th>Origem da Conta</th><th>Conta fixa</th><th>%</th><th>Filial</th><th>Centro</th><th>Histórico</th><th>Complemento</th><th></th></tr></thead><tbody id="movementEventItemBody"></tbody></table></div>
+      <div class="table-wrap"><table class="table" style="min-width:1680px"><thead><tr><th>D/C</th><th>Incidência padrão</th><th>Fórmula</th><th>Condição</th><th>Origem da Conta</th><th>Conta fixa</th><th>%</th><th>Filial</th><th>Centro</th><th>Histórico</th><th>Complemento</th><th></th></tr></thead><tbody id="movementEventItemBody"></tbody></table></div>
       <div style="margin-top:9px"><button type="button" id="addMovementEventItem" class="btn secondary sm">+ Adicionar item</button></div>
-      <div class="help" style="margin-top:10px">Origem “Natureza do item” usa, para o mesmo lado D/C, os defaults contábeis cadastrados na Natureza Orçamentária / Financeira do item.</div>
+      <div class="help" style="margin-top:10px;line-height:1.55">
+        <b>Fórmulas:</b> use TOTAL, ITENS, FRETE, ITEM.VALOR, ITEM.PRECO e ITEM.QUANTIDADE. Ex.: <span class="code">TOTAL * 0,02</span> ou <span class="code">FRETE</span>.<br>
+        <b>Condições:</b> também aceitam ITEM.TIPO, ITEM.NATUREZA e ITEM.CODIGO. Ex.: <span class="code">FRETE &gt; 0</span> ou <span class="code">ITEM.TIPO = &quot;SERVICE&quot;</span>. Use AND/OR/NOT para combinar regras.<br>
+        Quando a fórmula ficar vazia, o SAGAS usa a Incidência padrão. Origem “Natureza do item” busca os defaults contábeis da Natureza no mesmo lado D/C.
+      </div>
       <div class="form-actions"><button type="button" class="btn secondary" data-close>Cancelar</button><button class="btn primary">Salvar</button></div>
     </form>`,true);
   $('[data-close]').onclick=closeModal;
@@ -2433,25 +2437,49 @@ async function movementEventForm(id=null){
   function add(row={}){
     const tr=document.createElement('tr');
     tr.innerHTML=`<td><select class="me-side"><option value="D" ${row.side!=='C'?'selected':''}>D</option><option value="C" ${row.side==='C'?'selected':''}>C</option></select></td>
-      <td><select class="me-inc"><option value="TOTAL" ${row.incidence==='TOTAL'?'selected':''}>Total do movimento</option><option value="ITEM" ${row.incidence==='ITEM'?'selected':''}>Item</option><option value="ITEMS" ${row.incidence==='ITEMS'?'selected':''}>Total dos itens</option><option value="FREIGHT" ${row.incidence==='FREIGHT'?'selected':''}>Frete</option></select></td>
+      <td><select class="me-inc"><option value="TOTAL" ${row.incidence==='TOTAL'?'selected':''}>Total</option><option value="ITEM" ${row.incidence==='ITEM'?'selected':''}>Item</option><option value="ITEMS" ${row.incidence==='ITEMS'?'selected':''}>Itens</option><option value="FREIGHT" ${row.incidence==='FREIGHT'?'selected':''}>Frete</option></select></td>
+      <td><input class="me-formula code" value="${esc(row.formula_expression||'')}" placeholder="Ex.: TOTAL * 0,02" style="min-width:180px"></td>
+      <td><input class="me-condition code" value="${esc(row.condition_expression||'')}" placeholder="Ex.: FRETE > 0" style="min-width:210px"></td>
       <td><select class="me-origin"><option value="FIXED" ${row.account_origin!=='NATURE'?'selected':''}>Conta fixa</option><option value="NATURE" ${row.account_origin==='NATURE'?'selected':''}>Natureza do item</option></select></td>
-      <td><select class="me-account">${accountOptions(row.account_id)}</select></td>
+      <td><select class="me-account" style="min-width:220px">${accountOptions(row.account_id)}</select></td>
       <td><input class="me-pct" inputmode="decimal" value="${esc(row.percentage??100)}" style="width:70px"></td>
       <td><select class="me-branch">${branchOptions(row.branch_id)}</select></td>
       <td><select class="me-cc">${ccOptions(row.cost_center_id)}</select></td>
       <td><select class="me-hist">${histOptions(row.history_template_id)}</select></td>
-      <td><input class="me-comp" value="${esc(row.history_complement||'')}"></td>
+      <td><input class="me-comp" value="${esc(row.history_complement||'')}" style="min-width:180px"></td>
       <td><button type="button" class="remove-line">×</button></td>`;
     tbody.appendChild(tr);
-    const origin=$('.me-origin',tr),inc=$('.me-inc',tr),acct=$('.me-account',tr);
-    const sync=()=>{const nat=origin.value==='NATURE';acct.disabled=nat;if(nat){inc.value='ITEM';inc.disabled=true}else inc.disabled=false};
-    origin.onchange=sync;sync();$('.remove-line',tr).onclick=()=>tr.remove();
+    const origin=$('.me-origin',tr),acct=$('.me-account',tr),formula=$('.me-formula',tr),inc=$('.me-inc',tr);
+    const sync=()=>{
+      const nat=origin.value==='NATURE';
+      acct.disabled=nat;
+      if(nat&&!formula.value.trim()&&inc.value!=='ITEM')inc.value='ITEM';
+    };
+    origin.onchange=sync;formula.oninput=sync;sync();$('.remove-line',tr).onclick=()=>tr.remove();
   }
   (x?.items||[]).forEach(add);$('#addMovementEventItem').onclick=()=>add();
   $('#movementEventForm').onsubmit=async e=>{
     e.preventDefault();const f=new FormData(e.target);
-    const items=$$('#movementEventItemBody tr').map(tr=>({side:$('.me-side',tr).value,incidence:$('.me-inc',tr).value,account_origin:$('.me-origin',tr).value,account_id:$('.me-origin',tr).value==='FIXED'?$('.me-account',tr).value:null,percentage:$('.me-pct',tr).value,branch_id:$('.me-branch',tr).value||null,cost_center_id:$('.me-cc',tr).value||null,history_template_id:$('.me-hist',tr).value||null,history_complement:$('.me-comp',tr).value}));
-    try{await api(id?`/api/movement-accounting-events/${id}`:'/api/movement-accounting-events',{method:id?'PATCH':'POST',body:{code:f.get('code'),name:f.get('name'),process:f.get('process'),use_percentage:e.target.use_percentage.checked,active:e.target.active.checked,items}});S.cache.movementEvents=null;S.cache.movementTypes=null;closeModal();toast('Evento Contábil salvo.');renderMovementEvents()}catch(err){toast(err.message,'error')}
+    const items=$$('#movementEventItemBody tr').map(tr=>({
+      side:$('.me-side',tr).value,
+      incidence:$('.me-inc',tr).value,
+      formula_expression:$('.me-formula',tr).value.trim()||null,
+      condition_expression:$('.me-condition',tr).value.trim()||null,
+      account_origin:$('.me-origin',tr).value,
+      account_id:$('.me-origin',tr).value==='FIXED'?$('.me-account',tr).value:null,
+      percentage:$('.me-pct',tr).value,
+      branch_id:$('.me-branch',tr).value||null,
+      cost_center_id:$('.me-cc',tr).value||null,
+      history_template_id:$('.me-hist',tr).value||null,
+      history_complement:$('.me-comp',tr).value
+    }));
+    try{
+      await api(id?`/api/movement-accounting-events/${id}`:'/api/movement-accounting-events',{
+        method:id?'PATCH':'POST',
+        body:{code:f.get('code'),name:f.get('name'),process:f.get('process'),use_percentage:e.target.use_percentage.checked,active:e.target.active.checked,items}
+      });
+      S.cache.movementEvents=null;S.cache.movementTypes=null;closeModal();toast('Evento Contábil salvo.');renderMovementEvents();
+    }catch(err){toast(err.message,'error')}
   };
 }
 
@@ -2996,7 +3024,7 @@ setInterval(()=>checkSessionAccess(),30000);
 
 
 <style id="sagas-rm-accounting-grid-v27">
-/* ===== SAGAS v27 · Lotes e Lançamentos Contábeis no mesmo modelo do projeto RM ===== */
+/* ===== SAGAS v28 · Lotes e Lançamentos Contábeis no mesmo modelo do projeto RM ===== */
 .sagas-rm-list-page{height:100%;min-height:0;display:flex;flex-direction:column;background:#fff;overflow:hidden;font:11px "Segoe UI",Tahoma,Arial,sans-serif;color:#253941}
 .sagas-rm-plan-toolbar{height:31px;min-height:31px;border-bottom:1px solid #aeb7bc;background:#f7f8f8;display:flex;align-items:center;gap:2px;padding:2px 5px;position:relative;z-index:8}
 .sagas-rm-pt-btn{height:25px;min-width:25px;border:1px solid transparent;background:transparent;border-radius:2px;color:#197d92;display:inline-flex;align-items:center;justify-content:center;gap:4px;padding:0 5px;cursor:pointer;font-size:11px}
