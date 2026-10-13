@@ -1,3 +1,4 @@
+// SAGAS Worker v23 - otimização de carregamento contábil
 // ===== utils.js =====
 function json(data, status = 200, extraHeaders = {}) {
   return new Response(JSON.stringify(data), {
@@ -2334,6 +2335,154 @@ async function deleteUserViewFilter(env, companyId, userId, id) {
   return {deleted:true,id};
 }
 
+
+let __accountingPerformanceIndexesReady = false;
+
+async function ensureAccountingPerformanceIndexes(env) {
+  if (__accountingPerformanceIndexesReady) return;
+  await env.DB.batch([
+    env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_journal_entries_batch_grid ON journal_entries(company_id,batch_id,entry_date,created_at)`),
+    env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_journal_entries_official_grid ON journal_entries(company_id,official_status,status,entry_date,integrated_at)`),
+    env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_journal_lines_entry_grid ON journal_lines(company_id,entry_id,line_no)`)
+  ]);
+  __accountingPerformanceIndexesReady = true;
+}
+
+function journalEntryGridSearch(q) {
+  const text=cleanText(q||"",120);
+  if (!text) return {sql:"",binds:[]};
+  const like=`%${text}%`;
+  return {
+    sql:` AND (
+      COALESCE(e.document_number,'') LIKE ? COLLATE NOCASE
+      OR COALESCE(e.description,'') LIKE ? COLLATE NOCASE
+      OR COALESCE(e.source_reference,'') LIKE ? COLLATE NOCASE
+      OR EXISTS (
+        SELECT 1
+        FROM journal_lines sl
+        LEFT JOIN accounts sa ON sa.id=sl.account_id
+        LEFT JOIN cost_centers scc ON scc.id=sl.cost_center_id
+        LEFT JOIN history_templates sh ON sh.id=sl.history_template_id
+        WHERE sl.company_id=e.company_id
+          AND sl.entry_id=e.id
+          AND (
+            COALESCE(sl.document_number,'') LIKE ? COLLATE NOCASE
+            OR COALESCE(sl.history_complement,'') LIKE ? COLLATE NOCASE
+            OR COALESCE(sa.code,'') LIKE ? COLLATE NOCASE
+            OR COALESCE(sa.reduced_code,'') LIKE ? COLLATE NOCASE
+            OR COALESCE(sa.name,'') LIKE ? COLLATE NOCASE
+            OR COALESCE(scc.code,'') LIKE ? COLLATE NOCASE
+            OR COALESCE(scc.name,'') LIKE ? COLLATE NOCASE
+            OR COALESCE(sh.code,'') LIKE ? COLLATE NOCASE
+            OR COALESCE(sh.description,'') LIKE ? COLLATE NOCASE
+          )
+      )
+    )`,
+    binds:Array(12).fill(like)
+  };
+}
+
+async function listJournalEntryGrid(env, companyId, options={}) {
+  await ensureBatchIntegrationSchema(env);
+  await migrateLegacyDraftEntries(env,companyId);
+  await ensureAccountingPerformanceIndexes(env);
+
+  const context=String(options.context||"official").toLowerCase()==="batch"?"batch":"official";
+  const page=Math.max(1,Number(options.page)||1);
+  const pageSize=Math.min(200,Math.max(25,Number(options.page_size)||100));
+  const offset=(page-1)*pageSize;
+  const search=journalEntryGridSearch(options.q);
+
+  let batch=null;
+  let where="";
+  let baseBinds=[];
+  if (context==="batch") {
+    const batchId=required(options.batch_id,"batch_id");
+    batch=await env.DB.prepare(`
+      SELECT b.id,b.code,b.description,b.status,b.cover_mode,b.start_date,b.end_date,
+             p.code AS period_code,p.start_date AS period_start_date,p.end_date AS period_end_date,p.closed_until
+      FROM journal_batches b
+      JOIN accounting_periods p ON p.id=b.period_id
+      WHERE b.id=? AND b.company_id=?
+    `).bind(batchId,companyId).first();
+    if (!batch) throw new HttpError(404,"Lote não encontrado.","NOT_FOUND");
+    where="e.company_id=? AND e.batch_id=?";
+    baseBinds=[companyId,batchId];
+  } else {
+    where="e.company_id=? AND e.status='POSTED' AND e.official_status='INTEGRATED'";
+    baseBinds=[companyId];
+  }
+
+  const allBinds=[...baseBinds,...search.binds];
+  const summary=await env.DB.prepare(`
+    SELECT COUNT(*) AS total_entries,
+           COALESCE(SUM(e.total_debit_cents),0) AS total_debit_cents,
+           COALESCE(SUM(e.total_credit_cents),0) AS total_credit_cents
+    FROM journal_entries e
+    WHERE ${where}${search.sql}
+  `).bind(...allBinds).first();
+
+  const totalEntries=Number(summary?.total_entries||0);
+  const totalPages=Math.max(1,Math.ceil(totalEntries/pageSize));
+  const effectivePage=Math.min(page,totalPages);
+  const effectiveOffset=(effectivePage-1)*pageSize;
+
+  const entriesRes=await env.DB.prepare(`
+    SELECT
+      e.id,e.batch_id,e.entry_date,e.document_number,e.description,e.source_module,e.source_reference,e.status,
+      e.official_status,e.integration_id,e.integrated_at,e.total_debit_cents,e.total_credit_cents,e.created_at,
+      b.code AS batch_code,b.description AS batch_description,
+      br.code AS branch_code,br.name AS branch_name
+    FROM journal_entries e
+    JOIN journal_batches b ON b.id=e.batch_id
+    LEFT JOIN branches br ON br.id=e.branch_id
+    WHERE ${where}${search.sql}
+    ORDER BY e.entry_date DESC,e.created_at DESC
+    LIMIT ? OFFSET ?
+  `).bind(...allBinds,pageSize,effectiveOffset).all();
+
+  const entries=(entriesRes.results||[]);
+  const byId=new Map(entries.map(e=>[e.id,{...e,total_debit:centsToMoney(e.total_debit_cents),total_credit:centsToMoney(e.total_credit_cents),lines:[]}])) ;
+
+  if (entries.length) {
+    const ids=entries.map(e=>e.id);
+    const placeholders=ids.map(()=>"?").join(",");
+    const linesRes=await env.DB.prepare(`
+      SELECT
+        l.id,l.entry_id,l.line_no,l.side,l.amount_cents,l.document_number,l.history_complement,
+        a.code AS account_code,a.reduced_code AS account_reduced_code,a.name AS account_name,
+        cc.code AS cost_center_code,cc.name AS cost_center_name,
+        h.code AS history_code,h.description AS history_description
+      FROM journal_lines l
+      JOIN accounts a ON a.id=l.account_id
+      LEFT JOIN cost_centers cc ON cc.id=l.cost_center_id
+      LEFT JOIN history_templates h ON h.id=l.history_template_id
+      WHERE l.company_id=? AND l.entry_id IN (${placeholders})
+      ORDER BY l.entry_id,l.line_no
+    `).bind(companyId,...ids).all();
+
+    for (const row of (linesRes.results||[])) {
+      const target=byId.get(row.entry_id);
+      if (!target) continue;
+      target.lines.push({...row,amount:centsToMoney(row.amount_cents)});
+    }
+  }
+
+  return {
+    context,
+    batch,
+    page:effectivePage,
+    page_size:pageSize,
+    total_entries:totalEntries,
+    total_pages:totalPages,
+    total_debit_cents:Number(summary?.total_debit_cents||0),
+    total_credit_cents:Number(summary?.total_credit_cents||0),
+    total_debit:centsToMoney(Number(summary?.total_debit_cents||0)),
+    total_credit:centsToMoney(Number(summary?.total_credit_cents||0)),
+    entries:entries.map(e=>byId.get(e.id))
+  };
+}
+
 async function listEntries(env, companyId, limit=100, filterDefinition=null) {
   await ensureBatchIntegrationSchema(env);
   await migrateLegacyDraftEntries(env,companyId);
@@ -2415,22 +2564,28 @@ async function getEntry(env, companyId, id) {
     ORDER BY l.line_no
   `).bind(id,companyId).all();
 
-  const lines=[];
-  for (const row of (linesRes.results||[])) {
-    const alloc=await env.DB.prepare(`
+  const lineRows=linesRes.results||[];
+  const allocationsByLine=new Map();
+  if (lineRows.length) {
+    const allocRes=await env.DB.prepare(`
       SELECT al.*,cc.code AS cost_center_code,cc.name AS cost_center_name
       FROM allocation_lines al
       JOIN cost_centers cc ON cc.id=al.cost_center_id
-      WHERE al.journal_line_id=? AND al.company_id=?
-      ORDER BY cc.code
-    `).bind(row.id,companyId).all();
-
-    lines.push({
-      ...row,
-      amount:centsToMoney(row.amount_cents),
-      allocations:(alloc.results||[]).map(a=>({...a,amount:centsToMoney(a.amount_cents)}))
-    });
+      JOIN journal_lines jl ON jl.id=al.journal_line_id AND jl.company_id=al.company_id
+      WHERE jl.entry_id=? AND al.company_id=?
+      ORDER BY al.journal_line_id,cc.code
+    `).bind(id,companyId).all();
+    for (const a of (allocRes.results||[])) {
+      if (!allocationsByLine.has(a.journal_line_id)) allocationsByLine.set(a.journal_line_id,[]);
+      allocationsByLine.get(a.journal_line_id).push({...a,amount:centsToMoney(a.amount_cents)});
+    }
   }
+
+  const lines=lineRows.map(row=>({
+    ...row,
+    amount:centsToMoney(row.amount_cents),
+    allocations:allocationsByLine.get(row.id)||[]
+  }));
 
   return {
     ...entry,
@@ -4318,6 +4473,17 @@ async function route(request, env) {
   if (p && method==="PATCH") return ok({batch:await updateBatch(env,request,auth,companyId,p.id,await readJson(request))});
   if (p && method==="DELETE") return ok(await deleteBatch(env,request,auth,companyId,p.id));
 
+  if (method==="GET" && path==="/api/journal-entry-grid") {
+    await requirePermission(env,auth.user.id,companyId,"accounting.entry.read");
+    return ok({grid:await listJournalEntryGrid(env,companyId,{
+      context:url.searchParams.get("context"),
+      batch_id:url.searchParams.get("batch_id"),
+      page:url.searchParams.get("page"),
+      page_size:url.searchParams.get("page_size"),
+      q:url.searchParams.get("q")
+    })});
+  }
+
   if (method==="GET" && path==="/api/official-entries") {
     await requirePermission(env,auth.user.id,companyId,"accounting.entry.read");
     return ok({entries:await listOfficialEntries(env,companyId,url.searchParams.get("limit"))});
@@ -4477,4 +4643,3 @@ export default {
     }
   }
 };
-
