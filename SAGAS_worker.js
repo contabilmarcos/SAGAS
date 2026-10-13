@@ -4533,6 +4533,45 @@ async function receiptIntegrationLinks(env,companyId,receiptId){
   return {payable:payable?{...payable,amount:centsToMoney(payable.amount_cents),balance:centsToMoney(payable.balance_cents)}:null,journal_entry:entry?{...entry,amount:centsToMoney(entry.total_debit_cents)}:null};
 }
 
+
+// ===== performance v25: evita repetir PRAGMA/CREATE TABLE em toda chamada da API =====
+// Cada deployment/isolado do Worker valida o schema uma vez. Se houver erro, o cache é
+// descartado para permitir nova tentativa na próxima requisição.
+const __sagasSchemaEnsurePromises = new Map();
+function __cacheSchemaEnsure(name, fn) {
+  return async function(env) {
+    let p = __sagasSchemaEnsurePromises.get(name);
+    if (!p) {
+      p = Promise.resolve()
+        .then(() => fn(env))
+        .catch(err => {
+          __sagasSchemaEnsurePromises.delete(name);
+          throw err;
+        });
+      __sagasSchemaEnsurePromises.set(name, p);
+    }
+    return p;
+  };
+}
+
+const __rawEnsureAccountingPeriodSchema = ensureAccountingPeriodSchema;
+const __rawEnsureBatchIntegrationSchema = ensureBatchIntegrationSchema;
+const __rawEnsureEntryMaintenanceSchema = ensureEntryMaintenanceSchema;
+const __rawEnsureViewFilterSchema = ensureViewFilterSchema;
+const __rawEnsurePurchasingSchema = ensurePurchasingSchema;
+const __rawEnsurePurchaseIntegrationSchema = ensurePurchaseIntegrationSchema;
+const __rawEnsureRmPurchasingSchema = ensureRmPurchasingSchema;
+const __rawEnsureAccountingPerformanceIndexes = ensureAccountingPerformanceIndexes;
+
+ensureAccountingPeriodSchema = __cacheSchemaEnsure('accounting_period', __rawEnsureAccountingPeriodSchema);
+ensureBatchIntegrationSchema = __cacheSchemaEnsure('batch_integration', __rawEnsureBatchIntegrationSchema);
+ensureEntryMaintenanceSchema = __cacheSchemaEnsure('entry_maintenance', __rawEnsureEntryMaintenanceSchema);
+ensureViewFilterSchema = __cacheSchemaEnsure('view_filter', __rawEnsureViewFilterSchema);
+ensurePurchasingSchema = __cacheSchemaEnsure('purchasing', __rawEnsurePurchasingSchema);
+ensurePurchaseIntegrationSchema = __cacheSchemaEnsure('purchase_integration', __rawEnsurePurchaseIntegrationSchema);
+ensureRmPurchasingSchema = __cacheSchemaEnsure('rm_purchasing', __rawEnsureRmPurchasingSchema);
+ensureAccountingPerformanceIndexes = __cacheSchemaEnsure('accounting_indexes', __rawEnsureAccountingPerformanceIndexes);
+
 async function route(request, env) {
   const url=new URL(request.url), path=url.pathname.replace(/\/+$/,"" )||"/", method=request.method.toUpperCase();
   if (method==="OPTIONS") return new Response(null,{status:204});
