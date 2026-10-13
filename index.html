@@ -4,7 +4,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>SAGAS · Gestão Integrada · v28</title>
+  <title>SAGAS · Gestão Integrada · v29</title>
   <style>
 :root{--blue:#1557d6;--blue2:#1048b4;--blueSoft:#edf3ff;--bg:#f5f7fb;--surface:#fff;--line:#dfe5ee;--line2:#edf1f5;--text:#172033;--muted:#697386;--danger:#c53d32;--success:#207a50;--warn:#956200;--side:238px;--shadow:0 18px 55px rgba(20,28,45,.16)}
 *{box-sizing:border-box}html,body{margin:0;min-height:100%;font-family:Segoe UI,Inter,Arial,sans-serif;background:var(--bg);color:var(--text)}button,input,select,textarea{font:inherit}button{cursor:pointer}.hidden{display:none!important}.muted{color:var(--muted)}
@@ -3046,16 +3046,26 @@ setInterval(()=>checkSessionAccess(),30000);
   const shortEntryId=id=>String(id||'').split('-')[0].toUpperCase();
   const rmMoneyValue=v=>Number(v||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
 
-  async function loadEntryDetails(items){
-    const out=[];
-    for(let i=0;i<items.length;i+=20){
-      const group=items.slice(i,i+20);
-      const got=await Promise.all(group.map(async x=>{
-        try{return (await api(`/api/journal-entries/${x.id}`)).entry}catch{return {...x,lines:[]}}
-      }));
-      out.push(...got);
+  async function loadEntryGridAll(context,batchId=null){
+    const pageSize=200;
+    const base=context==='batch'
+      ? `/api/journal-entry-grid?context=batch&batch_id=${encodeURIComponent(batchId)}&page_size=${pageSize}`
+      : `/api/journal-entry-grid?context=official&page_size=${pageSize}`;
+
+    const first=(await api(`${base}&page=1`)).grid;
+    const entries=[...(first?.entries||[])];
+    const totalPages=Math.max(1,Number(first?.total_pages||1));
+
+    // Busca páginas adicionais em pequenos grupos. Cada página já retorna os lançamentos
+    // e todas as partidas, eliminando uma requisição HTTP por lançamento.
+    for(let start=2;start<=totalPages;start+=4){
+      const pages=[];
+      for(let p=start;p<Math.min(start+4,totalPages+1);p++) pages.push(p);
+      const got=await Promise.all(pages.map(p=>api(`${base}&page=${p}`).then(d=>d.grid)));
+      got.forEach(g=>entries.push(...(g?.entries||[])));
     }
-    return out;
+
+    return {...first,entries};
   }
 
   function historyComplement(line){
@@ -3106,22 +3116,25 @@ setInterval(()=>checkSessionAccess(),30000);
   async function currentEntriesPayload(){
     const ctx=window.__sagasEntryBatchContext||'official';
     if(ctx==='official'){
-      const d=await api('/api/official-entries?limit=1000');
-      return {context:'official',title:'Lote 0 - Oficial',subtitle:'Lançamentos integrados à escrituração oficial',entries:d.entries||[],batch:null};
+      const g=await loadEntryGridAll('official');
+      return {context:'official',title:'Lote 0 - Oficial',subtitle:'Lançamentos integrados à escrituração oficial',entries:g.entries||[],batch:null,total_debit:g.total_debit,total_credit:g.total_credit};
     }
-    const d=await api(`/api/journal-batches/${ctx}`);
-    const b=d.batch;
-    return {context:'batch',title:`Lote ${b.code} - ${b.description}`,subtitle:`${b.period_code||''} • ${dateBR(b.start_date)} a ${dateBR(b.end_date)}`,entries:b.entries||[],batch:b};
+    const g=await loadEntryGridAll('batch',ctx);
+    const b=g.batch;
+    return {context:'batch',title:`Lote ${b.code} - ${b.description}`,subtitle:`${b.period_code||''} • ${dateBR(b.start_date)} a ${dateBR(b.end_date)}`,entries:g.entries||[],batch:b,total_debit:g.total_debit,total_credit:g.total_credit};
   }
 
   renderEntries=async function(){
     const payload=await currentEntriesPayload();
-    const entries=await loadEntryDetails(payload.entries);
+    const entries=payload.entries||[];
     window.__sagasRmEntryDetails=entries;
     if(!entries.some(x=>x.id===window.__sagasSelectedEntryId))window.__sagasSelectedEntryId=null;
 
-    let debit=0,credit=0;
-    entries.forEach(e=>{debit+=Number(e.total_debit||0);credit+=Number(e.total_credit||0)});
+    let debit=Number(payload.total_debit||0),credit=Number(payload.total_credit||0);
+    if(!Number.isFinite(debit)||!Number.isFinite(credit)){
+      debit=0;credit=0;
+      entries.forEach(e=>{debit+=Number(e.total_debit||0);credit+=Number(e.total_credit||0)});
+    }
     const rows=entryGridRows(entries);
     const working=payload.context==='batch';
     const editable=working&&can('accounting.entry.edit');
@@ -3196,11 +3209,8 @@ setInterval(()=>checkSessionAccess(),30000);
 
   batchView=async function(id){
     try{
-      const b=(await api(`/api/journal-batches/${id}`)).batch;
       window.__sagasEntryBatchContext=id;window.__sagasSelectedEntryId=null;
       await nav('entries');
-      document.getElementById('pageTitle').textContent=`Lançamentos Contábeis / Lote ${b.code} - ${b.description}`;
-      const cap=document.getElementById('sagasCaptionTitle');if(cap)cap.textContent=`Lançamentos Contábeis / Lote ${b.code} - ${b.description} - SAGAS`;
     }catch(e){toast(e.message,'error')}
   };
 
