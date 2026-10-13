@@ -1,4 +1,4 @@
-// SAGAS Worker v24 - motor de fórmulas e condições para Eventos Contábeis
+// SAGAS Worker v26 - estabilidade e performance sem travar o carregamento
 // ===== utils.js =====
 function json(data, status = 200, extraHeaders = {}) {
   return new Response(JSON.stringify(data), {
@@ -4533,45 +4533,6 @@ async function receiptIntegrationLinks(env,companyId,receiptId){
   return {payable:payable?{...payable,amount:centsToMoney(payable.amount_cents),balance:centsToMoney(payable.balance_cents)}:null,journal_entry:entry?{...entry,amount:centsToMoney(entry.total_debit_cents)}:null};
 }
 
-
-// ===== performance v25: evita repetir PRAGMA/CREATE TABLE em toda chamada da API =====
-// Cada deployment/isolado do Worker valida o schema uma vez. Se houver erro, o cache é
-// descartado para permitir nova tentativa na próxima requisição.
-const __sagasSchemaEnsurePromises = new Map();
-function __cacheSchemaEnsure(name, fn) {
-  return async function(env) {
-    let p = __sagasSchemaEnsurePromises.get(name);
-    if (!p) {
-      p = Promise.resolve()
-        .then(() => fn(env))
-        .catch(err => {
-          __sagasSchemaEnsurePromises.delete(name);
-          throw err;
-        });
-      __sagasSchemaEnsurePromises.set(name, p);
-    }
-    return p;
-  };
-}
-
-const __rawEnsureAccountingPeriodSchema = ensureAccountingPeriodSchema;
-const __rawEnsureBatchIntegrationSchema = ensureBatchIntegrationSchema;
-const __rawEnsureEntryMaintenanceSchema = ensureEntryMaintenanceSchema;
-const __rawEnsureViewFilterSchema = ensureViewFilterSchema;
-const __rawEnsurePurchasingSchema = ensurePurchasingSchema;
-const __rawEnsurePurchaseIntegrationSchema = ensurePurchaseIntegrationSchema;
-const __rawEnsureRmPurchasingSchema = ensureRmPurchasingSchema;
-const __rawEnsureAccountingPerformanceIndexes = ensureAccountingPerformanceIndexes;
-
-ensureAccountingPeriodSchema = __cacheSchemaEnsure('accounting_period', __rawEnsureAccountingPeriodSchema);
-ensureBatchIntegrationSchema = __cacheSchemaEnsure('batch_integration', __rawEnsureBatchIntegrationSchema);
-ensureEntryMaintenanceSchema = __cacheSchemaEnsure('entry_maintenance', __rawEnsureEntryMaintenanceSchema);
-ensureViewFilterSchema = __cacheSchemaEnsure('view_filter', __rawEnsureViewFilterSchema);
-ensurePurchasingSchema = __cacheSchemaEnsure('purchasing', __rawEnsurePurchasingSchema);
-ensurePurchaseIntegrationSchema = __cacheSchemaEnsure('purchase_integration', __rawEnsurePurchaseIntegrationSchema);
-ensureRmPurchasingSchema = __cacheSchemaEnsure('rm_purchasing', __rawEnsureRmPurchasingSchema);
-ensureAccountingPerformanceIndexes = __cacheSchemaEnsure('accounting_indexes', __rawEnsureAccountingPerformanceIndexes);
-
 async function route(request, env) {
   const url=new URL(request.url), path=url.pathname.replace(/\/+$/,"" )||"/", method=request.method.toUpperCase();
   if (method==="OPTIONS") return new Response(null,{status:204});
@@ -4608,10 +4569,23 @@ async function route(request, env) {
   if (method==="POST" && path==="/api/companies") return ok({company:await createCompany(env,request,auth,await readJson(request))},201);
 
   const companyId=await currentCompany(request,env,auth);
-  await ensureEntryMaintenanceSchema(env);
-  await ensurePurchasingSchema(env);
-  await ensurePurchaseIntegrationSchema(env);
-  await ensureRmPurchasingSchema(env);
+
+  // v26: não executa migrações/CREATE TABLE de Compras em toda chamada do sistema.
+  // Essas estruturas só são verificadas quando a própria rota pertence ao módulo
+  // de Compras/Movimentos/Financeiro gerado por compras. Isso evita dezenas de
+  // consultas PRAGMA/CREATE em telas como Plano de Contas, Lotes e Usuários.
+  const needsPurchasingSchema =
+    path.startsWith("/api/purchase-") ||
+    path.startsWith("/api/movement-") ||
+    path.startsWith("/api/budget-natures") ||
+    path.startsWith("/api/financial-payables") ||
+    path.startsWith("/api/stock-balances");
+
+  if (needsPurchasingSchema) {
+    await ensurePurchasingSchema(env);
+    await ensurePurchaseIntegrationSchema(env);
+    await ensureRmPurchasingSchema(env);
+  }
 
   if (method==="GET" && path==="/api/auth/permissions") return ok({permissions:await getEffectivePermissions(env,auth.user.id,companyId)});
 
