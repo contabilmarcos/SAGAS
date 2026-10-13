@@ -1,4 +1,4 @@
-// SAGAS Worker v23 - otimização de carregamento contábil
+// SAGAS Worker v24 - motor de fórmulas e condições para Eventos Contábeis
 // ===== utils.js =====
 function json(data, status = 200, extraHeaders = {}) {
   return new Response(JSON.stringify(data), {
@@ -3607,6 +3607,8 @@ async function ensureRmPurchasingSchema(env){
       cost_center_id TEXT,
       history_template_id TEXT,
       history_complement TEXT,
+      formula_expression TEXT,
+      condition_expression TEXT,
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       UNIQUE(event_id,line_no)
     )`),
@@ -3656,6 +3658,8 @@ async function ensureRmPurchasingSchema(env){
   await ensureTableColumn(env,'purchase_receipts','accounting_batch_id','TEXT');
   await ensureTableColumn(env,'purchase_receipts','generate_financial','INTEGER NOT NULL DEFAULT 0');
   await ensureTableColumn(env,'purchase_receipts','stock_effect','TEXT NOT NULL DEFAULT "NONE"');
+  await ensureTableColumn(env,'movement_accounting_event_items','formula_expression','TEXT');
+  await ensureTableColumn(env,'movement_accounting_event_items','condition_expression','TEXT');
 
   for(const [code,description] of RM_PURCHASE_PERMISSION_DEFS){
     const exists=await env.DB.prepare(`SELECT id FROM permissions WHERE code=?`).bind(code).first();
@@ -3922,13 +3926,23 @@ async function saveMovementAccountingEvent(env,request,auth,companyId,id,body){
     if(!['FIXED','NATURE'].includes(origin)) throw new HttpError(400,'Origem da conta do evento inválida.','VALIDATION_ERROR');
     let accountId=null;
     if(origin==='FIXED') accountId=(await assertAnalyticActiveAccount(env,companyId,required(raw.account_id,'conta fixa do evento'),'a conta fixa do evento')).id;
-    if(origin==='NATURE'&&incidence!=='ITEM') throw new HttpError(400,'Quando a origem da conta for Natureza do item, a incidência deve ser Item.','VALIDATION_ERROR');
+
+    const formulaExpression=cleanText(raw.formula_expression,500)||null;
+    const conditionExpression=cleanText(raw.condition_expression,500)||null;
+    if(formulaExpression) validateAccountingExpression(formulaExpression,'formula');
+    if(conditionExpression) validateAccountingExpression(conditionExpression,'condition');
+
     const pct=Number(raw.percentage??100);
     if(!Number.isFinite(pct)||pct<=0||pct>100) throw new HttpError(400,'Percentual do evento inválido.','INVALID_PERCENTAGE');
     if(raw.branch_id) await assertCompanyEntity(env,'branches',raw.branch_id,companyId);
     if(raw.cost_center_id) await assertCompanyEntity(env,'cost_centers',raw.cost_center_id,companyId);
     if(raw.history_template_id) await assertCompanyEntity(env,'history_templates',raw.history_template_id,companyId);
-    items.push({line_no:no++,side,incidence,account_origin:origin,account_id:accountId,percentage:pct,branch_id:raw.branch_id||null,cost_center_id:raw.cost_center_id||null,history_template_id:raw.history_template_id||null,history_complement:cleanText(raw.history_complement,1000)});
+    items.push({
+      line_no:no++,side,incidence,account_origin:origin,account_id:accountId,percentage:pct,
+      branch_id:raw.branch_id||null,cost_center_id:raw.cost_center_id||null,
+      history_template_id:raw.history_template_id||null,history_complement:cleanText(raw.history_complement,1000),
+      formula_expression:formulaExpression,condition_expression:conditionExpression
+    });
   }
   let target=id;
   if(id){
@@ -3941,9 +3955,9 @@ async function saveMovementAccountingEvent(env,request,auth,companyId,id,body){
   const stmts=[env.DB.prepare(`DELETE FROM movement_accounting_event_items WHERE company_id=? AND event_id=?`).bind(companyId,target)];
   for(const x of items) stmts.push(env.DB.prepare(`
     INSERT INTO movement_accounting_event_items
-      (id,company_id,event_id,line_no,side,incidence,account_origin,account_id,percentage,branch_id,cost_center_id,history_template_id,history_complement)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
-  `).bind(uuid(),companyId,target,x.line_no,x.side,x.incidence,x.account_origin,x.account_id,x.percentage,x.branch_id,x.cost_center_id,x.history_template_id,x.history_complement));
+      (id,company_id,event_id,line_no,side,incidence,account_origin,account_id,percentage,branch_id,cost_center_id,history_template_id,history_complement,formula_expression,condition_expression)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+  `).bind(uuid(),companyId,target,x.line_no,x.side,x.incidence,x.account_origin,x.account_id,x.percentage,x.branch_id,x.cost_center_id,x.history_template_id,x.history_complement,x.formula_expression,x.condition_expression));
   await env.DB.batch(stmts);
   const after=await getMovementAccountingEvent(env,companyId,target);
   await audit(env,{companyId,userId:auth.user.id,action:id?'UPDATE':'CREATE',entity:'movement_accounting_event',entityId:target,after,request});
@@ -4006,54 +4020,215 @@ async function getNatureDefaults(env,companyId,natureId,side){
 
 function centsPercent(base,pct){ return Math.round(Number(base||0)*Number(pct||0)/100); }
 
+// ===== Motor seguro de fórmulas contábeis =====
+// Não usa eval/new Function. Aceita números, strings, variáveis, parênteses,
+// + - * / %, comparações (=, !=, <>, >, >=, <, <=) e lógica AND/OR/NOT.
+function accountingExpressionTokens(expression){
+  const src=String(expression||'').trim();
+  const out=[];let i=0;
+  while(i<src.length){
+    const ch=src[i];
+    if(/\s/.test(ch)){i++;continue;}
+    if(ch==='"'||ch==="'"){
+      const quote=ch;let v='';i++;
+      while(i<src.length){
+        if(src[i]===quote){i++;break;}
+        if(src[i]==='\\'&&i+1<src.length){v+=src[i+1];i+=2;continue;}
+        v+=src[i++];
+      }
+      out.push({type:'value',value:v});continue;
+    }
+    if(/\d/.test(ch)||((ch==='.'||ch===',')&&/\d/.test(src[i+1]||''))){
+      let s='';let sep=false;
+      while(i<src.length){
+        const c=src[i];
+        if(/\d/.test(c)){s+=c;i++;continue;}
+        if((c==='.'||c===',')&&!sep&&/\d/.test(src[i+1]||'')){s+='.';sep=true;i++;continue;}
+        break;
+      }
+      out.push({type:'value',value:Number(s)});continue;
+    }
+    if(/[A-Za-z_]/.test(ch)){
+      let s='';
+      while(i<src.length&&/[A-Za-z0-9_.]/.test(src[i]))s+=src[i++];
+      const u=s.toUpperCase();
+      if(u==='AND'||u==='E')out.push({type:'op',value:'&&'});
+      else if(u==='OR'||u==='OU')out.push({type:'op',value:'||'});
+      else if(u==='NOT'||u==='NAO')out.push({type:'op',value:'!'});
+      else if(u==='TRUE'||u==='VERDADEIRO')out.push({type:'value',value:true});
+      else if(u==='FALSE'||u==='FALSO')out.push({type:'value',value:false});
+      else out.push({type:'id',value:u});
+      continue;
+    }
+    const two=src.slice(i,i+2);
+    if(['>=','<=','!=','<>','==','&&','||'].includes(two)){out.push({type:'op',value:two});i+=2;continue;}
+    if(['+','-','*','/','%','(',')','>','<','=','!'].includes(ch)){out.push({type:ch==='('||ch===')'?ch:'op',value:ch});i++;continue;}
+    throw new HttpError(400,`Símbolo inválido na expressão contábil: ${ch}`,'INVALID_ACCOUNTING_EXPRESSION');
+  }
+  return out;
+}
+
+function accountingTruthy(v){
+  if(typeof v==='boolean')return v;
+  if(typeof v==='number')return Number.isFinite(v)&&v!==0;
+  if(v===null||v===undefined)return false;
+  const s=String(v).trim().toUpperCase();
+  return s!==''&&s!=='0'&&s!=='FALSE'&&s!=='FALSO';
+}
+
+function accountingNumber(v){
+  const n=Number(v);
+  if(!Number.isFinite(n)) throw new HttpError(400,`A expressão esperava um valor numérico, mas recebeu "${v}".`,'INVALID_ACCOUNTING_EXPRESSION');
+  return n;
+}
+
+function evaluateAccountingExpression(expression,context={}){
+  const tokens=accountingExpressionTokens(expression);let pos=0;
+  const peek=()=>tokens[pos];const take=()=>tokens[pos++];
+  const resolve=id=>{
+    if(Object.prototype.hasOwnProperty.call(context,id))return context[id];
+    throw new HttpError(400,`Variável contábil desconhecida: ${id}.`,'UNKNOWN_ACCOUNTING_VARIABLE');
+  };
+  const parsePrimary=()=>{
+    const t=take();
+    if(!t)throw new HttpError(400,'Expressão contábil incompleta.','INVALID_ACCOUNTING_EXPRESSION');
+    if(t.type==='value')return t.value;
+    if(t.type==='id')return resolve(t.value);
+    if(t.type==='('){const v=parseOr();const c=take();if(!c||c.type!==')')throw new HttpError(400,'Parênteses não fechados na expressão contábil.','INVALID_ACCOUNTING_EXPRESSION');return v;}
+    throw new HttpError(400,'Trecho inválido na expressão contábil.','INVALID_ACCOUNTING_EXPRESSION');
+  };
+  const parseUnary=()=>{
+    const t=peek();
+    if(t?.type==='op'&&['!','+','-'].includes(t.value)){
+      take();const v=parseUnary();
+      if(t.value==='!')return !accountingTruthy(v);
+      if(t.value==='+')return accountingNumber(v);
+      return -accountingNumber(v);
+    }
+    return parsePrimary();
+  };
+  const parseMul=()=>{let v=parseUnary();while(peek()?.type==='op'&&['*','/','%'].includes(peek().value)){const op=take().value,r=parseUnary(),a=accountingNumber(v),b=accountingNumber(r);if((op==='/'||op==='%')&&b===0)throw new HttpError(400,'Divisão por zero na fórmula contábil.','INVALID_ACCOUNTING_EXPRESSION');v=op==='*'?a*b:op==='/'?a/b:a%b;}return v;};
+  const parseAdd=()=>{let v=parseMul();while(peek()?.type==='op'&&['+','-'].includes(peek().value)){const op=take().value,r=parseMul();v=op==='+'?accountingNumber(v)+accountingNumber(r):accountingNumber(v)-accountingNumber(r);}return v;};
+  const compare=(a,b,op)=>{
+    if(['=','==','!=','<>'].includes(op)){
+      let eq;
+      if(typeof a==='number'&&typeof b==='number')eq=a===b;
+      else eq=String(a??'').toUpperCase()===String(b??'').toUpperCase();
+      return op==='!='||op==='<>'?!eq:eq;
+    }
+    const an=Number(a),bn=Number(b);
+    if(Number.isFinite(an)&&Number.isFinite(bn))return op==='>'?an>bn:op==='>='?an>=bn:op==='<'?an<bn:an<=bn;
+    const as=String(a??'').toUpperCase(),bs=String(b??'').toUpperCase();
+    return op==='>'?as>bs:op==='>='?as>=bs:op==='<'?as<bs:as<=bs;
+  };
+  const parseCompare=()=>{let v=parseAdd();while(peek()?.type==='op'&&['=','==','!=','<>','>','>=','<','<='].includes(peek().value)){const op=take().value,r=parseAdd();v=compare(v,r,op);}return v;};
+  const parseAnd=()=>{let v=parseCompare();while(peek()?.type==='op'&&peek().value==='&&'){take();const r=parseCompare();v=accountingTruthy(v)&&accountingTruthy(r);}return v;};
+  const parseOr=()=>{let v=parseAnd();while(peek()?.type==='op'&&peek().value==='||'){take();const r=parseAnd();v=accountingTruthy(v)||accountingTruthy(r);}return v;};
+  const value=parseOr();
+  if(pos!==tokens.length)throw new HttpError(400,'Não foi possível interpretar toda a expressão contábil.','INVALID_ACCOUNTING_EXPRESSION');
+  return value;
+}
+
+function accountingSampleContext(){
+  return {
+    TOTAL:100000,ITENS:90000,FRETE:10000,PERCENTUAL:100,
+    DOCUMENTO:'NF-001',FORNECEDOR:'FORNECEDOR TESTE',
+    'ITEM.VALOR':50000,'ITEM.PRECO':25000,'ITEM.QUANTIDADE':2,
+    'ITEM.TIPO':'PRODUCT','ITEM.NATUREZA':'1.01','ITEM.CODIGO':'001'
+  };
+}
+
+function validateAccountingExpression(expression,kind='formula'){
+  const value=evaluateAccountingExpression(expression,accountingSampleContext());
+  if(kind==='formula'&&!Number.isFinite(Number(value)))throw new HttpError(400,'A fórmula contábil deve resultar em um número.','INVALID_ACCOUNTING_FORMULA');
+  return true;
+}
+
+function accountingContext({itemsSubtotal,freightCents,totalCents,documentNumber,supplierName,pct,item=null}){
+  const ctx={
+    TOTAL:Number(totalCents||0),ITENS:Number(itemsSubtotal||0),FRETE:Number(freightCents||0),PERCENTUAL:Number(pct||100),
+    DOCUMENTO:String(documentNumber||''),FORNECEDOR:String(supplierName||'')
+  };
+  if(item){
+    const oi=item.oi||{};
+    ctx['ITEM.VALOR']=Math.round(Number(oi.unit_price_cents||0)*Number(item.q||0)/1000);
+    ctx['ITEM.PRECO']=Number(oi.unit_price_cents||0);
+    ctx['ITEM.QUANTIDADE']=Number(item.q||0)/1000;
+    ctx['ITEM.TIPO']=String(oi.item_type||'');
+    ctx['ITEM.NATUREZA']=String(oi.nature_code||'');
+    ctx['ITEM.CODIGO']=String(oi.product_code||'');
+  }else{
+    ctx['ITEM.VALOR']=0;ctx['ITEM.PRECO']=0;ctx['ITEM.QUANTIDADE']=0;
+    ctx['ITEM.TIPO']='';ctx['ITEM.NATUREZA']='';ctx['ITEM.CODIGO']='';
+  }
+  return ctx;
+}
+
+function defaultAccountingFormula(rule){
+  if(rule.incidence==='ITEM')return 'ITEM.VALOR';
+  if(rule.incidence==='ITEMS')return 'ITENS';
+  if(rule.incidence==='FREIGHT')return 'FRETE';
+  return 'TOTAL';
+}
+
+function expressionUsesItem(rule){
+  return rule.account_origin==='NATURE'||rule.incidence==='ITEM'||/\bITEM\./i.test(String(rule.formula_expression||''))||/\bITEM\./i.test(String(rule.condition_expression||''));
+}
+
+function evaluateRuleAmount(rule,ctx,event){
+  if(rule.condition_expression&&!accountingTruthy(evaluateAccountingExpression(rule.condition_expression,ctx)))return 0;
+  const expr=rule.formula_expression||defaultAccountingFormula(rule);
+  const raw=accountingNumber(evaluateAccountingExpression(expr,ctx));
+  const pct=Number(event.use_percentage)?Number(rule.percentage||100):100;
+  return centsPercent(Math.round(raw),pct);
+}
+
 async function buildRmAccountingLines(env,companyId,{eventId,receiptItems,itemsSubtotal,freightCents,totalCents,branchId,documentNumber,supplierName}){
   const event=await getMovementAccountingEvent(env,companyId,eventId);
   if(!event.active) throw new HttpError(409,'O Evento Contábil do movimento está inativo.','INACTIVE_ACCOUNTING_EVENT');
   const lines=[];
   for(const rule of event.items){
-    const pct=Number(rule.percentage||100);
-    if(rule.account_origin==='NATURE'){
+    const pct=Number(event.use_percentage)?Number(rule.percentage||100):100;
+    const itemScoped=expressionUsesItem(rule);
+
+    if(itemScoped){
       for(const x of receiptItems){
-        if(!x.oi.budget_nature_id) throw new HttpError(409,`O item ${x.oi.description} não possui Natureza Orçamentária/Financeira.`,'NATURE_NOT_CONFIGURED');
-        const defaults=await getNatureDefaults(env,companyId,x.oi.budget_nature_id,rule.side);
-        if(!defaults.length) throw new HttpError(409,`A Natureza do item ${x.oi.description} não possui default contábil de ${rule.side==='D'?'débito':'crédito'}.`,'NATURE_DEFAULT_NOT_CONFIGURED');
-        const itemAmount=Math.round(Number(x.oi.unit_price_cents)*Number(x.q)/1000);
-        for(const d of defaults){
-          const amount=centsPercent(centsPercent(itemAmount,pct),Number(d.percentage||100));
-          if(amount<=0) continue;
+        const ctx=accountingContext({itemsSubtotal,freightCents,totalCents,documentNumber,supplierName,pct,item:x});
+        const ruleAmount=evaluateRuleAmount(rule,ctx,event);
+        if(ruleAmount<=0)continue;
+
+        if(rule.account_origin==='NATURE'){
+          if(!x.oi.budget_nature_id) throw new HttpError(409,`O item ${x.oi.description} não possui Natureza Orçamentária/Financeira.`,'NATURE_NOT_CONFIGURED');
+          const defaults=await getNatureDefaults(env,companyId,x.oi.budget_nature_id,rule.side);
+          if(!defaults.length) throw new HttpError(409,`A Natureza do item ${x.oi.description} não possui default contábil de ${rule.side==='D'?'débito':'crédito'}.`,'NATURE_DEFAULT_NOT_CONFIGURED');
+          for(const d of defaults){
+            const amount=centsPercent(ruleAmount,Number(d.percentage||100));
+            if(amount<=0)continue;
+            lines.push({
+              side:rule.side,account_id:d.account_id,amount:centsToMoney(amount),
+              branch_id:rule.branch_id||d.branch_id||branchId||null,
+              cost_center_id:rule.cost_center_id||d.cost_center_id||x.oi.cost_center_id||null,
+              history_template_id:rule.history_template_id||d.history_template_id||null,
+              history_complement:rule.history_complement||d.history_complement||`Compra ${documentNumber||''} - ${supplierName||''}`
+            });
+          }
+        }else{
           lines.push({
-            side:rule.side,account_id:d.account_id,amount:centsToMoney(amount),
-            branch_id:rule.branch_id||d.branch_id||branchId||null,
-            cost_center_id:rule.cost_center_id||d.cost_center_id||x.oi.cost_center_id||null,
-            history_template_id:rule.history_template_id||d.history_template_id||null,
-            history_complement:rule.history_complement||d.history_complement||`Compra ${documentNumber||''} - ${supplierName||''}`
+            side:rule.side,account_id:rule.account_id,amount:centsToMoney(ruleAmount),
+            branch_id:rule.branch_id||branchId||null,
+            cost_center_id:rule.cost_center_id||x.oi.cost_center_id||null,
+            history_template_id:rule.history_template_id||null,
+            history_complement:rule.history_complement||`Compra ${documentNumber||''} - ${supplierName||''}`
           });
         }
       }
       continue;
     }
 
-    let base=0;
-    if(rule.incidence==='TOTAL') base=totalCents;
-    if(rule.incidence==='ITEMS') base=itemsSubtotal;
-    if(rule.incidence==='FREIGHT') base=freightCents;
-    if(rule.incidence==='ITEM'){
-      for(const x of receiptItems){
-        const itemAmount=Math.round(Number(x.oi.unit_price_cents)*Number(x.q)/1000);
-        const amount=centsPercent(itemAmount,pct);
-        if(amount<=0) continue;
-        lines.push({
-          side:rule.side,account_id:rule.account_id,amount:centsToMoney(amount),
-          branch_id:rule.branch_id||branchId||null,
-          cost_center_id:rule.cost_center_id||x.oi.cost_center_id||null,
-          history_template_id:rule.history_template_id||null,
-          history_complement:rule.history_complement||`Compra ${documentNumber||''} - ${supplierName||''}`
-        });
-      }
-      continue;
-    }
-    const amount=centsPercent(base,pct);
-    if(amount<=0) continue;
+    const ctx=accountingContext({itemsSubtotal,freightCents,totalCents,documentNumber,supplierName,pct});
+    const amount=evaluateRuleAmount(rule,ctx,event);
+    if(amount<=0)continue;
+    if(rule.account_origin==='NATURE') throw new HttpError(409,'Uma regra com conta pela Natureza precisa usar ITEM na fórmula/condição ou incidência Item.','ACCOUNTING_EVENT_SCOPE');
     lines.push({
       side:rule.side,account_id:rule.account_id,amount:centsToMoney(amount),
       branch_id:rule.branch_id||branchId||null,cost_center_id:rule.cost_center_id||null,
@@ -4061,7 +4236,7 @@ async function buildRmAccountingLines(env,companyId,{eventId,receiptItems,itemsS
       history_complement:rule.history_complement||`Compra ${documentNumber||''} - ${supplierName||''}`
     });
   }
-  if(!lines.length) throw new HttpError(409,'O Evento Contábil não gerou partidas para este movimento.','ACCOUNTING_EVENT_EMPTY');
+  if(!lines.length) throw new HttpError(409,'O Evento Contábil não gerou partidas para este movimento. Verifique fórmulas e condições.','ACCOUNTING_EVENT_EMPTY');
   return lines;
 }
 
