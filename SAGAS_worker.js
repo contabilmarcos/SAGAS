@@ -4527,6 +4527,201 @@ async function prepareReceiptIntegrations(env,auth,companyId,{order,orderDetails
   return {settings,stmts,meta,total_cents:totalCents,due_date:finalDue};
 }
 
+
+
+// ===== financial-accounting-events.js =====
+const FINANCIAL_ACCOUNTING_EVENT_PERMISSION_DEFS=[
+  ["financial.accounting_event.read","Consultar eventos contábeis financeiros"],
+  ["financial.accounting_event.manage","Gerenciar eventos contábeis financeiros"]
+];
+
+async function ensureFinancialAccountingEventSchema(env){
+  await env.DB.batch([
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS financial_accounting_events (
+      id TEXT PRIMARY KEY,
+      company_id TEXT NOT NULL,
+      number INTEGER NOT NULL,
+      code TEXT NOT NULL,
+      name TEXT NOT NULL,
+      process TEXT NOT NULL DEFAULT 'BAIXA',
+      value_mode TEXT NOT NULL DEFAULT 'FORMULA',
+      cost_center_apply TEXT NOT NULL DEFAULT 'DEBIT_CREDIT',
+      search_branch_json TEXT,
+      search_cost_center_json TEXT,
+      group_entry INTEGER NOT NULL DEFAULT 1,
+      allow_zero INTEGER NOT NULL DEFAULT 0,
+      no_auto_adjust INTEGER NOT NULL DEFAULT 0,
+      no_round_formula INTEGER NOT NULL DEFAULT 1,
+      active INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(company_id,number),
+      UNIQUE(company_id,code)
+    )`),
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS financial_accounting_event_items (
+      id TEXT PRIMARY KEY,
+      company_id TEXT NOT NULL,
+      event_id TEXT NOT NULL,
+      line_no INTEGER NOT NULL,
+      side TEXT NOT NULL,
+      description TEXT NOT NULL,
+      apply_to TEXT NOT NULL DEFAULT 'BAIXA',
+      account_origin TEXT NOT NULL DEFAULT 'FIXED',
+      account_id TEXT,
+      default_search TEXT,
+      default_side TEXT,
+      formula TEXT,
+      tax_code TEXT,
+      account_classification TEXT,
+      percentage REAL,
+      branch_id TEXT,
+      department TEXT,
+      cost_center_id TEXT,
+      history_template_id TEXT,
+      history_complement TEXT,
+      elimination_company TEXT,
+      elimination_account_id TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(event_id,line_no)
+    )`),
+    env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_fin_acc_event_company ON financial_accounting_events(company_id,number)`),
+    env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_fin_acc_event_items ON financial_accounting_event_items(company_id,event_id,line_no)`)
+  ]);
+
+  for(const [code,description] of FINANCIAL_ACCOUNTING_EVENT_PERMISSION_DEFS){
+    const exists=await env.DB.prepare(`SELECT id FROM permissions WHERE code=?`).bind(code).first();
+    if(!exists) await env.DB.prepare(`INSERT INTO permissions (id,code,module,description) VALUES (?,?,'FINANCE',?)`).bind(uuid(),code,description).run();
+  }
+  await env.DB.prepare(`
+    INSERT OR IGNORE INTO role_permissions (role_id,permission_id)
+    SELECT r.id,p.id FROM roles r CROSS JOIN permissions p
+    WHERE r.code='ADMIN' AND p.code IN ('financial.accounting_event.read','financial.accounting_event.manage')
+  `).run();
+}
+
+function parseJsonArray(value){
+  try{const x=JSON.parse(value||'[]');return Array.isArray(x)?x:[]}catch{return []}
+}
+
+async function listFinancialAccountingEvents(env,companyId){
+  const r=await env.DB.prepare(`
+    SELECT e.*,
+      (SELECT COUNT(*) FROM financial_accounting_event_items i WHERE i.company_id=e.company_id AND i.event_id=e.id AND i.side='D') AS debit_count,
+      (SELECT COUNT(*) FROM financial_accounting_event_items i WHERE i.company_id=e.company_id AND i.event_id=e.id AND i.side='C') AS credit_count
+    FROM financial_accounting_events e
+    WHERE e.company_id=?
+    ORDER BY e.number,e.code
+  `).bind(companyId).all();
+  return (r.results||[]).map(x=>({...x,
+    search_branch:parseJsonArray(x.search_branch_json),
+    search_cost_center:parseJsonArray(x.search_cost_center_json)
+  }));
+}
+
+async function getFinancialAccountingEvent(env,companyId,id){
+  const e=await env.DB.prepare(`SELECT * FROM financial_accounting_events WHERE id=? AND company_id=?`).bind(id,companyId).first();
+  if(!e) throw new HttpError(404,'Evento Contábil Financeiro não encontrado.','NOT_FOUND');
+  const r=await env.DB.prepare(`
+    SELECT i.*,a.code AS account_code,a.name AS account_name,
+           b.code AS branch_code,b.name AS branch_name,
+           cc.code AS cost_center_code,cc.name AS cost_center_name,
+           h.code AS history_code,h.description AS history_description,
+           ea.code AS elimination_account_code,ea.name AS elimination_account_name
+    FROM financial_accounting_event_items i
+    LEFT JOIN accounts a ON a.id=i.account_id
+    LEFT JOIN branches b ON b.id=i.branch_id
+    LEFT JOIN cost_centers cc ON cc.id=i.cost_center_id
+    LEFT JOIN history_templates h ON h.id=i.history_template_id
+    LEFT JOIN accounts ea ON ea.id=i.elimination_account_id
+    WHERE i.company_id=? AND i.event_id=?
+    ORDER BY i.side,i.line_no
+  `).bind(companyId,id).all();
+  return {...e,
+    search_branch:parseJsonArray(e.search_branch_json),
+    search_cost_center:parseJsonArray(e.search_cost_center_json),
+    items:r.results||[]
+  };
+}
+
+async function saveFinancialAccountingEvent(env,request,auth,companyId,id,body){
+  await requirePermission(env,auth.user.id,companyId,'financial.accounting_event.manage');
+  const number=Number(required(body.number,'número'));
+  if(!Number.isInteger(number)||number<=0) throw new HttpError(400,'Número do evento inválido.','VALIDATION_ERROR');
+  const code=cleanText(required(body.code,'código do evento'),40);
+  const name=cleanText(required(body.name,'nome do evento'),300);
+  const process=String(body.process||'BAIXA').toUpperCase();
+  const allowedProcess=new Set(['BAIXA','EXTRATO_CAIXA','APLICACAO_FINANCEIRA','LANCAMENTO','OUTRO']);
+  if(!allowedProcess.has(process)) throw new HttpError(400,'Processo financeiro inválido.','VALIDATION_ERROR');
+  const valueMode=String(body.value_mode||'FORMULA').toUpperCase()==='PERCENTAGE'?'PERCENTAGE':'FORMULA';
+  const searchBranch=Array.isArray(body.search_branch)?body.search_branch.map(String):[];
+  const searchCC=Array.isArray(body.search_cost_center)?body.search_cost_center.map(String):[];
+  const rawItems=Array.isArray(body.items)?body.items:[];
+  const items=[];let lineNo=1;
+  for(const raw of rawItems){
+    const side=String(raw.side||'').toUpperCase();
+    if(!['D','C'].includes(side)) throw new HttpError(400,'Débito/Crédito inválido em item do evento.','VALIDATION_ERROR');
+    const origin=String(raw.account_origin||'FIXED').toUpperCase();
+    if(!['FIXED','TABLE_DEFAULT'].includes(origin)) throw new HttpError(400,'Origem da conta inválida.','VALIDATION_ERROR');
+    let accountId=cleanText(raw.account_id,80)||null;
+    if(origin==='FIXED') accountId=(await assertAnalyticActiveAccount(env,companyId,required(accountId,'conta contábil do item'),'a conta contábil do item')).id;
+    else accountId=null;
+    if(raw.branch_id) await assertCompanyEntity(env,'branches',raw.branch_id,companyId);
+    if(raw.cost_center_id) await assertCompanyEntity(env,'cost_centers',raw.cost_center_id,companyId);
+    if(raw.history_template_id) await assertCompanyEntity(env,'history_templates',raw.history_template_id,companyId);
+    let eliminationAccountId=cleanText(raw.elimination_account_id,80)||null;
+    if(eliminationAccountId) eliminationAccountId=(await assertAnalyticActiveAccount(env,companyId,eliminationAccountId,'a conta contra partida da eliminação')).id;
+    const pct=raw.percentage===undefined||raw.percentage===null||String(raw.percentage).trim()===''?null:Number(raw.percentage);
+    if(pct!==null&&(!Number.isFinite(pct)||pct<0||pct>100)) throw new HttpError(400,'Percentual do item inválido.','VALIDATION_ERROR');
+    items.push({
+      line_no:lineNo++,side,
+      description:cleanText(required(raw.description,'descrição do item'),300),
+      apply_to:cleanText(raw.apply_to||process,60),
+      account_origin:origin,account_id:accountId,
+      default_search:cleanText(raw.default_search,80),default_side:cleanText(raw.default_side,20),
+      formula:cleanText(raw.formula,500),tax_code:cleanText(raw.tax_code,80),account_classification:cleanText(raw.account_classification,80),percentage:pct,
+      branch_id:raw.branch_id||null,department:cleanText(raw.department,120),cost_center_id:raw.cost_center_id||null,
+      history_template_id:raw.history_template_id||null,history_complement:cleanText(raw.history_complement,1000),
+      elimination_company:cleanText(raw.elimination_company,80),elimination_account_id:eliminationAccountId
+    });
+  }
+  if(!items.length) throw new HttpError(400,'Inclua ao menos um item de débito ou crédito.','VALIDATION_ERROR');
+  if(!items.some(x=>x.side==='D')||!items.some(x=>x.side==='C')) throw new HttpError(400,'O evento precisa possuir ao menos um item de Débito e um de Crédito.','VALIDATION_ERROR');
+
+  const duplicate=await env.DB.prepare(`SELECT id FROM financial_accounting_events WHERE company_id=? AND (number=? OR code=?) AND id<>? LIMIT 1`).bind(companyId,number,code,id||'').first();
+  if(duplicate) throw new HttpError(409,'Já existe Evento Contábil Financeiro com este número ou código.','DUPLICATE_EVENT');
+
+  let target=id;
+  const values=[number,code,name,process,valueMode,cleanText(body.cost_center_apply||'DEBIT_CREDIT',60),JSON.stringify(searchBranch),JSON.stringify(searchCC),bool01(body.group_entry,1),bool01(body.allow_zero,0),bool01(body.no_auto_adjust,0),bool01(body.no_round_formula,1),bool01(body.active,1)];
+  if(id){
+    await getFinancialAccountingEvent(env,companyId,id);
+    await env.DB.prepare(`UPDATE financial_accounting_events SET number=?,code=?,name=?,process=?,value_mode=?,cost_center_apply=?,search_branch_json=?,search_cost_center_json=?,group_entry=?,allow_zero=?,no_auto_adjust=?,no_round_formula=?,active=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND company_id=?`).bind(...values,id,companyId).run();
+  }else{
+    target=uuid();
+    await env.DB.prepare(`INSERT INTO financial_accounting_events (id,company_id,number,code,name,process,value_mode,cost_center_apply,search_branch_json,search_cost_center_json,group_entry,allow_zero,no_auto_adjust,no_round_formula,active) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).bind(target,companyId,...values).run();
+  }
+  const stmts=[env.DB.prepare(`DELETE FROM financial_accounting_event_items WHERE company_id=? AND event_id=?`).bind(companyId,target)];
+  for(const x of items) stmts.push(env.DB.prepare(`
+    INSERT INTO financial_accounting_event_items
+      (id,company_id,event_id,line_no,side,description,apply_to,account_origin,account_id,default_search,default_side,formula,tax_code,account_classification,percentage,branch_id,department,cost_center_id,history_template_id,history_complement,elimination_company,elimination_account_id)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+  `).bind(uuid(),companyId,target,x.line_no,x.side,x.description,x.apply_to,x.account_origin,x.account_id,x.default_search,x.default_side,x.formula,x.tax_code,x.account_classification,x.percentage,x.branch_id,x.department,x.cost_center_id,x.history_template_id,x.history_complement,x.elimination_company,x.elimination_account_id));
+  await env.DB.batch(stmts);
+  const after=await getFinancialAccountingEvent(env,companyId,target);
+  await audit(env,{companyId,userId:auth.user.id,action:id?'UPDATE':'CREATE',entity:'financial_accounting_event',entityId:target,after:{number,code,name,process},request});
+  return after;
+}
+
+async function deleteFinancialAccountingEvent(env,request,auth,companyId,id){
+  await requirePermission(env,auth.user.id,companyId,'financial.accounting_event.manage');
+  const before=await getFinancialAccountingEvent(env,companyId,id);
+  await env.DB.batch([
+    env.DB.prepare(`DELETE FROM financial_accounting_event_items WHERE company_id=? AND event_id=?`).bind(companyId,id),
+    env.DB.prepare(`DELETE FROM financial_accounting_events WHERE company_id=? AND id=?`).bind(companyId,id)
+  ]);
+  await audit(env,{companyId,userId:auth.user.id,action:'DELETE',entity:'financial_accounting_event',entityId:id,before:{number:before.number,code:before.code,name:before.name},request});
+  return {deleted:true,id};
+}
+
 async function receiptIntegrationLinks(env,companyId,receiptId){
   const payable=await env.DB.prepare(`SELECT id,number,status,due_date,amount_cents,balance_cents FROM financial_payables WHERE company_id=? AND receipt_id=? LIMIT 1`).bind(companyId,receiptId).first();
   const entry=await env.DB.prepare(`SELECT id,status,official_status,total_debit_cents FROM journal_entries WHERE company_id=? AND source_module='PURCHASES' AND source_reference=? ORDER BY created_at DESC LIMIT 1`).bind(companyId,`RECEIPT:${receiptId}`).first();
@@ -4585,6 +4780,10 @@ async function route(request, env) {
     await ensurePurchasingSchema(env);
     await ensurePurchaseIntegrationSchema(env);
     await ensureRmPurchasingSchema(env);
+  }
+
+  if (path.startsWith("/api/financial-accounting-events") || path==="/api/auth/permissions") {
+    await ensureFinancialAccountingEventSchema(env);
   }
 
   if (method==="GET" && path==="/api/auth/permissions") return ok({permissions:await getEffectivePermissions(env,auth.user.id,companyId)});
@@ -4795,6 +4994,13 @@ async function route(request, env) {
   // ---- Integração Compras / Financeiro / Contábil ----
   if(method==="GET"&&path==="/api/purchase-integration-settings"){await requirePermission(env,auth.user.id,companyId,"purchasing.integration.read");return ok({settings:await getPurchaseIntegrationSettings(env,companyId)});}
   if(method==="PUT"&&path==="/api/purchase-integration-settings")return ok({settings:await savePurchaseIntegrationSettings(env,request,auth,companyId,await readJson(request))});
+
+  if(method==="GET"&&path==="/api/financial-accounting-events"){await requirePermission(env,auth.user.id,companyId,"financial.accounting_event.read");return ok({events:await listFinancialAccountingEvents(env,companyId)});}
+  if(method==="POST"&&path==="/api/financial-accounting-events")return ok({event:await saveFinancialAccountingEvent(env,request,auth,companyId,null,await readJson(request))},201);
+  p=routeMatch(path,"/api/financial-accounting-events/:id");
+  if(p&&method==="GET"){await requirePermission(env,auth.user.id,companyId,"financial.accounting_event.read");return ok({event:await getFinancialAccountingEvent(env,companyId,p.id)});}
+  if(p&&method==="PATCH")return ok({event:await saveFinancialAccountingEvent(env,request,auth,companyId,p.id,await readJson(request))});
+  if(p&&method==="DELETE")return ok(await deleteFinancialAccountingEvent(env,request,auth,companyId,p.id));
 
   if(method==="GET"&&path==="/api/financial-payables"){await requirePermission(env,auth.user.id,companyId,"financial.payable.read");return ok({payables:await listFinancialPayables(env,companyId)});}
   p=routeMatch(path,"/api/financial-payables/:id/pay"); if(p&&method==="POST")return ok({payable:await payFinancialPayable(env,request,auth,companyId,p.id,await readJson(request))});
