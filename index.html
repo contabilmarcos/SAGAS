@@ -1,11 +1,10 @@
-
 <!DOCTYPE html>
-<!-- SAGAS v26 - Layout modular no padrão visual do projeto de referência; funcionalidades preservadas da v25 -->
+<!-- SAGAS v27 - Lançamentos contábeis no modelo RM: visualização por lote; Lote 0 oficial separado -->
 <html lang="pt-BR">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>SAGAS · Gestão Integrada</title>
+  <title>SAGAS · Gestão Integrada · v27</title>
   <style>
 :root{--blue:#1557d6;--blue2:#1048b4;--blueSoft:#edf3ff;--bg:#f5f7fb;--surface:#fff;--line:#dfe5ee;--line2:#edf1f5;--text:#172033;--muted:#697386;--danger:#c53d32;--success:#207a50;--warn:#956200;--side:238px;--shadow:0 18px 55px rgba(20,28,45,.16)}
 *{box-sizing:border-box}html,body{margin:0;min-height:100%;font-family:Segoe UI,Inter,Arial,sans-serif;background:var(--bg);color:var(--text)}button,input,select,textarea{font:inherit}button{cursor:pointer}.hidden{display:none!important}.muted{color:var(--muted)}
@@ -2827,7 +2826,7 @@ setInterval(()=>checkSessionAccess(),30000);
   const pageDef={
     companies:{label:'Empresas',type:'grid'},
     'branches-admin':{label:'Filiais',type:'grid'},users:{label:'Usuários',type:'people'},roles:{label:'Perfis e Permissões',type:'people'},
-    accounts:{label:'Plano de Contas',type:'book'},'cost-centers':{label:'Centros de Custo',type:'people'},history:{label:'Históricos Padrão',type:'doc'},periods:{label:'Períodos Contábeis',type:'doc'},batches:{label:'Lotes',type:'grid'},entries:{label:'Lançamentos',type:'file'},
+    accounts:{label:'Plano de Contas',type:'book'},'cost-centers':{label:'Centros de Custo',type:'people'},history:{label:'Históricos Padrão',type:'doc'},periods:{label:'Períodos Contábeis',type:'doc'},batches:{label:'Lotes',type:'grid'},entries:{label:'Lançamento',type:'file'},
     'movement-types':{label:'Tipos de Movimento',type:'grid'},'budget-natures':{label:'Naturezas Orçamentárias',type:'calc'},'movement-events':{label:'Eventos Contábeis',type:'doc'},'purchase-products':{label:'Produtos / Serviços',type:'doc'},'purchase-suppliers':{label:'Fornecedores',type:'people'},
     'purchase-requests':{label:'Solicitações',type:'doc'},'purchase-quotations':{label:'Cotações',type:'calc'},'purchase-orders':{label:'Ordens de Compra',type:'grid'},'purchase-receipts':{label:'Recebimentos',type:'file'},'stock-balances':{label:'Estoque Atual',type:'grid'},
     'financial-payables':{label:'Contas a Pagar',type:'money'}
@@ -2837,7 +2836,7 @@ setInterval(()=>checkSessionAccess(),30000);
     'Administração':{icon:'people',tabs:{'Cadastros':[['Administração',['companies','branches-admin','users','roles']]]}},
     'Gestão Contábil':{icon:'file',tabs:{
       'Cadastros':[['Cadastros',['accounts','cost-centers','history']]],
-      'Lançamentos':[['Movimentação Contábil',['periods','batches','entries']]]
+      'Escrituração Contábil':[['Operações Contábeis',['periods','batches','entries']]]
     }},
     'Gestão de Estoque, Compras e Faturamento':{icon:'grid',tabs:{
       'Cadastros':[['Estoque, Compras e Faturamento',['movement-types','purchase-products','purchase-suppliers']],['Financeiros',['budget-natures']],['Contábeis',['movement-events']]],
@@ -2913,7 +2912,7 @@ setInterval(()=>checkSessionAccess(),30000);
       const visible=pages.filter(allowed);if(!visible.length)return;
       const g=document.createElement('div');g.className='sagas-group';
       const gi=document.createElement('div');gi.className='sagas-group-items';
-      visible.forEach(p=>{const d=pageDef[p];const b=document.createElement('button');b.className='sagas-ribbon-btn'+(d.label.length>18?' wide':'');b.dataset.page=p;b.innerHTML=`<span class="sagas-ribbon-icon">${icon(d.type)}</span><span class="sagas-ribbon-label">${d.label}</span>`;b.onclick=()=>openPage(p);gi.appendChild(b)});
+      visible.forEach(p=>{const d=pageDef[p];const b=document.createElement('button');b.className='sagas-ribbon-btn'+(d.label.length>18?' wide':'');b.dataset.page=p;b.innerHTML=`<span class="sagas-ribbon-icon">${icon(d.type)}</span><span class="sagas-ribbon-label">${d.label}</span>`;b.onclick=()=>{if(p==='entries')window.__sagasEntryBatchContext='official';openPage(p)};gi.appendChild(b)});
       const gt=document.createElement('div');gt.className='sagas-group-title';gt.textContent=title;g.append(gi,gt);area.appendChild(g);
     });
   }
@@ -2995,5 +2994,222 @@ setInterval(()=>checkSessionAccess(),30000);
 })();
 </script>
 
+
+<style id="sagas-rm-accounting-grid-v27">
+/* ===== SAGAS v27 · Lotes e Lançamentos Contábeis no mesmo modelo do projeto RM ===== */
+.sagas-rm-list-page{height:100%;min-height:0;display:flex;flex-direction:column;background:#fff;overflow:hidden;font:11px "Segoe UI",Tahoma,Arial,sans-serif;color:#253941}
+.sagas-rm-plan-toolbar{height:31px;min-height:31px;border-bottom:1px solid #aeb7bc;background:#f7f8f8;display:flex;align-items:center;gap:2px;padding:2px 5px;position:relative;z-index:8}
+.sagas-rm-pt-btn{height:25px;min-width:25px;border:1px solid transparent;background:transparent;border-radius:2px;color:#197d92;display:inline-flex;align-items:center;justify-content:center;gap:4px;padding:0 5px;cursor:pointer;font-size:11px}
+.sagas-rm-pt-btn:hover{border-color:#b7cbd2;background:#eaf3f6}.sagas-rm-pt-btn:disabled{opacity:.35;cursor:default;background:transparent;border-color:transparent}.sagas-rm-pt-btn.text{color:#233b43;min-width:auto}.sagas-rm-sep{height:19px;width:1px;background:#c8ced1;margin:0 2px}.sagas-rm-count{font-weight:600;color:#243c44;padding:0 6px;white-space:nowrap}.sagas-rm-search{height:24px;width:0;opacity:0;padding:0;border:0;transition:.15s;outline:none;font:10px "Segoe UI"}.sagas-rm-search.show{width:210px;opacity:1;border:1px solid #9eb5be;padding:0 6px;background:#fff}
+.sagas-rm-layoutbar{height:30px;min-height:30px;display:flex;align-items:center;gap:6px;padding:2px 6px;border-bottom:1px solid #c4cbcf;background:#fafafa;color:#167c92}.sagas-rm-layoutbar button{height:22px;border:1px solid transparent;background:transparent;color:#167c92;cursor:pointer}.sagas-rm-layoutbar button:hover{background:#e8f1f4;border-color:#c1d3da}
+.sagas-rm-grid-wrap{flex:1;min-height:0;overflow:auto;background:#fff;padding-right:0}.sagas-rm-grid{border-collapse:collapse;width:100%;min-width:1220px;font-size:10px;table-layout:auto}.sagas-rm-grid th{height:27px;background:#fff;border-right:1px solid #c2c9cc;border-bottom:1px solid #aeb8bc;text-align:left;padding:3px 6px;font-weight:500;color:#176f83;white-space:nowrap;position:sticky;top:0;z-index:2}.sagas-rm-grid td{height:25px;border-right:1px solid #d1d6d9;border-bottom:1px solid #d8dcde;padding:3px 6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;background:#fff}.sagas-rm-grid tr:nth-child(even) td{background:#f1f1f1}.sagas-rm-grid tr:hover td{background:#edf6f8}.sagas-rm-grid tr.selected td{background:#d8e9ef!important}.sagas-rm-grid .check{width:30px;text-align:center}.sagas-rm-grid .center{text-align:center}.sagas-rm-grid .num{text-align:right;font-variant-numeric:tabular-nums}.sagas-rm-grid .origin{width:42px;text-align:center;color:#1391a6}.sagas-rm-grid .entry-id{font-weight:700;text-align:center;max-width:118px}
+.sagas-rm-filter-row td{height:23px;background:#fff!important;color:#65757b;padding:1px 6px}.sagas-rm-filter-row span{color:#88969b}.sagas-rm-entries-bottom{height:31px;min-height:31px;border-top:1px solid #bfc6ca;background:#fafafa;display:flex;align-items:center;gap:10px;padding:0 12px;font-size:10px}.sagas-rm-entries-bottom .sum{display:flex;gap:8px;border-right:1px solid #c9ced1;padding-right:16px}.sagas-rm-entries-bottom b{font-size:11px}.sagas-rm-balance-ok{color:#168a4e}.sagas-rm-balance-bad{color:#b94736}
+.sagas-rm-process-menu{position:absolute;top:29px;right:110px;z-index:30;min-width:190px;background:#fff;border:1px solid #aeb8bc;box-shadow:0 4px 12px rgba(0,0,0,.16);display:none}.sagas-rm-process-menu.show{display:block}.sagas-rm-process-menu button{display:block;width:100%;height:29px;text-align:left;border:0;background:#fff;padding:0 9px;cursor:pointer;font-size:10px;color:#253941}.sagas-rm-process-menu button:hover{background:#e8f3f6}
+#app .content:has(.sagas-rm-list-page){padding:0!important;overflow:hidden!important}
+@media(max-width:900px){.sagas-rm-grid{min-width:1050px}.sagas-rm-search.show{width:150px}}
+</style>
+<script id="sagas-rm-accounting-grid-script-v27">
+(()=>{
+  window.__sagasEntryBatchContext=window.__sagasEntryBatchContext||'official';
+  window.__sagasSelectedEntryId=null;
+  window.__sagasSelectedBatchId=null;
+  window.__sagasRmEntryDetails=[];
+
+  const shortEntryId=id=>String(id||'').split('-')[0].toUpperCase();
+  const rmMoneyValue=v=>Number(v||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
+
+  async function loadEntryDetails(items){
+    const out=[];
+    for(let i=0;i<items.length;i+=20){
+      const group=items.slice(i,i+20);
+      const got=await Promise.all(group.map(async x=>{
+        try{return (await api(`/api/journal-entries/${x.id}`)).entry}catch{return {...x,lines:[]}}
+      }));
+      out.push(...got);
+    }
+    return out;
+  }
+
+  function historyComplement(line){
+    return line?.history_complement||'';
+  }
+
+  function entryGridRows(entries){
+    const rows=[];
+    entries.forEach(e=>{
+      const lines=e.lines?.length?e.lines:[{line_no:1,side:'',amount:e.total_debit||0,document_number:e.document_number||'',history_complement:'',cost_center_name:'',account_name:'',account_reduced_code:''}];
+      lines.forEach((l,idx)=>rows.push({e,l,first:idx===0}));
+    });
+    return rows;
+  }
+
+  function applyEntrySelection(){
+    document.querySelectorAll('#sagasRmEntryBody tr[data-entry-id]').forEach(tr=>tr.classList.toggle('selected',tr.dataset.entryId===window.__sagasSelectedEntryId));
+    const ids=[...new Set(window.__sagasRmEntryDetails.map(x=>x.id))];
+    const idx=ids.indexOf(window.__sagasSelectedEntryId);
+    const c=document.getElementById('sagasRmEntryCount');if(c)c.textContent=`${idx>=0?idx+1:0}/${ids.length}`;
+  }
+
+  function moveEntrySelection(dir){
+    const ids=[...new Set(window.__sagasRmEntryDetails.map(x=>x.id))];if(!ids.length)return;
+    let i=ids.indexOf(window.__sagasSelectedEntryId);if(i<0)i=0;
+    if(dir==='first')i=0;else if(dir==='prev')i=Math.max(0,i-1);else if(dir==='next')i=Math.min(ids.length-1,i+1);else if(dir==='last')i=ids.length-1;
+    window.__sagasSelectedEntryId=ids[i];applyEntrySelection();
+    document.querySelector(`#sagasRmEntryBody tr[data-entry-id="${CSS.escape(ids[i])}"]`)?.scrollIntoView({block:'nearest'});
+  }
+
+  async function contextualEntryForm(editId=null,duplicateId=null){
+    const ctx=window.__sagasEntryBatchContext;
+    if(ctx==='official'||!ctx){
+      window.__sagasEntryBatchContext=null;
+      toast('Abra um lote de trabalho para incluir ou alterar lançamentos.');
+      await nav('batches');
+      return;
+    }
+    await entryForm(editId,duplicateId);
+    const f=document.getElementById('entryForm');if(!f)return;
+    const sel=f.querySelector('[name="batch_id"]');
+    if(sel&&[...sel.options].some(o=>o.value===String(ctx))){
+      sel.value=String(ctx);sel.disabled=true;
+      const hidden=document.createElement('input');hidden.type='hidden';hidden.name='batch_id';hidden.value=String(ctx);f.appendChild(hidden);
+    }
+  }
+
+  async function currentEntriesPayload(){
+    const ctx=window.__sagasEntryBatchContext||'official';
+    if(ctx==='official'){
+      const d=await api('/api/official-entries?limit=1000');
+      return {context:'official',title:'Lote 0 - Oficial',subtitle:'Lançamentos integrados à escrituração oficial',entries:d.entries||[],batch:null};
+    }
+    const d=await api(`/api/journal-batches/${ctx}`);
+    const b=d.batch;
+    return {context:'batch',title:`Lote ${b.code} - ${b.description}`,subtitle:`${b.period_code||''} • ${dateBR(b.start_date)} a ${dateBR(b.end_date)}`,entries:b.entries||[],batch:b};
+  }
+
+  renderEntries=async function(){
+    const payload=await currentEntriesPayload();
+    const entries=await loadEntryDetails(payload.entries);
+    window.__sagasRmEntryDetails=entries;
+    if(!entries.some(x=>x.id===window.__sagasSelectedEntryId))window.__sagasSelectedEntryId=null;
+
+    let debit=0,credit=0;
+    entries.forEach(e=>{debit+=Number(e.total_debit||0);credit+=Number(e.total_credit||0)});
+    const rows=entryGridRows(entries);
+    const working=payload.context==='batch';
+    const editable=working&&can('accounting.entry.edit');
+    const deletable=working&&can('accounting.entry.delete');
+    const creatable=working&&can('accounting.entry.create');
+
+    document.getElementById('pageTitle').textContent=payload.title;
+    document.getElementById('pageSub').textContent=payload.subtitle;
+    const cap=document.getElementById('sagasCaptionTitle');if(cap)cap.textContent=`Lançamentos Contábeis / ${payload.title} - SAGAS`;
+
+    document.getElementById('content').innerHTML=`<div class="sagas-rm-list-page">
+      <div class="sagas-rm-plan-toolbar">
+        <button class="sagas-rm-pt-btn" id="sagasRmEntryNew" title="Novo" ${creatable?'':'disabled'}>＋</button>
+        <button class="sagas-rm-pt-btn" id="sagasRmEntryEdit" title="Editar" ${editable?'':'disabled'}>✎</button>
+        <button class="sagas-rm-pt-btn" id="sagasRmEntryDelete" title="Excluir" ${deletable?'':'disabled'}>✖</button>
+        <button class="sagas-rm-pt-btn" id="sagasRmEntryRefresh" title="Atualizar">↻</button>
+        <span class="sagas-rm-sep"></span>
+        <button class="sagas-rm-pt-btn" data-rm-move="first">↑</button><button class="sagas-rm-pt-btn" data-rm-move="prev">⌃</button><button class="sagas-rm-pt-btn" data-rm-move="next">⌄</button><button class="sagas-rm-pt-btn" data-rm-move="last">↓</button>
+        <span class="sagas-rm-sep"></span>
+        <button class="sagas-rm-pt-btn" id="sagasRmEntrySearchBtn">⌕</button><input class="sagas-rm-search" id="sagasRmEntrySearch" placeholder="Pesquisar lançamento..."><span class="sagas-rm-count" id="sagasRmEntryCount">0/${entries.length}</span>
+        <span class="sagas-rm-sep"></span><button class="sagas-rm-pt-btn text">📎 Anexos⌄</button>
+        ${working?`<button class="sagas-rm-pt-btn text" id="sagasRmProcesses">⚙ Processos⌄</button><div class="sagas-rm-process-menu" id="sagasRmProcessMenu"><button id="sagasRmIntegrate">Integrar ao Lote 0</button><button id="sagasRmUnintegrate">Desfazer integração com o Lote 0</button></div>`:'<button class="sagas-rm-pt-btn text" disabled>⚙ Processos⌄</button>'}
+        <span class="sagas-rm-sep"></span><span>▼ [Filtro: TODOS]</span>
+        <span style="margin-left:auto;color:#607078;padding-right:6px">${working?`Lote ${esc(payload.batch.code)}`:'Lote 0 - Oficial'}</span>
+      </div>
+      <div class="sagas-rm-layoutbar"><span>Layout:</span><button>Marcos⌄</button><button>▦</button><button>▤</button><button>◧</button><button>◨</button>${working?'<button id="sagasRmBackLots" style="margin-left:auto">← Voltar aos Lotes</button>':''}</div>
+      <div class="sagas-rm-grid-wrap"><table class="sagas-rm-grid"><thead><tr>
+        <th class="check">[x]</th><th style="width:120px">ID Lançamento</th><th style="min-width:220px">Nome Centro de Custo</th><th style="width:95px">Data</th><th style="width:135px">Documento</th><th style="min-width:330px">Complemento</th><th style="width:120px">Valor (R$)</th><th style="min-width:230px">Descrição Débito</th><th style="min-width:230px">Descrição Crédito</th><th>Reduzido débito</th><th>Reduzido crédito</th>
+      </tr><tr class="sagas-rm-filter-row"><td>▼</td>${Array(10).fill('<td><span>=</span></td>').join('')}</tr></thead><tbody id="sagasRmEntryBody">
+        ${rows.length?rows.map(({e,l,first})=>`<tr data-entry-id="${esc(e.id)}">
+          <td class="check">${first?`<input type="checkbox" class="sagas-rm-entry-check" value="${esc(e.id)}">`:''}</td>
+          <td class="entry-id" title="${esc(e.id)}">${esc(shortEntryId(e.id))}</td>
+          <td>${esc(l.cost_center_name||'')}</td>
+          <td class="center">${dateBR(e.entry_date)}</td>
+          <td>${esc(l.document_number||e.document_number||'')}</td>
+          <td>${esc(historyComplement(l))}</td>
+          <td class="num">${rmMoneyValue(l.amount||0)}</td>
+          <td>${l.side==='D'?esc(l.account_name||''):''}</td>
+          <td>${l.side==='C'?esc(l.account_name||''):''}</td>
+          <td class="center">${l.side==='D'?esc(l.account_reduced_code||''):''}</td>
+          <td class="center">${l.side==='C'?esc(l.account_reduced_code||''):''}</td>
+        </tr>`).join(''):`<tr><td colspan="11" style="padding:24px;color:#68777d">Nenhum lançamento ${working?'neste lote.':'integrado ao Lote 0.'}</td></tr>`}
+      </tbody></table></div>
+      <div class="sagas-rm-entries-bottom"><span class="sum">Total de Débito <b>${rmMoneyValue(debit)}</b></span><span class="sum">Total de Crédito <b>${rmMoneyValue(credit)}</b></span><span class="sum">Débito x Crédito <b class="${Math.abs(debit-credit)<.005?'sagas-rm-balance-ok':'sagas-rm-balance-bad'}">${rmMoneyValue(debit-credit)}</b></span></div>
+    </div>`;
+
+    const body=document.getElementById('sagasRmEntryBody');
+    body.querySelectorAll('tr[data-entry-id]').forEach(tr=>{
+      tr.onclick=e=>{if(e.target.matches('input'))return;window.__sagasSelectedEntryId=tr.dataset.entryId;applyEntrySelection()};
+      tr.ondblclick=()=>entryView(tr.dataset.entryId);
+    });
+    document.querySelectorAll('.sagas-rm-entry-check').forEach(c=>c.onchange=()=>{window.__sagasSelectedEntryId=c.value;applyEntrySelection()});
+    applyEntrySelection();
+    document.querySelectorAll('[data-rm-move]').forEach(b=>b.onclick=()=>moveEntrySelection(b.dataset.rmMove));
+    document.getElementById('sagasRmEntryRefresh').onclick=()=>renderEntries();
+    document.getElementById('sagasRmEntrySearchBtn').onclick=()=>{const e=document.getElementById('sagasRmEntrySearch');e.classList.toggle('show');if(e.classList.contains('show'))e.focus();else{e.value='';body.querySelectorAll('tr[data-entry-id]').forEach(r=>r.style.display='')}};
+    document.getElementById('sagasRmEntrySearch').oninput=e=>{const q=e.target.value.toLowerCase().trim();body.querySelectorAll('tr[data-entry-id]').forEach(r=>r.style.display=!q||r.innerText.toLowerCase().includes(q)?'':'none')};
+    if(document.getElementById('sagasRmBackLots'))document.getElementById('sagasRmBackLots').onclick=async()=>{window.__sagasEntryBatchContext='official';await nav('batches')};
+    if(creatable)document.getElementById('sagasRmEntryNew').onclick=()=>contextualEntryForm();
+    if(editable)document.getElementById('sagasRmEntryEdit').onclick=()=>window.__sagasSelectedEntryId?contextualEntryForm(window.__sagasSelectedEntryId):toast('Selecione um lançamento.','error');
+    if(deletable)document.getElementById('sagasRmEntryDelete').onclick=()=>window.__sagasSelectedEntryId?deleteEntryModal(window.__sagasSelectedEntryId):toast('Selecione um lançamento.','error');
+
+    if(working){
+      const menu=document.getElementById('sagasRmProcessMenu'),btn=document.getElementById('sagasRmProcesses');
+      btn.onclick=e=>{e.stopPropagation();menu.classList.toggle('show')};
+      document.addEventListener('click',()=>menu?.classList.remove('show'),{once:true});
+      const selectedIds=()=>[...document.querySelectorAll('.sagas-rm-entry-check:checked')].map(x=>x.value);
+      document.getElementById('sagasRmIntegrate').onclick=async()=>{const ids=selectedIds();try{const r=await api(`/api/journal-batches/${payload.batch.id}/integrate`,{method:'POST',body:{entry_ids:ids}});toast(`${r.integrated_count} lançamento(s) integrado(s) ao Lote 0.`);S.cache.batches=null;renderEntries()}catch(e){toast(e.message,'error')}};
+      document.getElementById('sagasRmUnintegrate').onclick=async()=>{const ids=selectedIds();if(!ids.length)return toast('Selecione o lançamento que deseja retirar do Lote 0.','error');try{const r=await api(`/api/journal-batches/${payload.batch.id}/unintegrate`,{method:'POST',body:{entry_ids:ids}});toast(`${r.unintegrated_count} lançamento(s) retirado(s) do Lote 0.`);S.cache.batches=null;renderEntries()}catch(e){toast(e.message,'error')}};
+    }
+  };
+
+  batchView=async function(id){
+    try{
+      const b=(await api(`/api/journal-batches/${id}`)).batch;
+      window.__sagasEntryBatchContext=id;window.__sagasSelectedEntryId=null;
+      await nav('entries');
+      document.getElementById('pageTitle').textContent=`Lançamentos Contábeis / Lote ${b.code} - ${b.description}`;
+      const cap=document.getElementById('sagasCaptionTitle');if(cap)cap.textContent=`Lançamentos Contábeis / Lote ${b.code} - ${b.description} - SAGAS`;
+    }catch(e){toast(e.message,'error')}
+  };
+
+  officialBatchView=async function(){
+    window.__sagasEntryBatchContext='official';window.__sagasSelectedEntryId=null;
+    await nav('entries');
+  };
+
+  renderBatches=async function(){
+    const [data,p]=await Promise.all([api('/api/journal-batches'),periods()]);
+    const a=data.batches||[],official=data.official||{},manage=can('accounting.batch.manage');
+    window.__sagasBatchRows=[{id:'official',code:'0',description:'LOTE OFICIAL',official:true,...official},...a];
+    const rows=window.__sagasBatchRows;
+    if(!rows.some(x=>String(x.id)===String(window.__sagasSelectedBatchId)))window.__sagasSelectedBatchId=null;
+    document.getElementById('pageTitle').textContent='Lotes';document.getElementById('pageSub').textContent='Entre no lote para consultar seus lançamentos contábeis';
+    document.getElementById('content').innerHTML=`<div class="sagas-rm-list-page">
+      <div class="sagas-rm-plan-toolbar">
+        <button class="sagas-rm-pt-btn" id="sagasRmLotNew" ${manage?'':'disabled'}>＋</button><button class="sagas-rm-pt-btn" id="sagasRmLotEdit" ${manage?'':'disabled'}>✎</button><button class="sagas-rm-pt-btn" id="sagasRmLotDelete" ${manage?'':'disabled'}>✖</button><button class="sagas-rm-pt-btn" id="sagasRmLotRefresh">↻</button><span class="sagas-rm-sep"></span><button class="sagas-rm-pt-btn" data-lot-move="first">↑</button><button class="sagas-rm-pt-btn" data-lot-move="prev">⌃</button><button class="sagas-rm-pt-btn" data-lot-move="next">⌄</button><button class="sagas-rm-pt-btn" data-lot-move="last">↓</button><span class="sagas-rm-sep"></span><button class="sagas-rm-pt-btn" id="sagasRmLotSearchBtn">⌕</button><input class="sagas-rm-search" id="sagasRmLotSearch" placeholder="Pesquisar lote..."><span class="sagas-rm-count" id="sagasRmLotCount">0/${rows.length}</span><span class="sagas-rm-sep"></span><button class="sagas-rm-pt-btn text">📎 Anexos⌄</button><button class="sagas-rm-pt-btn text">⚙ Processos⌄</button><span class="sagas-rm-sep"></span><span>▼ [Filtro: TODOS]</span>
+      </div>
+      <div class="sagas-rm-layoutbar"><span>Layout:</span><button>Padrão⌄</button><button>▦</button><button>▤</button><button>◧</button><button>◨</button><span style="margin-left:auto;color:#607078;padding-right:6px">Duplo clique para entrar no lote</span></div>
+      <div class="sagas-rm-grid-wrap"><table class="sagas-rm-grid" style="min-width:1050px"><thead><tr><th class="check">[x]</th><th class="origin"></th><th>Cód. Lote</th><th style="min-width:260px">Descrição</th><th>Período</th><th>Capa</th><th>Data Inicial</th><th>Data Final</th><th>Lançamentos</th><th>Integrados</th><th>Situação</th></tr></thead><tbody id="sagasRmLotBody">
+        ${rows.map(x=>`<tr data-batch-id="${esc(x.id)}"><td class="check"><input type="checkbox"></td><td class="origin">▧</td><td class="num"><b>${esc(x.code)}</b></td><td>${esc(x.description)}</td><td>${x.official?'—':esc(x.period_code||p.find(y=>y.id===x.period_id)?.code||'')}</td><td>${x.official?'Automática':(x.cover_mode==='MANUAL'?'Manual':'Automática')}</td><td class="center">${x.start_date?dateBR(x.start_date):'—'}</td><td class="center">${x.end_date?dateBR(x.end_date):'—'}</td><td class="num">${Number(x.total_entries||0)}</td><td class="num">${x.official?Number(x.total_entries||0):Number(x.integrated_entries||0)}</td><td>${x.official?'Oficial':(x.status==='LOCKED'?'Bloqueado':'Aberto')}</td></tr>`).join('')}
+      </tbody></table></div></div>`;
+    const body=document.getElementById('sagasRmLotBody');
+    function select(id){window.__sagasSelectedBatchId=String(id);body.querySelectorAll('tr[data-batch-id]').forEach(r=>r.classList.toggle('selected',r.dataset.batchId===String(id)));const i=rows.findIndex(x=>String(x.id)===String(id));document.getElementById('sagasRmLotCount').textContent=`${i>=0?i+1:0}/${rows.length}`}
+    body.querySelectorAll('tr[data-batch-id]').forEach(tr=>{tr.onclick=()=>select(tr.dataset.batchId);tr.ondblclick=()=>tr.dataset.batchId==='official'?officialBatchView():batchView(tr.dataset.batchId)});
+    document.querySelectorAll('[data-lot-move]').forEach(b=>b.onclick=()=>{if(!rows.length)return;let i=rows.findIndex(x=>String(x.id)===String(window.__sagasSelectedBatchId));if(i<0)i=0;const d=b.dataset.lotMove;if(d==='first')i=0;else if(d==='prev')i=Math.max(0,i-1);else if(d==='next')i=Math.min(rows.length-1,i+1);else if(d==='last')i=rows.length-1;select(rows[i].id);body.querySelector(`tr[data-batch-id="${CSS.escape(String(rows[i].id))}"]`)?.scrollIntoView({block:'nearest'})});
+    document.getElementById('sagasRmLotRefresh').onclick=()=>renderBatches();
+    document.getElementById('sagasRmLotSearchBtn').onclick=()=>{const e=document.getElementById('sagasRmLotSearch');e.classList.toggle('show');if(e.classList.contains('show'))e.focus();else{e.value='';body.querySelectorAll('tr[data-batch-id]').forEach(r=>r.style.display='')}};
+    document.getElementById('sagasRmLotSearch').oninput=e=>{const q=e.target.value.toLowerCase().trim();body.querySelectorAll('tr[data-batch-id]').forEach(r=>r.style.display=!q||r.innerText.toLowerCase().includes(q)?'':'none')};
+    if(manage){
+      document.getElementById('sagasRmLotNew').onclick=()=>batchForm();
+      document.getElementById('sagasRmLotEdit').onclick=()=>{const x=a.find(y=>String(y.id)===String(window.__sagasSelectedBatchId));if(!x)return toast('Selecione um lote de trabalho.','error');batchForm(x)};
+      document.getElementById('sagasRmLotDelete').onclick=()=>{const x=a.find(y=>String(y.id)===String(window.__sagasSelectedBatchId));if(!x)return toast('Selecione um lote de trabalho.','error');deleteBatchModal(x)};
+    }
+  };
+})();
+</script>
 </body>
 </html>
