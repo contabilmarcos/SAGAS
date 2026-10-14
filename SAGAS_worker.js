@@ -3940,7 +3940,7 @@ async function saveMovementAccountingEvent(env,request,auth,companyId,id,body){
     items.push({
       line_no:no++,side,incidence,account_origin:origin,account_id:accountId,percentage:pct,
       branch_id:raw.branch_id||null,cost_center_id:raw.cost_center_id||null,
-      history_template_id:raw.history_template_id||null,history_complement:cleanText(raw.history_complement,1000),
+      history_template_id:raw.history_template_id||null,history_complement:normalizedHistoryComplement,
       formula_expression:formulaExpression,condition_expression:conditionExpression
     });
   }
@@ -4465,24 +4465,38 @@ function financialHistoryTokens(text,{paymentDate,payableNumber,supplierName,doc
     .replace(/\[RAZ\]/gi,String(supplierName||'')).replace(/\[DOC\]/gi,String(documentNumber||''));
 }
 
+function financialDefaultHistoryPattern(code){
+  const f=String(code||'').trim().toUpperCase();
+  if(f==='CTB_003') return 'DESCONTO [NUM] - [RAZ]';
+  if(f==='FL033') return 'JUROS [NUM] - [RAZ]';
+  if(f==='FL039') return 'ADIANTAMENTO [NUM] - [RAZ]';
+  return '[DTD] Nº [NUM] - [RAZ]';
+}
+
 function evalFinancialPaymentFormula(code,ctx){
   const f=String(code||'').trim().toUpperCase();
   if(!f || ['CTB_001','VALOR_BAIXADO','PAYMENT_VALUE'].includes(f)) return ctx.cashCents;
-  if(['FL031.1','FL032.1','VALOR_CONTABIL_FORNECEDOR'].includes(f)) return ctx.grossCents;
+  if(f==='FL031.1') return ctx.supplierType==='PJ'?ctx.grossCents:0;
+  if(f==='FL032.1') return ctx.supplierType==='PF'?ctx.grossCents:0;
+  if(f==='VALOR_CONTABIL_FORNECEDOR') return ctx.grossCents;
   if(['CTB_003','VALOR_DESCONTO','DISCOUNT_VALUE'].includes(f)) return ctx.discountCents;
   if(['FL039','VALOR_ADIANTAMENTO','ADVANCE_VALUE'].includes(f)) return ctx.advanceCents;
+  if(['FL033','VALOR_JUROS','INTEREST_VALUE'].includes(f)) return ctx.interestCents;
   throw new HttpError(409,`A fórmula ${code} ainda não está disponível para Baixa no SAGAS.`,'FINANCIAL_FORMULA_NOT_SUPPORTED');
 }
 
-async function buildFinancialPaymentAccountingLines(env,companyId,{eventId,cashAccountId,payable,paymentDate,discountCents,advanceCents}){
+async function buildFinancialPaymentAccountingLines(env,companyId,{eventId,cashAccountId,payable,paymentDate,discountCents,advanceCents,interestCents}){
   const event=await getFinancialAccountingEvent(env,companyId,eventId);
   if(!event.active||event.process!=='BAIXA') throw new HttpError(409,'Selecione um Evento Contábil ativo do processo Baixa.','INVALID_ACCOUNTING_EVENT');
   const cash=await getFinancialCashAccount(env,companyId,cashAccountId);
   if(!cash.active) throw new HttpError(409,'A Conta/Caixa selecionada está inativa.','INACTIVE_CASH_ACCOUNT');
   const grossCents=Number(payable.balance_cents||0);
-  const cashCents=grossCents-Number(discountCents||0)-Number(advanceCents||0);
-  if(cashCents<0) throw new HttpError(400,'Desconto e adiantamento não podem superar o saldo do título.','INVALID_PAYMENT_VALUES');
-  const ctx={grossCents,cashCents,discountCents:Number(discountCents||0),advanceCents:Number(advanceCents||0)};
+  const taxDigits=String(payable.tax_id||'').replace(/\D/g,'');
+  const supplierType=taxDigits.length===14?'PJ':taxDigits.length===11?'PF':'UNKNOWN';
+  const interest=Number(interestCents||0);
+  const cashCents=grossCents+interest-Number(discountCents||0)-Number(advanceCents||0);
+  if(cashCents<0) throw new HttpError(400,'Desconto e adiantamento não podem superar o valor do título somado aos juros.','INVALID_PAYMENT_VALUES');
+  const ctx={grossCents,cashCents,discountCents:Number(discountCents||0),advanceCents:Number(advanceCents||0),interestCents:interest,supplierType};
   const lines=[];
   for(const item of event.items){
     const amount=evalFinancialPaymentFormula(item.formula,ctx);
@@ -4496,10 +4510,12 @@ async function buildFinancialPaymentAccountingLines(env,companyId,{eventId,cashA
       if(!accountId) throw new HttpError(409,`A Conta/Caixa ${cash.code} não possui default contábil de ${side==='D'?'Débito':'Crédito'}.`,'CASH_ACCOUNT_DEFAULT_MISSING');
     }
     await assertAnalyticActiveAccount(env,companyId,accountId,'a conta gerada pelo Evento Contábil Financeiro');
+    let historyPattern=String(item.history_complement||'').trim();
+    if(item.history_template_id&&!historyPattern) historyPattern=financialDefaultHistoryPattern(item.formula);
     lines.push({
       side:item.side,account_id:accountId,amount:centsToMoney(amount),branch_id:item.branch_id||null,cost_center_id:item.cost_center_id||null,
       history_template_id:item.history_template_id||null,
-      history_complement:financialHistoryTokens(item.history_complement,{paymentDate,payableNumber:payable.number,supplierName:payable.supplier_name,documentNumber:payable.document_number})
+      history_complement:financialHistoryTokens(historyPattern,{paymentDate,payableNumber:payable.number,supplierName:payable.supplier_name,documentNumber:payable.document_number})
     });
   }
   if(!lines.length) throw new HttpError(409,'O Evento Contábil Financeiro não gerou partidas para esta baixa.','ACCOUNTING_EVENT_EMPTY');
@@ -4514,10 +4530,10 @@ async function payFinancialPayable(env,request,auth,companyId,id,body){
   const cashAccountId=cleanText(required(body.cash_account_id,'Conta/Caixa'),80);
   const cash=await getFinancialCashAccount(env,companyId,cashAccountId);
   if(!cash.active) throw new HttpError(409,'A Conta/Caixa selecionada está inativa.','INACTIVE_CASH_ACCOUNT');
-  const discountCents=moneyToCents(body.discount||0),advanceCents=moneyToCents(body.advance||0);
-  if(discountCents<0||advanceCents<0) throw new HttpError(400,'Desconto e adiantamento não podem ser negativos.','INVALID_PAYMENT_VALUES');
-  const cashCents=Number(before.balance_cents||0)-discountCents-advanceCents;
-  if(cashCents<0) throw new HttpError(400,'Desconto e adiantamento não podem superar o saldo do título.','INVALID_PAYMENT_VALUES');
+  const discountCents=moneyToCents(body.discount||0),advanceCents=moneyToCents(body.advance||0),interestCents=moneyToCents(body.interest||0);
+  if(discountCents<0||advanceCents<0||interestCents<0) throw new HttpError(400,'Desconto, adiantamento e juros não podem ser negativos.','INVALID_PAYMENT_VALUES');
+  const cashCents=Number(before.balance_cents||0)+interestCents-discountCents-advanceCents;
+  if(cashCents<0) throw new HttpError(400,'Desconto e adiantamento não podem superar o valor do título somado aos juros.','INVALID_PAYMENT_VALUES');
 
   const eventId=cleanText(body.accounting_event_id,80)||null;
   const batchId=eventId?(cleanText(required(body.accounting_batch_id,'lote contábil'),80)):null;
@@ -4525,7 +4541,7 @@ async function payFinancialPayable(env,request,auth,companyId,id,body){
   if(eventId){
     const batch=await assertCompanyEntity(env,'journal_batches',batchId,companyId);
     if(batch.status!=='OPEN') throw new HttpError(409,'O lote contábil da baixa precisa estar aberto.','BATCH_LOCKED');
-    const acc=await buildFinancialPaymentAccountingLines(env,companyId,{eventId,cashAccountId,payable:before,paymentDate:date,discountCents,advanceCents});
+    const acc=await buildFinancialPaymentAccountingLines(env,companyId,{eventId,cashAccountId,payable:before,paymentDate:date,discountCents,advanceCents,interestCents});
     built=await buildInternalPostedEntry(env,auth,companyId,{
       batch_id:batchId,entry_date:date,document_number:before.document_number||before.number,
       description:`Baixa ${before.number} - ${before.supplier_name}`,
@@ -4533,8 +4549,8 @@ async function payFinancialPayable(env,request,auth,companyId,id,body){
     });
   }
 
-  const update=env.DB.prepare(`UPDATE financial_payables SET status='PAID',balance_cents=0,payment_date=?,payment_notes=?,payment_cash_account_id=?,payment_accounting_event_id=?,payment_accounting_batch_id=?,payment_journal_entry_id=?,payment_discount_cents=?,payment_advance_cents=?,payment_cash_cents=?,paid_by=?,paid_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=? AND company_id=?`).bind(
-    date,cleanText(body.payment_notes,1000),cashAccountId,eventId,batchId,built?.entryId||null,discountCents,advanceCents,cashCents,auth.user.id,id,companyId
+  const update=env.DB.prepare(`UPDATE financial_payables SET status='PAID',balance_cents=0,payment_date=?,payment_notes=?,payment_cash_account_id=?,payment_accounting_event_id=?,payment_accounting_batch_id=?,payment_journal_entry_id=?,payment_discount_cents=?,payment_advance_cents=?,payment_interest_cents=?,payment_cash_cents=?,paid_by=?,paid_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=? AND company_id=?`).bind(
+    date,cleanText(body.payment_notes,1000),cashAccountId,eventId,batchId,built?.entryId||null,discountCents,advanceCents,interestCents,cashCents,auth.user.id,id,companyId
   );
   const stmts=[update,...(built?.stmts||[])];
   await env.DB.batch(stmts);
@@ -4712,6 +4728,7 @@ async function ensureFinancialCashAccountSchema(env){
     await ensureTableColumn(env,'financial_payables','payment_journal_entry_id','TEXT');
     await ensureTableColumn(env,'financial_payables','payment_discount_cents','INTEGER NOT NULL DEFAULT 0');
     await ensureTableColumn(env,'financial_payables','payment_advance_cents','INTEGER NOT NULL DEFAULT 0');
+    await ensureTableColumn(env,'financial_payables','payment_interest_cents','INTEGER NOT NULL DEFAULT 0');
     await ensureTableColumn(env,'financial_payables','payment_cash_cents','INTEGER');
   }
 }
@@ -4854,7 +4871,11 @@ async function saveFinancialAccountingEvent(env,request,auth,companyId,id,body){
     }
     if(raw.branch_id) await assertCompanyEntity(env,'branches',raw.branch_id,companyId);
     if(raw.cost_center_id) await assertCompanyEntity(env,'cost_centers',raw.cost_center_id,companyId);
-    if(raw.history_template_id) await assertCompanyEntity(env,'history_templates',raw.history_template_id,companyId);
+    let normalizedHistoryComplement=cleanText(raw.history_complement,1000);
+    if(raw.history_template_id){
+      const h=await assertCompanyEntity(env,'history_templates',raw.history_template_id,companyId);
+      if(h.complement_required&&!String(normalizedHistoryComplement||'').trim()) normalizedHistoryComplement=financialDefaultHistoryPattern(raw.formula);
+    }
     let eliminationAccountId=cleanText(raw.elimination_account_id,80)||null;
     if(eliminationAccountId) eliminationAccountId=(await assertAnalyticActiveAccount(env,companyId,eliminationAccountId,'a conta contra partida da eliminação')).id;
     const pct=raw.percentage===undefined||raw.percentage===null||String(raw.percentage).trim()===''?null:Number(raw.percentage);
