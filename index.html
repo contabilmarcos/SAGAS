@@ -2994,17 +2994,19 @@ function openFinancialEventItemEditor(item,side,opts,onSave){
 
 async function renderFinancialPayables(){
   const d=await api('/api/financial-payables'),a=d.payables||[],manage=can('financial.payable.manage');
-  tablePage({cols:['Número','Fornecedor','Emissão','Vencimento','Documento','Origem','Valor','Saldo','Situação','Ações'],rows:a.length?a.map(x=>`<tr><td class="code">${esc(x.number)}</td><td>${esc(x.supplier_code)} - ${esc(x.supplier_name)}</td><td>${dateBR(x.issue_date)}</td><td>${dateBR(x.due_date)}</td><td>${esc(x.document_number||'')}</td><td>${esc(x.receipt_number?`Receb. ${x.receipt_number}`:'')}</td><td>${money(x.amount)}</td><td>${money(x.balance)}</td><td>${badge(x.status)}</td><td><div class="actions"><button class="btn secondary sm" data-open-payable="${x.id}">Abrir</button>${manage&&x.status==='OPEN'?`<button class="btn success sm" data-pay-payable="${x.id}">Pagar</button>`:''}</div></td></tr>`).join(''):null,emptyTitle:'Nenhum título em Contas a Pagar',emptyText:'Os títulos serão gerados automaticamente pelos recebimentos quando a integração estiver ativa.'});
+  tablePage({cols:['Número','Fornecedor','Emissão','Vencimento','Documento','Origem','Valor','Saldo','Situação','Ações'],rows:a.length?a.map(x=>`<tr><td class="code">${esc(x.number)}</td><td>${esc(x.supplier_code)} - ${esc(x.supplier_name)}</td><td>${dateBR(x.issue_date)}</td><td>${dateBR(x.due_date)}</td><td>${esc(x.document_number||'')}</td><td>${esc(x.receipt_number?`Receb. ${x.receipt_number}`:'')}</td><td>${money(x.amount)}</td><td>${money(x.balance)}</td><td>${badge(x.status)}</td><td><div class="actions"><button class="btn secondary sm" data-open-payable="${x.id}">Abrir</button>${manage&&x.status==='OPEN'?`<button class="btn success sm" data-pay-payable="${x.id}">Pagar</button>`:''}${manage&&x.status==='PAID'?`<button class="btn danger sm" data-unpay-payable="${x.id}">Desfazer baixa</button>`:''}</div></td></tr>`).join(''):null,emptyTitle:'Nenhum título em Contas a Pagar',emptyText:'Os títulos serão gerados automaticamente pelos recebimentos quando a integração estiver ativa.'});
   $$('[data-open-payable]').forEach(b=>b.onclick=()=>financialPayableView(b.dataset.openPayable));
   $$('[data-pay-payable]').forEach(b=>b.onclick=()=>financialPayablePayForm(b.dataset.payPayable));
+  $$('[data-unpay-payable]').forEach(b=>b.onclick=()=>financialPayableUndoPayment(b.dataset.unpayPayable));
 }
 
 async function financialPayableView(id){try{
   const x=(await api(`/api/financial-payables/${id}`)).payable;
-  openModal(`Conta a Pagar ${x.number}`,`${x.supplier_code} - ${x.supplier_name}`,`<div class="grid three"><div class="field"><span>Situação</span>${badge(x.status)}</div><div class="field"><span>Emissão</span><b>${dateBR(x.issue_date)}</b></div><div class="field"><span>Vencimento</span><b>${dateBR(x.due_date)}</b></div><div class="field"><span>Documento</span><b>${esc(x.document_number||'—')}</b></div><div class="field"><span>Ordem de Compra</span><b>${esc(x.order_number||'—')}</b></div><div class="field"><span>Recebimento</span><b>${esc(x.receipt_number||'—')}</b></div><div class="field"><span>Valor</span><b>${money(x.amount)}</b></div><div class="field"><span>Saldo</span><b>${money(x.balance)}</b></div>${x.payment_date?`<div class="field"><span>Pagamento</span><b>${dateBR(x.payment_date)}</b></div><div class="field"><span>Conta/Caixa</span><b>${esc(x.payment_cash_account_code?x.payment_cash_account_code+' - '+x.payment_cash_account_name:'—')}</b></div><div class="field"><span>Evento Contábil</span><b>${esc(x.payment_event_number?x.payment_event_number+' - '+x.payment_event_name:'—')}</b></div><div class="field"><span>Lote Contábil</span><b>${esc(x.payment_batch_code||'—')}</b></div>`:''}<div class="field full"><span>Descrição</span><div>${esc(x.description||'—')}</div></div></div><div class="form-actions"><button class="btn secondary" data-close>Fechar</button>${can('financial.payable.manage')&&x.status==='OPEN'?'<button id="cancelPayable" class="btn danger">Cancelar título</button><button id="payPayable" class="btn success">Registrar pagamento</button>':''}</div>`);
+  openModal(`Conta a Pagar ${x.number}`,`${x.supplier_code} - ${x.supplier_name}`,`<div class="grid three"><div class="field"><span>Situação</span>${badge(x.status)}</div><div class="field"><span>Emissão</span><b>${dateBR(x.issue_date)}</b></div><div class="field"><span>Vencimento</span><b>${dateBR(x.due_date)}</b></div><div class="field"><span>Documento</span><b>${esc(x.document_number||'—')}</b></div><div class="field"><span>Ordem de Compra</span><b>${esc(x.order_number||'—')}</b></div><div class="field"><span>Recebimento</span><b>${esc(x.receipt_number||'—')}</b></div><div class="field"><span>Valor</span><b>${money(x.amount)}</b></div><div class="field"><span>Saldo</span><b>${money(x.balance)}</b></div>${x.payment_date?`<div class="field"><span>Pagamento</span><b>${dateBR(x.payment_date)}</b></div><div class="field"><span>Conta/Caixa</span><b>${esc(x.payment_cash_account_code?x.payment_cash_account_code+' - '+x.payment_cash_account_name:'—')}</b></div><div class="field"><span>Evento Contábil</span><b>${esc(x.payment_event_number?x.payment_event_number+' - '+x.payment_event_name:'—')}</b></div><div class="field"><span>Lote Contábil</span><b>${esc(x.payment_batch_code||'—')}</b></div>`:''}<div class="field full"><span>Descrição</span><div>${esc(x.description||'—')}</div></div></div><div class="form-actions"><button class="btn secondary" data-close>Fechar</button>${can('financial.payable.manage')&&x.status==='OPEN'?'<button id="cancelPayable" class="btn danger">Cancelar título</button><button id="payPayable" class="btn success">Registrar pagamento</button>':''}${can('financial.payable.manage')&&x.status==='PAID'?'<button id="undoPayablePayment" class="btn danger">Desfazer baixa</button>':''}</div>`);
   $('[data-close]').onclick=closeModal;
   if($('#payPayable'))$('#payPayable').onclick=()=>financialPayablePayForm(id);
   if($('#cancelPayable'))$('#cancelPayable').onclick=()=>financialPayableCancel(id);
+  if($('#undoPayablePayment'))$('#undoPayablePayment').onclick=()=>financialPayableUndoPayment(id);
 }catch(e){toast(e.message,'error')}}
 
 async function financialPayablePayForm(id){
@@ -3022,6 +3024,16 @@ async function financialPayablePayForm(id){
     f.discount.oninput=sync;f.advance.oninput=sync;f.interest.oninput=sync;f.accounting_event_id.onchange=sync;sync();
     f.onsubmit=async e=>{e.preventDefault();const fd=new FormData(f),body=Object.fromEntries(fd);if(body.accounting_event_id&&!body.accounting_batch_id)return toast('Selecione o lote contábil da baixa.','error');try{await api(`/api/financial-payables/${id}/pay`,{method:'POST',body});closeModal();toast(body.accounting_event_id?'Baixa registrada e contabilizada.':'Baixa registrada.');renderFinancialPayables()}catch(err){toast(err.message,'error')}};
   }catch(e){toast(e.message,'error')}
+}
+
+async function financialPayableUndoPayment(id){
+  if(!confirm('Desfazer a baixa deste título? O título voltará para Em Aberto e o lançamento contábil gerado pela baixa será removido. Se ele já estiver no Lote 0, primeiro será necessário desfazer a integração.'))return;
+  try{
+    await api(`/api/financial-payables/${id}/unpay`,{method:'POST',body:{}});
+    closeModal();
+    toast('Baixa desfeita. O título voltou para Em Aberto.');
+    renderFinancialPayables();
+  }catch(err){toast(err.message,'error')}
 }
 
 async function financialPayableCancel(id){
@@ -3150,9 +3162,24 @@ setInterval(()=>checkSessionAccess(),30000);
     docs.forEach(p=>{const d=pageDef[p];const el=document.createElement('div');el.className='sagas-doc-tab'+(p===S.page?' active':'');el.innerHTML=`<span class="sagas-doc-icon">▣</span><span class="sagas-doc-title">${d.label}</span><span class="sagas-doc-close">×</span>`;el.onclick=e=>{if(e.target.classList.contains('sagas-doc-close')){e.stopPropagation();closeDoc(p)}else openPage(p)};area.appendChild(el)});
   }
 
+  function showModuleWorkspace(){
+    S.page='';
+    const title=document.getElementById('pageTitle'),sub=document.getElementById('pageSub'),content=document.getElementById('content');
+    if(title)title.textContent=currentModule;
+    if(sub)sub.textContent='Selecione uma função na faixa de opções';
+    if(content)content.innerHTML='';
+    document.getElementById('sagasCaptionTitle').textContent=`${currentModule} - SAGAS`;
+    renderDocs();
+  }
+
   function closeDoc(p){
     const i=docs.indexOf(p);if(i<0)return;docs.splice(i,1);
-    if(S.page===p){const next=docs[Math.max(0,i-1)]||firstAllowedInModule(currentModule)?.page||firstAllowedPage();openPage(next);return}
+    if(S.page===p){
+      const next=docs[Math.max(0,i-1)];
+      if(next){openPage(next);return}
+      showModuleWorkspace();
+      return;
+    }
     renderDocs();
   }
 
@@ -3176,7 +3203,12 @@ setInterval(()=>checkSessionAccess(),30000);
   function switchModule(name){
     if(!modules[name]||!moduleHasAccess(name))return;
     const first=firstAllowedInModule(name);if(!first)return;
-    currentModule=name;currentTab=first.tab;renderModuleTabs(currentTab);renderRibbon();closeMenu();openPage(first.page);
+    currentModule=name;
+    currentTab=first.tab;
+    renderModuleTabs(currentTab);
+    renderRibbon();
+    closeMenu();
+    showModuleWorkspace();
   }
 
   const submenu=document.getElementById('sagasModuleSubmenu');
