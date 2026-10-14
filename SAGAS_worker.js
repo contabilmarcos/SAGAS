@@ -4420,11 +4420,15 @@ async function nextPayableNumber(env,companyId){
 
 async function listFinancialPayables(env,companyId){
   const r=await env.DB.prepare(`
-    SELECT fp.*,s.code AS supplier_code,s.name AS supplier_name,rec.number AS receipt_number,o.number AS order_number
+    SELECT fp.*,s.code AS supplier_code,s.name AS supplier_name,rec.number AS receipt_number,o.number AS order_number,
+           fca.code AS payment_cash_account_code,fca.name AS payment_cash_account_name,
+           fae.number AS payment_event_number,fae.name AS payment_event_name
     FROM financial_payables fp
     JOIN purchase_suppliers s ON s.id=fp.supplier_id
     LEFT JOIN purchase_receipts rec ON rec.id=fp.receipt_id
     LEFT JOIN purchase_orders o ON o.id=rec.order_id
+    LEFT JOIN financial_cash_accounts fca ON fca.id=fp.payment_cash_account_id
+    LEFT JOIN financial_accounting_events fae ON fae.id=fp.payment_accounting_event_id
     WHERE fp.company_id=?
     ORDER BY CASE fp.status WHEN 'OPEN' THEN 0 WHEN 'PAID' THEN 1 ELSE 2 END,fp.due_date,fp.number
   `).bind(companyId).all();
@@ -4434,17 +4438,72 @@ async function listFinancialPayables(env,companyId){
 async function getFinancialPayable(env,companyId,id){
   const x=await env.DB.prepare(`
     SELECT fp.*,s.code AS supplier_code,s.name AS supplier_name,s.tax_id,rec.number AS receipt_number,o.number AS order_number,
-           u.name AS created_by_name,pu.name AS paid_by_name
+           u.name AS created_by_name,pu.name AS paid_by_name,
+           fca.code AS payment_cash_account_code,fca.name AS payment_cash_account_name,
+           fae.number AS payment_event_number,fae.name AS payment_event_name,
+           jb.code AS payment_batch_code
     FROM financial_payables fp
     JOIN purchase_suppliers s ON s.id=fp.supplier_id
     LEFT JOIN purchase_receipts rec ON rec.id=fp.receipt_id
     LEFT JOIN purchase_orders o ON o.id=rec.order_id
     LEFT JOIN users u ON u.id=fp.created_by
     LEFT JOIN users pu ON pu.id=fp.paid_by
+    LEFT JOIN financial_cash_accounts fca ON fca.id=fp.payment_cash_account_id
+    LEFT JOIN financial_accounting_events fae ON fae.id=fp.payment_accounting_event_id
+    LEFT JOIN journal_batches jb ON jb.id=fp.payment_accounting_batch_id
     WHERE fp.id=? AND fp.company_id=?
   `).bind(id,companyId).first();
   if(!x) throw new HttpError(404,'Conta a pagar não encontrada.','NOT_FOUND');
   return {...x,amount:centsToMoney(x.amount_cents),balance:centsToMoney(x.balance_cents)};
+}
+
+function financialHistoryTokens(text,{paymentDate,payableNumber,supplierName,documentNumber}){
+  let out=String(text||'');
+  const p=String(paymentDate||'').split('-');
+  const dtd=p.length===3?`${p[2]}/${p[1]}/${p[0]}`:String(paymentDate||'');
+  return out.replace(/\[DTD\]/gi,dtd).replace(/\[NUM\]/gi,String(payableNumber||''))
+    .replace(/\[RAZ\]/gi,String(supplierName||'')).replace(/\[DOC\]/gi,String(documentNumber||''));
+}
+
+function evalFinancialPaymentFormula(code,ctx){
+  const f=String(code||'').trim().toUpperCase();
+  if(!f || ['CTB_001','VALOR_BAIXADO','PAYMENT_VALUE'].includes(f)) return ctx.cashCents;
+  if(['FL031.1','FL032.1','VALOR_CONTABIL_FORNECEDOR'].includes(f)) return ctx.grossCents;
+  if(['CTB_003','VALOR_DESCONTO','DISCOUNT_VALUE'].includes(f)) return ctx.discountCents;
+  if(['FL039','VALOR_ADIANTAMENTO','ADVANCE_VALUE'].includes(f)) return ctx.advanceCents;
+  throw new HttpError(409,`A fórmula ${code} ainda não está disponível para Baixa no SAGAS.`,'FINANCIAL_FORMULA_NOT_SUPPORTED');
+}
+
+async function buildFinancialPaymentAccountingLines(env,companyId,{eventId,cashAccountId,payable,paymentDate,discountCents,advanceCents}){
+  const event=await getFinancialAccountingEvent(env,companyId,eventId);
+  if(!event.active||event.process!=='BAIXA') throw new HttpError(409,'Selecione um Evento Contábil ativo do processo Baixa.','INVALID_ACCOUNTING_EVENT');
+  const cash=await getFinancialCashAccount(env,companyId,cashAccountId);
+  if(!cash.active) throw new HttpError(409,'A Conta/Caixa selecionada está inativa.','INACTIVE_CASH_ACCOUNT');
+  const grossCents=Number(payable.balance_cents||0);
+  const cashCents=grossCents-Number(discountCents||0)-Number(advanceCents||0);
+  if(cashCents<0) throw new HttpError(400,'Desconto e adiantamento não podem superar o saldo do título.','INVALID_PAYMENT_VALUES');
+  const ctx={grossCents,cashCents,discountCents:Number(discountCents||0),advanceCents:Number(advanceCents||0)};
+  const lines=[];
+  for(const item of event.items){
+    const amount=evalFinancialPaymentFormula(item.formula,ctx);
+    if(amount===0&&!event.allow_zero) continue;
+    if(amount<0) throw new HttpError(409,'O Evento Contábil gerou valor negativo.','INVALID_ACCOUNTING_AMOUNT');
+    let accountId=item.account_id||null;
+    if(item.account_origin==='TABLE_DEFAULT'){
+      if(item.default_search!=='ACCOUNT_CASH') throw new HttpError(409,'A origem Tabela Default deste item não está configurada como Conta/Caixa.','DEFAULT_SOURCE_NOT_SUPPORTED');
+      const side=String(item.default_side||item.side).toUpperCase();
+      accountId=side==='D'?cash.debit_account_id:cash.credit_account_id;
+      if(!accountId) throw new HttpError(409,`A Conta/Caixa ${cash.code} não possui default contábil de ${side==='D'?'Débito':'Crédito'}.`,'CASH_ACCOUNT_DEFAULT_MISSING');
+    }
+    await assertAnalyticActiveAccount(env,companyId,accountId,'a conta gerada pelo Evento Contábil Financeiro');
+    lines.push({
+      side:item.side,account_id:accountId,amount:centsToMoney(amount),branch_id:item.branch_id||null,cost_center_id:item.cost_center_id||null,
+      history_template_id:item.history_template_id||null,
+      history_complement:financialHistoryTokens(item.history_complement,{paymentDate,payableNumber:payable.number,supplierName:payable.supplier_name,documentNumber:payable.document_number})
+    });
+  }
+  if(!lines.length) throw new HttpError(409,'O Evento Contábil Financeiro não gerou partidas para esta baixa.','ACCOUNTING_EVENT_EMPTY');
+  return {lines,cash,event,cashCents,grossCents};
 }
 
 async function payFinancialPayable(env,request,auth,companyId,id,body){
@@ -4452,9 +4511,35 @@ async function payFinancialPayable(env,request,auth,companyId,id,body){
   const before=await getFinancialPayable(env,companyId,id);
   if(before.status!=='OPEN') throw new HttpError(409,'Somente títulos em aberto podem ser pagos.','INVALID_STATUS');
   const date=isoDate(body.payment_date||new Date().toISOString().slice(0,10),'data do pagamento');
-  await env.DB.prepare(`UPDATE financial_payables SET status='PAID',balance_cents=0,payment_date=?,payment_notes=?,paid_by=?,paid_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=? AND company_id=?`).bind(date,cleanText(body.payment_notes,1000),auth.user.id,id,companyId).run();
+  const cashAccountId=cleanText(required(body.cash_account_id,'Conta/Caixa'),80);
+  const cash=await getFinancialCashAccount(env,companyId,cashAccountId);
+  if(!cash.active) throw new HttpError(409,'A Conta/Caixa selecionada está inativa.','INACTIVE_CASH_ACCOUNT');
+  const discountCents=moneyToCents(body.discount||0),advanceCents=moneyToCents(body.advance||0);
+  if(discountCents<0||advanceCents<0) throw new HttpError(400,'Desconto e adiantamento não podem ser negativos.','INVALID_PAYMENT_VALUES');
+  const cashCents=Number(before.balance_cents||0)-discountCents-advanceCents;
+  if(cashCents<0) throw new HttpError(400,'Desconto e adiantamento não podem superar o saldo do título.','INVALID_PAYMENT_VALUES');
+
+  const eventId=cleanText(body.accounting_event_id,80)||null;
+  const batchId=eventId?(cleanText(required(body.accounting_batch_id,'lote contábil'),80)):null;
+  let built=null;
+  if(eventId){
+    const batch=await assertCompanyEntity(env,'journal_batches',batchId,companyId);
+    if(batch.status!=='OPEN') throw new HttpError(409,'O lote contábil da baixa precisa estar aberto.','BATCH_LOCKED');
+    const acc=await buildFinancialPaymentAccountingLines(env,companyId,{eventId,cashAccountId,payable:before,paymentDate:date,discountCents,advanceCents});
+    built=await buildInternalPostedEntry(env,auth,companyId,{
+      batch_id:batchId,entry_date:date,document_number:before.document_number||before.number,
+      description:`Baixa ${before.number} - ${before.supplier_name}`,
+      source_module:'FINANCE',source_reference:`PAYABLE_PAYMENT:${id}`,lines:acc.lines
+    });
+  }
+
+  const update=env.DB.prepare(`UPDATE financial_payables SET status='PAID',balance_cents=0,payment_date=?,payment_notes=?,payment_cash_account_id=?,payment_accounting_event_id=?,payment_accounting_batch_id=?,payment_journal_entry_id=?,payment_discount_cents=?,payment_advance_cents=?,payment_cash_cents=?,paid_by=?,paid_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=? AND company_id=?`).bind(
+    date,cleanText(body.payment_notes,1000),cashAccountId,eventId,batchId,built?.entryId||null,discountCents,advanceCents,cashCents,auth.user.id,id,companyId
+  );
+  const stmts=[update,...(built?.stmts||[])];
+  await env.DB.batch(stmts);
   const after=await getFinancialPayable(env,companyId,id);
-  await audit(env,{companyId,userId:auth.user.id,action:'PAY',entity:'financial_payable',entityId:id,before,after,request});
+  await audit(env,{companyId,userId:auth.user.id,action:'PAY',entity:'financial_payable',entityId:id,before:{status:before.status,balance_cents:before.balance_cents},after:{status:after.status,payment_cash_account_id:cashAccountId,payment_accounting_event_id:eventId,payment_journal_entry_id:built?.entryId||null},request});
   return after;
 }
 
@@ -4532,7 +4617,9 @@ async function prepareReceiptIntegrations(env,auth,companyId,{order,orderDetails
 // ===== financial-accounting-events.js =====
 const FINANCIAL_ACCOUNTING_EVENT_PERMISSION_DEFS=[
   ["financial.accounting_event.read","Consultar eventos contábeis financeiros"],
-  ["financial.accounting_event.manage","Gerenciar eventos contábeis financeiros"]
+  ["financial.accounting_event.manage","Gerenciar eventos contábeis financeiros"],
+  ["financial.cash_account.read","Consultar contas/caixa financeiras"],
+  ["financial.cash_account.manage","Gerenciar contas/caixa financeiras"]
 ];
 
 async function ensureFinancialAccountingEventSchema(env){
@@ -4595,8 +4682,101 @@ async function ensureFinancialAccountingEventSchema(env){
   await env.DB.prepare(`
     INSERT OR IGNORE INTO role_permissions (role_id,permission_id)
     SELECT r.id,p.id FROM roles r CROSS JOIN permissions p
-    WHERE r.code='ADMIN' AND p.code IN ('financial.accounting_event.read','financial.accounting_event.manage')
+    WHERE r.code='ADMIN' AND p.code IN ('financial.accounting_event.read','financial.accounting_event.manage','financial.cash_account.read','financial.cash_account.manage')
   `).run();
+}
+
+async function ensureFinancialCashAccountSchema(env){
+  await env.DB.batch([
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS financial_cash_accounts (
+      id TEXT PRIMARY KEY,
+      company_id TEXT NOT NULL,
+      code TEXT NOT NULL,
+      name TEXT NOT NULL,
+      account_type TEXT NOT NULL DEFAULT 'BANK',
+      debit_account_id TEXT,
+      credit_account_id TEXT,
+      active INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(company_id,code)
+    )`),
+    env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_fin_cash_accounts_company ON financial_cash_accounts(company_id,code)`)
+  ]);
+  // Campos da baixa financeira. A tabela financial_payables é criada pelo schema do Financeiro/Compras.
+  const t=await env.DB.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='financial_payables'`).first();
+  if(t){
+    await ensureTableColumn(env,'financial_payables','payment_cash_account_id','TEXT');
+    await ensureTableColumn(env,'financial_payables','payment_accounting_event_id','TEXT');
+    await ensureTableColumn(env,'financial_payables','payment_accounting_batch_id','TEXT');
+    await ensureTableColumn(env,'financial_payables','payment_journal_entry_id','TEXT');
+    await ensureTableColumn(env,'financial_payables','payment_discount_cents','INTEGER NOT NULL DEFAULT 0');
+    await ensureTableColumn(env,'financial_payables','payment_advance_cents','INTEGER NOT NULL DEFAULT 0');
+    await ensureTableColumn(env,'financial_payables','payment_cash_cents','INTEGER');
+  }
+}
+
+async function listFinancialCashAccounts(env,companyId){
+  const r=await env.DB.prepare(`
+    SELECT f.*,da.code AS debit_account_code,da.name AS debit_account_name,
+           ca.code AS credit_account_code,ca.name AS credit_account_name
+    FROM financial_cash_accounts f
+    LEFT JOIN accounts da ON da.id=f.debit_account_id
+    LEFT JOIN accounts ca ON ca.id=f.credit_account_id
+    WHERE f.company_id=? ORDER BY f.code
+  `).bind(companyId).all();
+  return r.results||[];
+}
+
+async function getFinancialCashAccount(env,companyId,id){
+  const x=await env.DB.prepare(`
+    SELECT f.*,da.code AS debit_account_code,da.name AS debit_account_name,
+           ca.code AS credit_account_code,ca.name AS credit_account_name
+    FROM financial_cash_accounts f
+    LEFT JOIN accounts da ON da.id=f.debit_account_id
+    LEFT JOIN accounts ca ON ca.id=f.credit_account_id
+    WHERE f.id=? AND f.company_id=?
+  `).bind(id,companyId).first();
+  if(!x) throw new HttpError(404,'Conta/Caixa não encontrada.','NOT_FOUND');
+  return x;
+}
+
+async function saveFinancialCashAccount(env,request,auth,companyId,id,body){
+  await requirePermission(env,auth.user.id,companyId,'financial.cash_account.manage');
+  const code=cleanText(required(body.code,'código da Conta/Caixa'),40);
+  const name=cleanText(required(body.name,'descrição da Conta/Caixa'),200);
+  const accountType=String(body.account_type||'BANK').toUpperCase()==='CASH'?'CASH':'BANK';
+  let debitId=cleanText(body.debit_account_id,80)||null,creditId=cleanText(body.credit_account_id,80)||null;
+  if(debitId) debitId=(await assertAnalyticActiveAccount(env,companyId,debitId,'o default de débito da Conta/Caixa')).id;
+  if(creditId) creditId=(await assertAnalyticActiveAccount(env,companyId,creditId,'o default de crédito da Conta/Caixa')).id;
+  if(!debitId&&!creditId) throw new HttpError(400,'Informe ao menos um default contábil de Débito ou Crédito.','VALIDATION_ERROR');
+  const dup=await env.DB.prepare(`SELECT id FROM financial_cash_accounts WHERE company_id=? AND code=? AND id<>? LIMIT 1`).bind(companyId,code,id||'').first();
+  if(dup) throw new HttpError(409,'Já existe Conta/Caixa com este código.','DUPLICATE_CASH_ACCOUNT');
+  let target=id;
+  if(id){
+    await getFinancialCashAccount(env,companyId,id);
+    await env.DB.prepare(`UPDATE financial_cash_accounts SET code=?,name=?,account_type=?,debit_account_id=?,credit_account_id=?,active=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND company_id=?`).bind(code,name,accountType,debitId,creditId,bool01(body.active,1),id,companyId).run();
+  }else{
+    target=uuid();
+    await env.DB.prepare(`INSERT INTO financial_cash_accounts (id,company_id,code,name,account_type,debit_account_id,credit_account_id,active) VALUES (?,?,?,?,?,?,?,?)`).bind(target,companyId,code,name,accountType,debitId,creditId,bool01(body.active,1)).run();
+  }
+  const after=await getFinancialCashAccount(env,companyId,target);
+  await audit(env,{companyId,userId:auth.user.id,action:id?'UPDATE':'CREATE',entity:'financial_cash_account',entityId:target,after:{code,name,account_type:accountType},request});
+  return after;
+}
+
+async function deleteFinancialCashAccount(env,request,auth,companyId,id){
+  await requirePermission(env,auth.user.id,companyId,'financial.cash_account.manage');
+  const before=await getFinancialCashAccount(env,companyId,id);
+  const used=await env.DB.prepare(`SELECT 1 FROM financial_payables WHERE company_id=? AND payment_cash_account_id=? LIMIT 1`).bind(companyId,id).first();
+  if(used){
+    await env.DB.prepare(`UPDATE financial_cash_accounts SET active=0,updated_at=CURRENT_TIMESTAMP WHERE id=? AND company_id=?`).bind(id,companyId).run();
+    await audit(env,{companyId,userId:auth.user.id,action:'INACTIVATE',entity:'financial_cash_account',entityId:id,before:{code:before.code,name:before.name},request});
+    return {inactivated:true,id};
+  }
+  await env.DB.prepare(`DELETE FROM financial_cash_accounts WHERE id=? AND company_id=?`).bind(id,companyId).run();
+  await audit(env,{companyId,userId:auth.user.id,action:'DELETE',entity:'financial_cash_account',entityId:id,before:{code:before.code,name:before.name},request});
+  return {deleted:true,id};
 }
 
 function parseJsonArray(value){
@@ -4665,6 +4845,13 @@ async function saveFinancialAccountingEvent(env,request,auth,companyId,id,body){
     let accountId=cleanText(raw.account_id,80)||null;
     if(origin==='FIXED') accountId=(await assertAnalyticActiveAccount(env,companyId,required(accountId,'conta contábil do item'),'a conta contábil do item')).id;
     else accountId=null;
+    let defaultSearch=cleanText(raw.default_search,80);
+    if(origin==='TABLE_DEFAULT'){
+      const normalized=String(defaultSearch||'').toUpperCase().replace(/\s+/g,'_').replace('/','_');
+      if(['CONTA_CAIXA','CONTA/CAIXA','ACCOUNT_CASH'].includes(normalized)) defaultSearch='ACCOUNT_CASH';
+      if(defaultSearch!=='ACCOUNT_CASH') throw new HttpError(400,'Para Tabela Default, selecione Conta/Caixa.','VALIDATION_ERROR');
+      if(!['D','C'].includes(String(raw.default_side||'').toUpperCase())) throw new HttpError(400,'Informe se o default da Conta/Caixa será de Débito ou Crédito.','VALIDATION_ERROR');
+    }
     if(raw.branch_id) await assertCompanyEntity(env,'branches',raw.branch_id,companyId);
     if(raw.cost_center_id) await assertCompanyEntity(env,'cost_centers',raw.cost_center_id,companyId);
     if(raw.history_template_id) await assertCompanyEntity(env,'history_templates',raw.history_template_id,companyId);
@@ -4677,7 +4864,7 @@ async function saveFinancialAccountingEvent(env,request,auth,companyId,id,body){
       description:cleanText(required(raw.description,'descrição do item'),300),
       apply_to:cleanText(raw.apply_to||process,60),
       account_origin:origin,account_id:accountId,
-      default_search:cleanText(raw.default_search,80),default_side:cleanText(raw.default_side,20),
+      default_search:origin==='TABLE_DEFAULT'?defaultSearch:null,default_side:origin==='TABLE_DEFAULT'?String(raw.default_side||'').toUpperCase():null,
       formula:cleanText(raw.formula,500),tax_code:cleanText(raw.tax_code,80),account_classification:cleanText(raw.account_classification,80),percentage:pct,
       branch_id:raw.branch_id||null,department:cleanText(raw.department,120),cost_center_id:raw.cost_center_id||null,
       history_template_id:raw.history_template_id||null,history_complement:cleanText(raw.history_complement,1000),
@@ -4782,8 +4969,9 @@ async function route(request, env) {
     await ensureRmPurchasingSchema(env);
   }
 
-  if (path.startsWith("/api/financial-accounting-events") || path==="/api/auth/permissions") {
+  if (path.startsWith("/api/financial-accounting-events") || path.startsWith("/api/financial-cash-accounts") || path.startsWith("/api/financial-payables") || path==="/api/auth/permissions") {
     await ensureFinancialAccountingEventSchema(env);
+    await ensureFinancialCashAccountSchema(env);
   }
 
   if (method==="GET" && path==="/api/auth/permissions") return ok({permissions:await getEffectivePermissions(env,auth.user.id,companyId)});
@@ -4994,6 +5182,13 @@ async function route(request, env) {
   // ---- Integração Compras / Financeiro / Contábil ----
   if(method==="GET"&&path==="/api/purchase-integration-settings"){await requirePermission(env,auth.user.id,companyId,"purchasing.integration.read");return ok({settings:await getPurchaseIntegrationSettings(env,companyId)});}
   if(method==="PUT"&&path==="/api/purchase-integration-settings")return ok({settings:await savePurchaseIntegrationSettings(env,request,auth,companyId,await readJson(request))});
+
+  if(method==="GET"&&path==="/api/financial-cash-accounts"){await requirePermission(env,auth.user.id,companyId,"financial.cash_account.read");return ok({accounts:await listFinancialCashAccounts(env,companyId)});}
+  if(method==="POST"&&path==="/api/financial-cash-accounts")return ok({account:await saveFinancialCashAccount(env,request,auth,companyId,null,await readJson(request))},201);
+  p=routeMatch(path,"/api/financial-cash-accounts/:id");
+  if(p&&method==="GET"){await requirePermission(env,auth.user.id,companyId,"financial.cash_account.read");return ok({account:await getFinancialCashAccount(env,companyId,p.id)});}
+  if(p&&method==="PATCH")return ok({account:await saveFinancialCashAccount(env,request,auth,companyId,p.id,await readJson(request))});
+  if(p&&method==="DELETE")return ok(await deleteFinancialCashAccount(env,request,auth,companyId,p.id));
 
   if(method==="GET"&&path==="/api/financial-accounting-events"){await requirePermission(env,auth.user.id,companyId,"financial.accounting_event.read");return ok({events:await listFinancialAccountingEvents(env,companyId)});}
   if(method==="POST"&&path==="/api/financial-accounting-events")return ok({event:await saveFinancialAccountingEvent(env,request,auth,companyId,null,await readJson(request))},201);
