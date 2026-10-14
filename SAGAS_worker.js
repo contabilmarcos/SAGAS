@@ -4569,6 +4569,56 @@ async function cancelFinancialPayable(env,request,auth,companyId,id){
   return after;
 }
 
+async function undoFinancialPayablePayment(env,request,auth,companyId,id){
+  await requirePermission(env,auth.user.id,companyId,'financial.payable.manage');
+  const before=await getFinancialPayable(env,companyId,id);
+  if(before.status!=='PAID') throw new HttpError(409,'Somente títulos baixados podem ter a baixa desfeita.','INVALID_STATUS');
+
+  const journalEntryId=before.payment_journal_entry_id||null;
+  if(journalEntryId){
+    const entry=await getEntry(env,companyId,journalEntryId);
+    if(entry.status==='POSTED'){
+      await requirePermission(env,auth.user.id,companyId,'accounting.entry.delete');
+      await deleteEntry(env,request,auth,companyId,journalEntryId);
+    }else if(entry.status!=='VOID'){
+      throw new HttpError(409,'O lançamento contábil vinculado à baixa está em uma situação que impede o estorno da baixa.','INVALID_ACCOUNTING_STATUS');
+    }
+  }
+
+  await env.DB.prepare(`
+    UPDATE financial_payables
+    SET status='OPEN',
+        balance_cents=amount_cents,
+        payment_date=NULL,
+        payment_notes=NULL,
+        payment_cash_account_id=NULL,
+        payment_accounting_event_id=NULL,
+        payment_accounting_batch_id=NULL,
+        payment_journal_entry_id=NULL,
+        payment_discount_cents=0,
+        payment_advance_cents=0,
+        payment_interest_cents=0,
+        payment_cash_cents=NULL,
+        paid_by=NULL,
+        paid_at=NULL,
+        updated_at=CURRENT_TIMESTAMP
+    WHERE id=? AND company_id=?
+  `).bind(id,companyId).run();
+
+  const after=await getFinancialPayable(env,companyId,id);
+  await audit(env,{
+    companyId,
+    userId:auth.user.id,
+    action:'UNDO_PAYMENT',
+    entity:'financial_payable',
+    entityId:id,
+    before:{status:before.status,balance_cents:before.balance_cents,payment_journal_entry_id:journalEntryId,payment_date:before.payment_date},
+    after:{status:after.status,balance_cents:after.balance_cents},
+    request
+  });
+  return after;
+}
+
 async function buildInternalPostedEntry(env,auth,companyId,body){
   const v=await validateEntry(env,companyId,body),entryId=uuid();
   const stmts=[env.DB.prepare(`
@@ -5220,6 +5270,7 @@ async function route(request, env) {
 
   if(method==="GET"&&path==="/api/financial-payables"){await requirePermission(env,auth.user.id,companyId,"financial.payable.read");return ok({payables:await listFinancialPayables(env,companyId)});}
   p=routeMatch(path,"/api/financial-payables/:id/pay"); if(p&&method==="POST")return ok({payable:await payFinancialPayable(env,request,auth,companyId,p.id,await readJson(request))});
+  p=routeMatch(path,"/api/financial-payables/:id/unpay"); if(p&&method==="POST")return ok({payable:await undoFinancialPayablePayment(env,request,auth,companyId,p.id)});
   p=routeMatch(path,"/api/financial-payables/:id/cancel"); if(p&&method==="POST")return ok({payable:await cancelFinancialPayable(env,request,auth,companyId,p.id)});
   p=routeMatch(path,"/api/financial-payables/:id"); if(p&&method==="GET"){await requirePermission(env,auth.user.id,companyId,"financial.payable.read");return ok({payable:await getFinancialPayable(env,companyId,p.id)});}
 
