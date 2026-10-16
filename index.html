@@ -3479,8 +3479,8 @@ setInterval(()=>checkSessionAccess(),30000);
   };
 })();
 </script>
-<!-- SAGAS V35 MODERN SHELL -->
-<style id="sagas-v35-modern-shell-style">
+<!-- SAGAS V36 MODERN SHELL -->
+<style id="sagas-v36-modern-shell-style">
 :root{
   --v35-sidebar:#172136;
   --v35-sidebar-2:#202c43;
@@ -3573,7 +3573,7 @@ setInterval(()=>checkSessionAccess(),30000);
 @media(max-width:760px){
   #app.sagas-v35-shell{grid-template-columns:76px minmax(0,1fr)!important}.sagas-v35-brand-text,.sagas-v35-company-name,.sagas-v35-company-card .sagas-v35-chevron,.sagas-v35-nav-title,.sagas-v35-module-btn>span:not(.sagas-v35-module-icon),.sagas-v35-submenu,.sagas-v35-settings>span,.sagas-v35-settings-menu,.sagas-v35-bottom-user,.sagas-v35-logout{display:none!important}.sagas-v35-brand{padding:0;justify-content:center}.sagas-v35-company-wrap{padding:12px}.sagas-v35-company-card{justify-content:center;padding:9px}.sagas-v35-module-btn{justify-content:center;padding:0}.sagas-v35-sidebar-bottom{padding:10px}.sagas-v35-settings{justify-content:center;padding:0}.sagas-v35-user-bottom{justify-content:center;padding:0}.sagas-v35-top-user-name{display:none}.sagas-v35-topbar{padding:0 14px}.sagas-v35-breadcrumb .module{display:none}.sagas-v35-breadcrumb .sep{display:none}}
 </style>
-<script id="sagas-v35-modern-shell-script">
+<script id="sagas-v36-modern-shell-script">
 (()=>{
   const app=document.getElementById('app');
   if(!app||document.getElementById('sagasV35Sidebar'))return;
@@ -3660,6 +3660,45 @@ setInterval(()=>checkSessionAccess(),30000);
     await nav(p);
   });
 
+  // v36: reconstrói o menu depois que as permissões da empresa forem carregadas.
+  // Na v35 o shell podia iniciar antes da resposta de /api/auth/permissions e,
+  // como S.permissions ainda estava vazio, nenhum módulo era criado.
+  function bindV35Navigation(){
+    document.querySelectorAll('.sagas-v35-module-btn').forEach(btn=>btn.onclick=()=>{
+      const wrap=btn.closest('.sagas-v35-module'),name=wrap.dataset.v35Module;
+      if(wrap.classList.contains('open')&&currentModule===name){wrap.classList.remove('open');return}
+      moduleHome(name);
+    });
+    document.querySelectorAll('[data-v35-page]').forEach(btn=>btn.onclick=async e=>{
+      e.stopPropagation();const p=btn.dataset.v35Page;currentModule=PAGE_MODULE[p]||currentModule;
+      document.querySelectorAll('.sagas-v35-module').forEach(m=>m.classList.toggle('open',m.dataset.v35Module===currentModule));
+      await nav(p);
+    });
+  }
+  function rebuildV35Navigation(){
+    if(!navArea)return;
+    navArea.innerHTML='';
+    Object.entries(V35_MODULES).forEach(([name,pages])=>{
+      const visible=pages.filter(([p])=>safeCan(p));
+      if(!visible.length)return;
+      const wrap=document.createElement('div');wrap.className='sagas-v35-module';wrap.dataset.v35Module=name;
+      wrap.innerHTML=`<button class="sagas-v35-module-btn"><span class="sagas-v35-module-icon">${moduleIcons[name]}</span><span>${name}</span><span class="sagas-v35-module-arrow">›</span></button><div class="sagas-v35-submenu">${visible.map(([p,label])=>`<button class="sagas-v35-subitem" data-v35-page="${p}">${label}</button>`).join('')}</div>`;
+      navArea.appendChild(wrap);
+    });
+    bindV35Navigation();
+    const activePage=S.page||'';
+    const activeModule=PAGE_MODULE[activePage]||currentModule;
+    document.querySelectorAll('.sagas-v35-module').forEach(m=>m.classList.toggle('open',m.dataset.v35Module===activeModule));
+    document.querySelectorAll('[data-v35-page]').forEach(b=>b.classList.toggle('active',b.dataset.v35Page===activePage));
+  }
+
+  const v36OriginalLoadPermissions=loadPermissions;
+  loadPermissions=async function(){
+    const r=await v36OriginalLoadPermissions();
+    rebuildV35Navigation();
+    return r;
+  };
+
   function syncCompany(){
     const select=document.getElementById('companySelect');const opt=select?.options?.[select.selectedIndex];const c=S.companies?.find(x=>x.id===S.companyId);
     const code=c?.code||String(opt?.text||'').split(' - ')[0]||'--';const name=c?.legal_name||String(opt?.text||'').replace(/^.*? - /,'')||'Empresa';
@@ -3696,8 +3735,15 @@ setInterval(()=>checkSessionAccess(),30000);
   nav=async function(p){const r=await v35OriginalNav(p);syncPage(S.page||p);return r};
   const titleNode=document.getElementById('pageTitle');if(titleNode)new MutationObserver(()=>{if(S.page)syncPage(S.page)}).observe(titleNode,{childList:true,subtree:true});
   const userNode=document.getElementById('userName');if(userNode)new MutationObserver(syncUser).observe(userNode,{childList:true,subtree:true});
-  window.SAGAS_V35={syncPage,moduleHome,syncCompany,syncUser};
+  window.SAGAS_V35={syncPage,moduleHome,syncCompany,syncUser,rebuildV35Navigation};
   syncCompany();syncUser();if(S.page)syncPage(S.page);else moduleHome(currentModule);
+  // Garante a construção do menu mesmo quando o carregamento automático da sessão
+  // começou antes da inicialização do novo shell.
+  if(S.token&&S.companyId){
+    setTimeout(()=>loadPermissions().catch(()=>rebuildV35Navigation()),0);
+  }else{
+    rebuildV35Navigation();
+  }
 })();
 </script>
 </body>
