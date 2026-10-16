@@ -3009,6 +3009,57 @@ async function ensurePurchasingSchema(env) {
     env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_purchase_receipt_order ON purchase_receipts(company_id,order_id)`)
   ]);
 
+
+  // v31: lançamento direto de Nota Fiscal de fornecedor, sem Solicitação/Cotação/Ordem.
+  await env.DB.batch([
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS purchase_invoices (
+      id TEXT PRIMARY KEY,
+      company_id TEXT NOT NULL,
+      number TEXT NOT NULL,
+      supplier_id TEXT NOT NULL,
+      branch_id TEXT,
+      movement_type_id TEXT NOT NULL,
+      issue_date TEXT NOT NULL,
+      entry_date TEXT NOT NULL,
+      document_number TEXT,
+      series TEXT,
+      due_date TEXT,
+      freight_cents INTEGER NOT NULL DEFAULT 0,
+      total_cents INTEGER NOT NULL DEFAULT 0,
+      notes TEXT,
+      accounting_event_id TEXT,
+      accounting_batch_id TEXT,
+      generate_financial INTEGER NOT NULL DEFAULT 0,
+      stock_effect TEXT NOT NULL DEFAULT 'NONE',
+      financial_payable_id TEXT,
+      journal_entry_id TEXT,
+      status TEXT NOT NULL DEFAULT 'POSTED',
+      created_by TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(company_id,number)
+    )`),
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS purchase_invoice_items (
+      id TEXT PRIMARY KEY,
+      company_id TEXT NOT NULL,
+      invoice_id TEXT NOT NULL,
+      line_no INTEGER NOT NULL,
+      product_id TEXT NOT NULL,
+      description TEXT NOT NULL,
+      item_type TEXT NOT NULL,
+      quantity_milli INTEGER NOT NULL,
+      unit TEXT NOT NULL,
+      unit_price_cents INTEGER NOT NULL,
+      total_cents INTEGER NOT NULL,
+      budget_nature_id TEXT,
+      cost_center_id TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(invoice_id,line_no)
+    )`),
+    env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_purchase_invoice_company_date ON purchase_invoices(company_id,entry_date,number)`),
+    env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_purchase_invoice_items_invoice ON purchase_invoice_items(company_id,invoice_id,line_no)`)
+  ]);
+
   for (const [code,description] of PURCHASE_PERMISSION_DEFS) {
     const exists=await env.DB.prepare(`SELECT id FROM permissions WHERE code=?`).bind(code).first();
     if (!exists) {
@@ -3523,6 +3574,263 @@ async function createReceipt(env,request,auth,companyId,body) {
   await audit(env,{companyId,userId:auth.user.id,action:'RECEIVE',entity:'purchase_order',entityId:order.id,after:{receipt:number,movement_type:movementType.code,integrations:integration.meta},request});
   const receipt=await getReceipt(env,companyId,rid);
   return {...receipt,integration_created:integration.meta};
+}
+
+
+async function listPurchaseInvoices(env,companyId){
+  const r=await env.DB.prepare(`
+    SELECT i.id,i.number,i.issue_date,i.entry_date,i.document_number,i.series,i.total_cents,i.status,
+           i.generate_financial,i.stock_effect,i.financial_payable_id,i.journal_entry_id,
+           s.code AS supplier_code,s.name AS supplier_name,
+           mt.code AS movement_type_code,mt.name AS movement_type_name,
+           COUNT(ii.id) AS item_count
+    FROM purchase_invoices i
+    JOIN purchase_suppliers s ON s.id=i.supplier_id
+    JOIN movement_types mt ON mt.id=i.movement_type_id
+    LEFT JOIN purchase_invoice_items ii ON ii.invoice_id=i.id AND ii.company_id=i.company_id
+    WHERE i.company_id=?
+    GROUP BY i.id
+    ORDER BY i.entry_date DESC,i.number DESC
+  `).bind(companyId).all();
+  return (r.results||[]).map(x=>({
+    ...x,
+    total:centsToMoney(x.total_cents),
+    item_count:Number(x.item_count||0)
+  }));
+}
+
+async function getPurchaseInvoice(env,companyId,id){
+  const inv=await env.DB.prepare(`
+    SELECT i.*,s.code AS supplier_code,s.name AS supplier_name,s.tax_id,
+           b.code AS branch_code,b.name AS branch_name,
+           mt.code AS movement_type_code,mt.name AS movement_type_name,
+           ev.code AS accounting_event_code,ev.name AS accounting_event_name,
+           jb.code AS accounting_batch_code,jb.description AS accounting_batch_description,
+           fp.number AS payable_number,fp.status AS payable_status,fp.balance_cents AS payable_balance_cents,
+           je.status AS journal_status
+    FROM purchase_invoices i
+    JOIN purchase_suppliers s ON s.id=i.supplier_id
+    LEFT JOIN branches b ON b.id=i.branch_id
+    JOIN movement_types mt ON mt.id=i.movement_type_id
+    LEFT JOIN movement_accounting_events ev ON ev.id=i.accounting_event_id
+    LEFT JOIN journal_batches jb ON jb.id=i.accounting_batch_id
+    LEFT JOIN financial_payables fp ON fp.id=i.financial_payable_id
+    LEFT JOIN journal_entries je ON je.id=i.journal_entry_id
+    WHERE i.id=? AND i.company_id=?
+  `).bind(id,companyId).first();
+  if(!inv)throw new HttpError(404,'Nota Fiscal não encontrada.','NOT_FOUND');
+  const r=await env.DB.prepare(`
+    SELECT ii.*,p.code AS product_code,
+           n.code AS nature_code,n.description AS nature_description,
+           cc.code AS cost_center_code,cc.name AS cost_center_name
+    FROM purchase_invoice_items ii
+    JOIN purchase_products p ON p.id=ii.product_id
+    LEFT JOIN budget_natures n ON n.id=ii.budget_nature_id
+    LEFT JOIN cost_centers cc ON cc.id=ii.cost_center_id
+    WHERE ii.company_id=? AND ii.invoice_id=?
+    ORDER BY ii.line_no
+  `).bind(companyId,id).all();
+  return {
+    ...inv,
+    total:centsToMoney(inv.total_cents),
+    freight:centsToMoney(inv.freight_cents),
+    payable_balance:inv.payable_balance_cents==null?null:centsToMoney(inv.payable_balance_cents),
+    items:(r.results||[]).map(x=>({
+      ...x,
+      quantity:milliToQty(x.quantity_milli),
+      unit_price:centsToMoney(x.unit_price_cents),
+      total:centsToMoney(x.total_cents)
+    }))
+  };
+}
+
+async function createPurchaseInvoice(env,request,auth,companyId,body){
+  await requirePermission(env,auth.user.id,companyId,'purchasing.receipt.manage');
+
+  const supplier=await purchaseEntity(env,'purchase_suppliers',required(body.supplier_id,'fornecedor'),companyId);
+  if(!supplier.active)throw new HttpError(409,'O fornecedor selecionado está inativo.','INACTIVE_SUPPLIER');
+
+  const movementType=await getMovementType(env,companyId,required(body.movement_type_id,'Tipo de Movimento'));
+  if(!movementType.active)throw new HttpError(409,'O Tipo de Movimento está inativo.','INACTIVE_MOVEMENT_TYPE');
+
+  const branchId=cleanText(body.branch_id,80)||null;
+  if(branchId)await assertCompanyEntity(env,'branches',branchId,companyId);
+
+  const issueDate=isoDate(body.issue_date||new Date().toISOString().slice(0,10),'data de emissão');
+  const entryDate=isoDate(body.entry_date||issueDate,'data de entrada');
+  const doc=cleanText(body.document_number,120);
+  const series=cleanText(body.series,40);
+
+  if(doc){
+    const dup=await env.DB.prepare(`
+      SELECT id FROM purchase_invoices
+      WHERE company_id=? AND supplier_id=? AND COALESCE(document_number,'')=? AND COALESCE(series,'')=?
+      LIMIT 1
+    `).bind(companyId,supplier.id,doc,series||'').first();
+    if(dup)throw new HttpError(409,'Já existe uma Nota Fiscal deste fornecedor com o mesmo número e série.','DUPLICATE_INVOICE');
+  }
+
+  const rawItems=Array.isArray(body.items)?body.items:[];
+  if(!rawItems.length)throw new HttpError(400,'Informe ao menos um item da Nota Fiscal.','VALIDATION_ERROR');
+
+  const valid=[];
+  let itemsSubtotal=0,lineNo=1;
+  for(const raw of rawItems){
+    const product=await purchaseEntity(env,'purchase_products',required(raw.product_id,'produto/serviço'),companyId);
+    if(!product.active)throw new HttpError(409,`O item ${product.code} está inativo.`,'INACTIVE_PRODUCT');
+
+    const q=qtyToMilli(raw.quantity,'quantidade');
+    const unitPrice=moneyToCents(raw.unit_price);
+    if(unitPrice<0)throw new HttpError(400,'Valor unitário inválido.','VALIDATION_ERROR');
+
+    let natureId=cleanText(raw.budget_nature_id,80)||null;
+    if(movementType.fetch_product_nature && !natureId)natureId=product.budget_nature_id||null;
+    if(natureId){
+      const nature=await assertCompanyEntity(env,'budget_natures',natureId,companyId);
+      if(!nature.active)throw new HttpError(409,`A Natureza do item ${product.code} está inativa.`,'INACTIVE_NATURE');
+    }
+
+    const costCenterId=cleanText(raw.cost_center_id,80)||movementType.default_cost_center_id||null;
+    if(costCenterId)await assertCompanyEntity(env,'cost_centers',costCenterId,companyId);
+
+    const total=Math.round(Number(unitPrice)*Number(q)/1000);
+    itemsSubtotal+=total;
+
+    valid.push({
+      q,
+      oi:{
+        id:uuid(),
+        line_no:lineNo++,
+        product_id:product.id,
+        product_code:product.code,
+        description:product.description,
+        item_type:product.item_type,
+        unit:cleanText(raw.unit,20)||product.purchase_unit||product.unit||'UN',
+        unit_price_cents:unitPrice,
+        total_cents:total,
+        budget_nature_id:natureId,
+        cost_center_id:costCenterId
+      }
+    });
+  }
+
+  const freightCents=moneyToCents(body.freight||0);
+  if(freightCents<0)throw new HttpError(400,'Valor de frete inválido.','VALIDATION_ERROR');
+  const totalCents=itemsSubtotal+freightCents;
+  if(totalCents<=0)throw new HttpError(409,'A Nota Fiscal não possui valor.','INVALID_AMOUNT');
+
+  let eventId=movementType.accounting_event_id||null;
+  if(movementType.allow_edit_accounting_event && body.accounting_event_id!==undefined){
+    eventId=cleanText(body.accounting_event_id,80)||null;
+  }
+  if(eventId){
+    const ev=await getMovementAccountingEvent(env,companyId,eventId);
+    if(!ev.active)throw new HttpError(409,'O Evento Contábil selecionado está inativo.','INACTIVE_ACCOUNTING_EVENT');
+  }
+  if(movementType.require_accounting_event&&!eventId){
+    throw new HttpError(409,'O Tipo de Movimento exige Evento Contábil.','ACCOUNTING_EVENT_REQUIRED');
+  }
+
+  const batchId=eventId?(cleanText(body.accounting_batch_id,80)||null):null;
+  if(eventId&&!batchId)throw new HttpError(409,'Informe o lote contábil da Nota Fiscal.','ACCOUNTING_BATCH_REQUIRED');
+
+  let batch=null;
+  if(batchId){
+    batch=await assertCompanyEntity(env,'journal_batches',batchId,companyId);
+    if(batch.status!=='OPEN')throw new HttpError(409,'O lote contábil precisa estar aberto.','BATCH_LOCKED');
+  }
+
+  const id=uuid();
+  const number=await nextPurchaseNumber(env,companyId,'purchase_invoices','NF-');
+  const finalDue=body.due_date?isoDate(body.due_date,'vencimento financeiro'):issueDate;
+  const stmts=[];
+  let payableMeta=null,journalMeta=null;
+
+  if(movementType.generate_financial){
+    const payableId=uuid(),payableNumber=await nextPayableNumber(env,companyId);
+    stmts.push(env.DB.prepare(`
+      INSERT INTO financial_payables
+      (id,company_id,number,supplier_id,source_type,source_id,receipt_id,issue_date,due_date,document_number,description,amount_cents,balance_cents,status,created_by)
+      VALUES (?,?,?,?,?,?,NULL,?,?,?,?,?,?,'OPEN',?)
+    `).bind(
+      payableId,companyId,payableNumber,supplier.id,'PURCHASE_INVOICE',id,
+      issueDate,finalDue,doc,`Nota Fiscal ${doc||number} - ${supplier.name}`,
+      totalCents,totalCents,auth.user.id
+    ));
+    payableMeta={id:payableId,number:payableNumber};
+  }
+
+  if(eventId){
+    const lines=await buildRmAccountingLines(env,companyId,{
+      eventId,
+      receiptItems:valid,
+      itemsSubtotal,
+      freightCents,
+      totalCents,
+      branchId,
+      documentNumber:doc||number,
+      supplierName:supplier.name
+    });
+    const built=await buildInternalPostedEntry(env,auth,companyId,{
+      batch_id:batchId,
+      branch_id:branchId,
+      entry_date:entryDate,
+      document_number:doc||number,
+      description:`Nota Fiscal ${doc||number} - ${supplier.name}`,
+      source_module:'PURCHASES',
+      source_reference:`INVOICE:${id}`,
+      lines
+    });
+    stmts.push(...built.stmts);
+    journalMeta={id:built.entryId};
+  }
+
+  stmts.unshift(env.DB.prepare(`
+    INSERT INTO purchase_invoices
+      (id,company_id,number,supplier_id,branch_id,movement_type_id,issue_date,entry_date,document_number,series,due_date,
+       freight_cents,total_cents,notes,accounting_event_id,accounting_batch_id,generate_financial,stock_effect,
+       financial_payable_id,journal_entry_id,status,created_by)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, 'POSTED',?)
+  `).bind(
+    id,companyId,number,supplier.id,branchId,movementType.id,issueDate,entryDate,doc,series,finalDue,
+    freightCents,totalCents,cleanText(body.notes,2000),eventId,batchId,movementType.generate_financial?1:0,movementType.stock_effect,
+    payableMeta?.id||null,journalMeta?.id||null,auth.user.id
+  ));
+
+  for(const {oi,q} of valid){
+    stmts.push(env.DB.prepare(`
+      INSERT INTO purchase_invoice_items
+        (id,company_id,invoice_id,line_no,product_id,description,item_type,quantity_milli,unit,unit_price_cents,total_cents,budget_nature_id,cost_center_id)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+    `).bind(
+      oi.id,companyId,id,oi.line_no,oi.product_id,oi.description,oi.item_type,q,oi.unit,
+      oi.unit_price_cents,oi.total_cents,oi.budget_nature_id,oi.cost_center_id
+    ));
+
+    if(oi.item_type==='PRODUCT'&&movementType.stock_effect!=='NONE'){
+      const sign=movementType.stock_effect==='OUT'?-1:1;
+      const delta=q*sign;
+      const bal=await env.DB.prepare(`SELECT id,quantity_milli FROM product_stock_balances WHERE company_id=? AND product_id=?`).bind(companyId,oi.product_id).first();
+      if(sign<0&&Number(bal?.quantity_milli||0)<q){
+        throw new HttpError(409,`Saldo insuficiente para movimentar ${oi.description}.`,'INSUFFICIENT_STOCK');
+      }
+      if(bal)stmts.push(env.DB.prepare(`UPDATE product_stock_balances SET quantity_milli=quantity_milli+?,updated_at=CURRENT_TIMESTAMP WHERE id=?`).bind(delta,bal.id));
+      else if(sign>0)stmts.push(env.DB.prepare(`INSERT INTO product_stock_balances (id,company_id,product_id,quantity_milli) VALUES (?,?,?,?)`).bind(uuid(),companyId,oi.product_id,q));
+      stmts.push(env.DB.prepare(`
+        INSERT INTO product_stock_movements
+          (id,company_id,product_id,movement_date,movement_type,quantity_milli,source_type,source_id)
+        VALUES (?,?,?,?,?,?,?,?)
+      `).bind(uuid(),companyId,oi.product_id,entryDate,movementType.code,delta,'PURCHASE_INVOICE',id));
+    }
+  }
+
+  await env.DB.batch(stmts);
+
+  if(payableMeta)await audit(env,{companyId,userId:auth.user.id,action:'CREATE',entity:'financial_payable',entityId:payableMeta.id,after:{source:'PURCHASE_INVOICE',invoice:number},request});
+  if(journalMeta)await audit(env,{companyId,userId:auth.user.id,action:'CREATE_POSTED',entity:'journal_entry',entityId:journalMeta.id,after:{source:'PURCHASE_INVOICE',invoice:number},request});
+  await audit(env,{companyId,userId:auth.user.id,action:'CREATE',entity:'purchase_invoice',entityId:id,after:{number,document_number:doc,total:centsToMoney(totalCents)},request});
+
+  return getPurchaseInvoice(env,companyId,id);
 }
 
 async function listStockBalances(env,companyId) {
@@ -5224,6 +5532,21 @@ async function route(request, env) {
   p=routeMatch(path,"/api/purchase-suppliers/:id");
   if (p && method==="PATCH") return ok({supplier:await savePurchaseSupplier(env,request,auth,companyId,p.id,await readJson(request))});
   if (p && method==="DELETE") return ok(await deletePurchaseMaster(env,request,auth,companyId,"supplier",p.id));
+
+
+  // ---- Lançamento direto de Nota Fiscal ----
+  if(method==="GET"&&path==="/api/purchase-invoices"){
+    await requirePermission(env,auth.user.id,companyId,"purchasing.receipt.read");
+    return ok({invoices:await listPurchaseInvoices(env,companyId)});
+  }
+  if(method==="POST"&&path==="/api/purchase-invoices"){
+    return ok({invoice:await createPurchaseInvoice(env,request,auth,companyId,await readJson(request))},201);
+  }
+  p=routeMatch(path,"/api/purchase-invoices/:id");
+  if(p&&method==="GET"){
+    await requirePermission(env,auth.user.id,companyId,"purchasing.receipt.read");
+    return ok({invoice:await getPurchaseInvoice(env,companyId,p.id)});
+  }
 
   if (method==="GET" && path==="/api/purchase-requests") { await requirePermission(env,auth.user.id,companyId,"purchasing.request.read"); return ok({requests:await listPurchaseRequests(env,companyId)}); }
   if (method==="POST" && path==="/api/purchase-requests") return ok({request:await createPurchaseRequest(env,request,auth,companyId,await readJson(request))},201);
