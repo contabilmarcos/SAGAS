@@ -1968,7 +1968,41 @@ async function deleteEntry(env, request, auth, companyId, id) {
   await requirePermission(env,auth.user.id,companyId,"accounting.entry.delete");
 
   const before=await entrySnapshot(env,companyId,id);
-  await assertEntryCanBeMaintained(env,companyId,before,"excluído");
+
+  // Exclusão é diferente de edição/anulação:
+  // permite remover tanto lançamento contabilizado quanto já anulado,
+  // desde que ainda esteja no lote de origem, o lote esteja aberto
+  // e o período contábil permita manutenção.
+  await ensureBatchIntegrationSchema(env);
+  await ensureAccountingPeriodSchema(env);
+
+  if (!["POSTED","VOID"].includes(before.status)) {
+    throw new HttpError(
+      409,
+      "Somente lançamento contabilizado ou anulado pode ser excluído.",
+      "INVALID_STATUS"
+    );
+  }
+
+  if (before.official_status==="INTEGRATED") {
+    throw new HttpError(
+      409,
+      "Este lançamento está no Lote 0. Desfaça a integração antes de excluí-lo.",
+      "ENTRY_IN_OFFICIAL_BATCH"
+    );
+  }
+
+  const batch=await assertCompanyEntity(env,"journal_batches",before.batch_id,companyId);
+  if (batch.status!=="OPEN") {
+    throw new HttpError(
+      409,
+      `O lote ${batch.code} não está aberto. Desbloqueie o lote antes de excluí-lo.`,
+      "BATCH_CLOSED"
+    );
+  }
+
+  const period=await assertCompanyEntity(env,"accounting_periods",batch.period_id,companyId);
+  assertDateOpenInPeriod(period,before.entry_date);
 
   await env.DB.batch([
     env.DB.prepare(`
