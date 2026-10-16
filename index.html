@@ -165,16 +165,13 @@ html,body{width:100%;height:100%;overflow:hidden;font-family:"Segoe UI",Tahoma,A
         <button class="nav" data-page="periods">□ <span>Períodos Contábeis</span></button>
         <button class="nav" data-page="batches">▤ <span>Lotes</span></button>
         <button class="nav" data-page="entries">⇄ <span>Lançamentos</span></button>
-        <div class="nav-section-title" data-nav-section="purchases">ESTOQUE, COMPRAS E FATURAMENTO</div>
+        <div class="nav-section-title" data-nav-section="purchases">NOTAS FISCAIS E ESTOQUE</div>
         <button class="nav" data-page="movement-types">▦ <span>Tipos de Movimento</span></button>
         <button class="nav" data-page="budget-natures">◇ <span>Naturezas Orçamentárias</span></button>
         <button class="nav" data-page="movement-events">⇄ <span>Eventos Contábeis de Movimento</span></button>
         <button class="nav" data-page="purchase-products">▦ <span>Produtos / Serviços</span></button>
         <button class="nav" data-page="purchase-suppliers">● <span>Fornecedores</span></button>
-        <button class="nav" data-page="purchase-requests">≡ <span>Solicitações</span></button>
-        <button class="nav" data-page="purchase-quotations">◇ <span>Cotações</span></button>
-        <button class="nav" data-page="purchase-orders">▤ <span>Ordens de Compra</span></button>
-        <button class="nav" data-page="purchase-receipts">✓ <span>Recebimentos</span></button>
+        <button class="nav" data-page="purchase-invoices">▤ <span>Notas Fiscais</span></button>
         <button class="nav" data-page="stock-balances">□ <span>Estoque Atual</span></button>
         <div class="nav-section-title" data-nav-section="finance">FINANCEIRO</div>
         <button class="nav" data-page="financial-cash-accounts">▦ <span>Contas / Caixa</span></button>
@@ -217,10 +214,7 @@ const meta={companies:['Empresas','Empresas disponíveis para o usuário'], 'bra
   'movement-events':['Eventos Contábeis de Movimento','Regras contábeis vinculadas aos Tipos de Movimento de Compras/Estoque'],
   'purchase-products':['Produtos / Serviços','Cadastro de produtos e serviços com Natureza padrão'],
   'purchase-suppliers':['Fornecedores','Cadastro de fornecedores do processo de compras'],
-  'purchase-requests':['Solicitações de Compra','Movimentos de solicitação de compra'],
-  'purchase-quotations':['Cotações','Cotação vinculada aos itens da solicitação'],
-  'purchase-orders':['Ordens de Compra','Movimentos gerados a partir da cotação e do relacionamento entre Tipos de Movimento'],
-  'purchase-receipts':['Recebimentos','Movimentos de entrada gerados a partir da Ordem de Compra'],
+  'purchase-invoices':['Notas Fiscais','Lançamento direto de notas fiscais de fornecedores'],
   'stock-balances':['Estoque Atual','Saldo físico por produto'],
   'financial-cash-accounts':['Contas / Caixa','Caixas e contas bancárias com defaults contábeis'],
   'financial-accounting-events':['Eventos Contábeis','Eventos contábeis próprios da Gestão Financeira'],
@@ -253,11 +247,11 @@ function badge(s){const m={OPEN:['Aberto','green'],CLOSED:['Fechado','gray'],LOC
 function empty(cols,t,x){return`<tr><td colspan="${cols}"><div class="empty"><b>${esc(t)}</b>${esc(x)}</div></td></tr>`}
 function tablePage({newLabel,onNew,cols,rows,emptyTitle,emptyText,placeholder='Pesquisar...'}){const newButton=newLabel&&onNew?`<button id="newBtn" class="btn primary">+ ${esc(newLabel)}</button>`:'';$('#content').innerHTML=`<div class="toolbar"><input id="search" class="search" placeholder="${esc(placeholder)}">${newButton}</div><div class="table-wrap"><table class="table"><thead><tr>${cols.map(x=>`<th>${esc(x)}</th>`).join('')}</tr></thead><tbody id="tbody">${rows||empty(cols.length,emptyTitle,emptyText)}</tbody></table></div>`;if($('#newBtn'))$('#newBtn').onclick=onNew;$('#search').oninput=e=>{const q=e.target.value.toLowerCase().trim();$$('#tbody tr').forEach(r=>r.style.display=!q||r.innerText.toLowerCase().includes(q)?'':'none')}}
 
-const pagePermission={companies:'core.company.manage','branches-admin':'core.branch.read',users:'core.user.read',roles:'core.role.manage',accounts:'accounting.account.read','cost-centers':'accounting.cost_center.read',history:'accounting.history.read',periods:'accounting.period.read',batches:'accounting.batch.read',entries:'accounting.entry.read','movement-types':'purchasing.movement_type.read','budget-natures':'purchasing.nature.read','movement-events':'purchasing.accounting_event.read','purchase-products':'purchasing.product.read','purchase-suppliers':'purchasing.supplier.read','purchase-requests':'purchasing.request.read','purchase-quotations':'purchasing.quotation.read','purchase-orders':'purchasing.order.read','purchase-receipts':'purchasing.receipt.read','stock-balances':'purchasing.location.read','financial-cash-accounts':'financial.cash_account.read','financial-accounting-events':'financial.accounting_event.read','financial-payables':'financial.payable.read'};
-const navGroups={admin:['companies','branches-admin','users','roles'],accounting:['accounts','cost-centers','history','periods','batches','entries'],purchases:['movement-types','budget-natures','movement-events','purchase-products','purchase-suppliers','purchase-requests','purchase-quotations','purchase-orders','purchase-receipts','stock-balances'],finance:['financial-cash-accounts','financial-accounting-events','financial-payables']};
+const pagePermission={companies:'core.company.manage','branches-admin':'core.branch.read',users:'core.user.read',roles:'core.role.manage',accounts:'accounting.account.read','cost-centers':'accounting.cost_center.read',history:'accounting.history.read',periods:'accounting.period.read',batches:'accounting.batch.read',entries:'accounting.entry.read','movement-types':'purchasing.movement_type.read','budget-natures':'purchasing.nature.read','movement-events':'purchasing.accounting_event.read','purchase-products':'purchasing.product.read','purchase-suppliers':'purchasing.supplier.read','purchase-invoices':'purchasing.receipt.read','stock-balances':'purchasing.product.read','financial-cash-accounts':'financial.cash_account.read','financial-accounting-events':'financial.accounting_event.read','financial-payables':'financial.payable.read'};
+const navGroups={admin:['companies','branches-admin','users','roles'],accounting:['accounts','cost-centers','history','periods','batches','entries'],purchases:['movement-types','budget-natures','movement-events','purchase-products','purchase-suppliers','purchase-invoices','stock-balances'],finance:['financial-cash-accounts','financial-accounting-events','financial-payables']};
 function can(code){return S.permissions.includes(code)}
 function canPage(page){const code=pagePermission[page];return !code||can(code)}
-function firstAllowedPage(){return ['companies','branches-admin','users','roles','accounts','cost-centers','history','periods','batches','entries','movement-types','budget-natures','movement-events','purchase-products','purchase-suppliers','purchase-requests','purchase-quotations','purchase-orders','purchase-receipts','stock-balances','financial-cash-accounts','financial-accounting-events','financial-payables'].find(canPage)||'accounts'}
+function firstAllowedPage(){return ['companies','branches-admin','users','roles','accounts','cost-centers','history','periods','batches','entries','movement-types','budget-natures','movement-events','purchase-products','purchase-suppliers','purchase-invoices','stock-balances','financial-cash-accounts','financial-accounting-events','financial-payables'].find(canPage)||'accounts'}
 function applyMenuAccess(){$$('.nav[data-page]').forEach(btn=>btn.classList.toggle('hidden',!canPage(btn.dataset.page)));Object.entries(navGroups).forEach(([group,pages])=>{const title=$(`[data-nav-section="${group}"]`);if(title)title.classList.toggle('hidden',!pages.some(canPage))})}
 async function loadPermissions(){if(!S.companyId){S.permissions=[];applyMenuAccess();return}const d=await api('/api/auth/permissions');S.permissions=d.permissions||[];applyMenuAccess()}
 
@@ -265,7 +259,7 @@ function showLogin(){$('#app').classList.add('hidden');$('#loginScreen').classLi
 async function showApp(){$('#loginScreen').classList.add('hidden');$('#app').classList.remove('hidden');chrome();await loadPermissions();if(!canPage(S.page))S.page=firstAllowedPage();await nav(S.page)}
 function chrome(){$('#userName').textContent=S.user?.name||'Usuário';$('#userEmail').textContent=S.user?.email||'';$('#avatar').textContent=(S.user?.name||'U').trim()[0].toUpperCase();$('#companySelect').innerHTML=S.companies.map(c=>`<option value="${esc(c.id)}">${esc(c.code)} - ${esc(c.legal_name)}</option>`).join('');$('#companySelect').value=S.companyId}
 function apiStatus(){$('#apiStatus').textContent=S.api?'API: '+S.api:'API não configurada'}
-async function nav(p){if(!canPage(p))p=firstAllowedPage();S.page=p;$('#pageTitle').textContent=meta[p][0];$('#pageSub').textContent=meta[p][1];$$('.nav[data-page]').forEach(b=>b.classList.toggle('active',b.dataset.page===p));$('#content').innerHTML='<div class="empty"><b>Carregando...</b></div>';try{if(p==='companies')await renderCompanies();if(p==='branches-admin')await renderBranchesAdmin();if(p==='users')await renderUsers();if(p==='roles')await renderRoles();if(p==='accounts')await renderAccounts();if(p==='cost-centers')await renderCC();if(p==='history')await renderHistory();if(p==='periods')await renderPeriods();if(p==='batches')await renderBatches();if(p==='entries')await renderEntries();if(p==='movement-types')await renderMovementTypes();if(p==='budget-natures')await renderBudgetNatures();if(p==='movement-events')await renderMovementEvents();if(p==='purchase-products')await renderPurchaseProducts();if(p==='purchase-suppliers')await renderPurchaseSuppliers();if(p==='purchase-requests')await renderPurchaseRequests();if(p==='purchase-quotations')await renderPurchaseQuotations();if(p==='purchase-orders')await renderPurchaseOrders();if(p==='purchase-receipts')await renderPurchaseReceipts();if(p==='stock-balances')await renderStockBalances();if(p==='financial-cash-accounts')await renderFinancialCashAccounts();if(p==='financial-accounting-events')await renderFinancialAccountingEvents();if(p==='financial-payables')await renderFinancialPayables()}catch(e){$('#content').innerHTML=`<div class="empty"><b>Não foi possível carregar</b>${esc(e.message)}</div>`;if(e.status===401){clear();showLogin()}}}
+async function nav(p){if(!canPage(p))p=firstAllowedPage();S.page=p;$('#pageTitle').textContent=meta[p][0];$('#pageSub').textContent=meta[p][1];$$('.nav[data-page]').forEach(b=>b.classList.toggle('active',b.dataset.page===p));$('#content').innerHTML='<div class="empty"><b>Carregando...</b></div>';try{if(p==='companies')await renderCompanies();if(p==='branches-admin')await renderBranchesAdmin();if(p==='users')await renderUsers();if(p==='roles')await renderRoles();if(p==='accounts')await renderAccounts();if(p==='cost-centers')await renderCC();if(p==='history')await renderHistory();if(p==='periods')await renderPeriods();if(p==='batches')await renderBatches();if(p==='entries')await renderEntries();if(p==='movement-types')await renderMovementTypes();if(p==='budget-natures')await renderBudgetNatures();if(p==='movement-events')await renderMovementEvents();if(p==='purchase-products')await renderPurchaseProducts();if(p==='purchase-suppliers')await renderPurchaseSuppliers();if(p==='purchase-invoices')await renderPurchaseInvoices();if(p==='purchase-requests')await renderPurchaseRequests();if(p==='purchase-quotations')await renderPurchaseQuotations();if(p==='purchase-orders')await renderPurchaseOrders();if(p==='purchase-receipts')await renderPurchaseReceipts();if(p==='stock-balances')await renderStockBalances();if(p==='financial-cash-accounts')await renderFinancialCashAccounts();if(p==='financial-accounting-events')await renderFinancialAccountingEvents();if(p==='financial-payables')await renderFinancialPayables()}catch(e){$('#content').innerHTML=`<div class="empty"><b>Não foi possível carregar</b>${esc(e.message)}</div>`;if(e.status===401){clear();showLogin()}}}
 
 async function refreshSession(){const d=await api('/api/auth/me',{company:false});S.user=d.user;S.companies=d.companies||[];if(!S.companies.length){loseSession('Seu usuário não possui acesso ativo a nenhuma empresa.');return}if(!S.companies.some(c=>c.id===S.companyId))S.companyId=S.companies[0]?.id||'';save();chrome();await loadPermissions()}
 async function companyList(force=false){if(!force&&S.cache.companies)return S.cache.companies;const d=await api('/api/companies',{company:false});return S.cache.companies=d.companies||[]}
@@ -430,7 +424,7 @@ function accountClass(v){return({ASSET:'Ativo',LIABILITY:'Passivo',EQUITY:'Patri
 async function load(k,path,key,force=false){if(!force&&S.cache[k])return S.cache[k];const d=await api(path);return S.cache[k]=d[key]||[]}
 const accounts=f=>load('accounts','/api/accounts','accounts',f), ccs=f=>load('ccs','/api/cost-centers','cost_centers',f), histories=f=>load('hist','/api/history-templates','history_templates',f), periods=f=>load('periods','/api/accounting-periods','periods',f), batches=f=>load('batches','/api/journal-batches','batches',f), branches=f=>load('branches','/api/branches','branches',f);
 const movementTypes=f=>load('movementTypes','/api/movement-types','movement_types',f), budgetNatures=f=>load('budgetNatures','/api/budget-natures','natures',f), movementEvents=f=>load('movementEvents','/api/movement-accounting-events','events',f);
-const purchaseProducts=f=>load('purchaseProducts','/api/purchase-products','products',f), purchaseSuppliers=f=>load('purchaseSuppliers','/api/purchase-suppliers','suppliers',f);
+const purchaseProducts=f=>load('purchaseProducts','/api/purchase-products','products',f), purchaseSuppliers=f=>load('purchaseSuppliers','/api/purchase-suppliers','suppliers',f), purchaseInvoices=f=>load('purchaseInvoices','/api/purchase-invoices','invoices',f);
 
 const ACCOUNT_MASK_WIDTHS=[1,2,2,2,4];
 const ACCOUNT_MASK_CUMULATIVE=[1,3,5,7,11];
@@ -2545,8 +2539,8 @@ async function purchaseProductForm(x=null){
   $('#purchaseProductForm').onsubmit=async e=>{e.preventDefault();const f=new FormData(e.target),body=Object.fromEntries(f);body.active=e.target.active.checked;body.budget_nature_id=body.budget_nature_id||null;try{await api(x?`/api/purchase-products/${x.id}`:'/api/purchase-products',{method:x?'PATCH':'POST',body});S.cache.purchaseProducts=null;closeModal();toast('Produto/serviço salvo.');renderPurchaseProducts()}catch(err){toast(err.message,'error')}};
 }
 
-async function renderPurchaseSuppliers(){const a=await purchaseSuppliers(true),manage=can('purchasing.supplier.manage');tablePage({newLabel:manage?'Novo fornecedor':null,onNew:manage?()=>purchaseSupplierForm():null,cols:['Código','Fornecedor','CNPJ/CPF','Contato','Situação','Ações'],rows:a.length?a.map(x=>`<tr><td class="code">${esc(x.code)}</td><td>${esc(x.name)}</td><td>${esc(x.tax_id||'')}</td><td>${esc(x.contact_name||x.email||'')}</td><td>${x.active?'<span class="badge green">Ativo</span>':'<span class="badge red">Inativo</span>'}</td><td><div class="actions">${manage?`<button class="btn secondary sm" data-edit-supplier="${x.id}">Editar</button><button class="btn danger sm" data-del-supplier="${x.id}">Excluir</button>`:''}</div></td></tr>`).join(''):null,emptyTitle:'Nenhum fornecedor',emptyText:'Cadastre fornecedores para participar das cotações.'});$$('[data-edit-supplier]').forEach(b=>b.onclick=()=>purchaseSupplierForm(a.find(x=>x.id===b.dataset.editSupplier)));$$('[data-del-supplier]').forEach(b=>b.onclick=()=>purchaseDeleteMaster('supplier',b.dataset.delSupplier,'Fornecedor',renderPurchaseSuppliers))}
-function purchaseSupplierForm(x=null){openModal(x?'Editar fornecedor':'Novo fornecedor','Dados usados nas cotações e ordens de compra.',`<form id="purchaseSupplierForm"><div class="grid"><label class="field"><span>Código</span><input name="code" value="${esc(x?.code||'')}" required></label><label class="field"><span>CNPJ/CPF</span><input name="tax_id" value="${esc(x?.tax_id||'')}"></label><label class="field full"><span>Nome / Razão social</span><input name="name" value="${esc(x?.name||'')}" required></label><label class="field"><span>Contato</span><input name="contact_name" value="${esc(x?.contact_name||'')}"></label><label class="field"><span>Telefone</span><input name="phone" value="${esc(x?.phone||'')}"></label><label class="field full"><span>E-mail</span><input name="email" type="email" value="${esc(x?.email||'')}"></label><label class="field full"><span>Observações</span><textarea name="notes" rows="3">${esc(x?.notes||'')}</textarea></label><label class="check full"><input name="active" type="checkbox" ${x?.active!==0?'checked':''}> Ativo</label></div><div class="form-actions"><button type="button" class="btn secondary" data-close>Cancelar</button><button class="btn primary">Salvar</button></div></form>`);$('[data-close]').onclick=closeModal;$('#purchaseSupplierForm').onsubmit=async e=>{e.preventDefault();const body=Object.fromEntries(new FormData(e.target));body.active=e.target.active.checked;try{await api(x?`/api/purchase-suppliers/${x.id}`:'/api/purchase-suppliers',{method:x?'PATCH':'POST',body});S.cache.purchaseSuppliers=null;closeModal();toast('Fornecedor salvo.');renderPurchaseSuppliers()}catch(err){toast(err.message,'error')}}}
+async function renderPurchaseSuppliers(){const a=await purchaseSuppliers(true),manage=can('purchasing.supplier.manage');tablePage({newLabel:manage?'Novo fornecedor':null,onNew:manage?()=>purchaseSupplierForm():null,cols:['Código','Fornecedor','CNPJ/CPF','Contato','Situação','Ações'],rows:a.length?a.map(x=>`<tr><td class="code">${esc(x.code)}</td><td>${esc(x.name)}</td><td>${esc(x.tax_id||'')}</td><td>${esc(x.contact_name||x.email||'')}</td><td>${x.active?'<span class="badge green">Ativo</span>':'<span class="badge red">Inativo</span>'}</td><td><div class="actions">${manage?`<button class="btn secondary sm" data-edit-supplier="${x.id}">Editar</button><button class="btn danger sm" data-del-supplier="${x.id}">Excluir</button>`:''}</div></td></tr>`).join(''):null,emptyTitle:'Nenhum fornecedor',emptyText:'Cadastre os fornecedores utilizados nas notas fiscais.'});$$('[data-edit-supplier]').forEach(b=>b.onclick=()=>purchaseSupplierForm(a.find(x=>x.id===b.dataset.editSupplier)));$$('[data-del-supplier]').forEach(b=>b.onclick=()=>purchaseDeleteMaster('supplier',b.dataset.delSupplier,'Fornecedor',renderPurchaseSuppliers))}
+function purchaseSupplierForm(x=null){openModal(x?'Editar fornecedor':'Novo fornecedor','Dados utilizados no lançamento das notas fiscais.',`<form id="purchaseSupplierForm"><div class="grid"><label class="field"><span>Código</span><input name="code" value="${esc(x?.code||'')}" required></label><label class="field"><span>CNPJ/CPF</span><input name="tax_id" value="${esc(x?.tax_id||'')}"></label><label class="field full"><span>Nome / Razão social</span><input name="name" value="${esc(x?.name||'')}" required></label><label class="field"><span>Contato</span><input name="contact_name" value="${esc(x?.contact_name||'')}"></label><label class="field"><span>Telefone</span><input name="phone" value="${esc(x?.phone||'')}"></label><label class="field full"><span>E-mail</span><input name="email" type="email" value="${esc(x?.email||'')}"></label><label class="field full"><span>Observações</span><textarea name="notes" rows="3">${esc(x?.notes||'')}</textarea></label><label class="check full"><input name="active" type="checkbox" ${x?.active!==0?'checked':''}> Ativo</label></div><div class="form-actions"><button type="button" class="btn secondary" data-close>Cancelar</button><button class="btn primary">Salvar</button></div></form>`);$('[data-close]').onclick=closeModal;$('#purchaseSupplierForm').onsubmit=async e=>{e.preventDefault();const body=Object.fromEntries(new FormData(e.target));body.active=e.target.active.checked;try{await api(x?`/api/purchase-suppliers/${x.id}`:'/api/purchase-suppliers',{method:x?'PATCH':'POST',body});S.cache.purchaseSuppliers=null;closeModal();toast('Fornecedor salvo.');renderPurchaseSuppliers()}catch(err){toast(err.message,'error')}}}
 
 async function purchaseDeleteMaster(type,id,label,rerender){purchaseConfirm(`Excluir ${label.toLowerCase()}`,`Confirma a exclusão deste ${label.toLowerCase()}? Se já houver movimentação, o cadastro será apenas inativado.`,async()=>{try{const d=await api(`/api/purchase-${type==='product'?'products':'suppliers'}/${id}`,{method:'DELETE'});S.cache.purchaseProducts=S.cache.purchaseSuppliers=null;closeModal();toast(d.inactivated?'Cadastro em uso: foi inativado.':'Cadastro excluído.');rerender()}catch(e){toast(e.message,'error')}})}
 
@@ -2763,6 +2757,191 @@ async function purchaseReceiptView(id){
       <div class="section-title">Itens recebidos</div><div class="table-wrap"><table class="table"><thead><tr><th>Produto/Serviço</th><th>Natureza</th><th>Quantidade</th></tr></thead><tbody>${r.items.map(x=>`<tr><td><b>${esc(x.product_code)}</b> - ${esc(x.description)}</td><td>${esc(x.nature_code?x.nature_code+' - '+x.nature_description:'—')}</td><td>${qtyBR(x.quantity)} ${esc(x.unit)}</td></tr>`).join('')}</tbody></table></div>
       <div class="form-actions"><button class="btn secondary" data-close>Fechar</button>${pi&&can('financial.payable.read')?'<button id="openReceiptPayable" class="btn secondary">Abrir Contas a Pagar</button>':''}</div>`,true);
     $('[data-close]').onclick=closeModal;if($('#openReceiptPayable'))$('#openReceiptPayable').onclick=()=>{closeModal();nav('financial-payables')}
+  }catch(e){toast(e.message,'error')}
+}
+
+
+async function renderPurchaseInvoices(){
+  const a=await purchaseInvoices(true),manage=can('purchasing.receipt.manage');
+  tablePage({
+    newLabel:manage?'Nova Nota Fiscal':null,
+    onNew:manage?()=>purchaseInvoiceForm():null,
+    cols:['Lançamento','Nota Fiscal','Emissão','Entrada','Fornecedor','Tipo de Movimento','Itens','Valor','Financeiro','Contábil','Ações'],
+    rows:a.length?a.map(x=>`<tr>
+      <td class="code">${esc(x.number)}</td>
+      <td>${esc(x.document_number||'—')}${x.series?` / ${esc(x.series)}`:''}</td>
+      <td>${dateBR(x.issue_date)}</td>
+      <td>${dateBR(x.entry_date)}</td>
+      <td>${esc(x.supplier_code)} - ${esc(x.supplier_name)}</td>
+      <td>${esc(x.movement_type_code)} - ${esc(x.movement_type_name)}</td>
+      <td>${Number(x.item_count||0)}</td>
+      <td><b>${money(x.total)}</b></td>
+      <td>${x.financial_payable_id?'<span class="badge blue">Gerado</span>':'<span class="badge gray">Não gera</span>'}</td>
+      <td>${x.journal_entry_id?'<span class="badge green">Contabilizado</span>':'<span class="badge gray">Sem lançamento</span>'}</td>
+      <td><button class="btn secondary sm" data-open-invoice="${x.id}">Abrir</button></td>
+    </tr>`).join(''):null,
+    emptyTitle:'Nenhuma Nota Fiscal lançada',
+    emptyText:manage?'Clique em Nova Nota Fiscal para registrar uma nota de fornecedor.':'Nenhuma Nota Fiscal disponível.'
+  });
+  $$('[data-open-invoice]').forEach(b=>b.onclick=()=>purchaseInvoiceView(b.dataset.openInvoice));
+}
+
+async function purchaseInvoiceForm(){
+  const [ss,pp,mts,br,evs,ba,ns,centers]=await Promise.all([
+    purchaseSuppliers(),purchaseProducts(),movementTypes(),branches(),movementEvents(),batches(),budgetNatures(),ccs()
+  ]);
+  const suppliers=ss.filter(x=>x.active),products=pp.filter(x=>x.active),types=mts.filter(x=>x.active);
+  const activeBranches=br.filter(x=>x.active),events=evs.filter(x=>x.active),openBatches=ba.filter(x=>x.status==='OPEN');
+  const natures=ns.filter(x=>x.active&&x.synthetic_analytic==='ANALYTIC'),costCenters=centers.filter(x=>x.active);
+  if(!suppliers.length)return toast('Cadastre ao menos um fornecedor ativo.','error');
+  if(!products.length)return toast('Cadastre ao menos um produto ou serviço ativo.','error');
+  if(!types.length)return toast('Cadastre ao menos um Tipo de Movimento ativo.','error');
+
+  const today=new Date().toISOString().slice(0,10);
+  const productMap=new Map(products.map(x=>[String(x.id),x]));
+  const typeMap=new Map(types.map(x=>[String(x.id),x]));
+  const natureOptions=(val='')=>`<option value="">Sem natureza</option>${natures.map(x=>`<option value="${x.id}" ${String(x.id)===String(val)?'selected':''}>${esc(x.code)} - ${esc(x.description)}</option>`).join('')}`;
+  const ccOptions=(val='')=>`<option value="">Sem centro</option>${costCenters.map(x=>`<option value="${x.id}" ${String(x.id)===String(val)?'selected':''}>${esc(x.code)} - ${esc(x.name)}</option>`).join('')}`;
+
+  openModal('Nova Nota Fiscal','Lance a nota diretamente. Solicitação, cotação e ordem de compra não são necessárias.',`
+    <form id="purchaseInvoiceForm">
+      <div class="grid three">
+        <label class="field" style="grid-column:span 2"><span>Fornecedor</span><select name="supplier_id" required><option value="">Selecione</option>${suppliers.map(x=>`<option value="${x.id}">${esc(x.code)} - ${esc(x.name)}</option>`).join('')}</select></label>
+        <label class="field"><span>Tipo de Movimento</span><select name="movement_type_id" id="invoiceMovementType" required><option value="">Selecione</option>${types.map(x=>`<option value="${x.id}">${esc(x.code)} - ${esc(x.name)}</option>`).join('')}</select></label>
+        <label class="field"><span>Emissão</span><input name="issue_date" type="date" value="${today}" required></label>
+        <label class="field"><span>Entrada</span><input name="entry_date" type="date" value="${today}" required></label>
+        <label class="field"><span>Vencimento</span><input name="due_date" type="date" value="${today}"></label>
+        <label class="field"><span>Número da Nota</span><input name="document_number" required></label>
+        <label class="field"><span>Série</span><input name="series"></label>
+        <label class="field"><span>Filial</span><select name="branch_id"><option value="">Sem filial</option>${activeBranches.map(x=>`<option value="${x.id}">${esc(x.code)} - ${esc(x.name)}</option>`).join('')}</select></label>
+        <label class="field"><span>Frete</span><input name="freight" inputmode="decimal" value="0,00"></label>
+        <label class="field" style="grid-column:span 2"><span>Evento Contábil</span><select name="accounting_event_id" id="invoiceAccountingEvent"><option value="">Sem evento</option>${events.map(x=>`<option value="${x.id}">${esc(x.code)} - ${esc(x.name)}</option>`).join('')}</select></label>
+        <label class="field"><span>Lote Contábil</span><select name="accounting_batch_id" id="invoiceAccountingBatch"><option value="">Selecione</option>${openBatches.map(x=>`<option value="${x.id}">${esc(x.code)} - ${esc(x.description)}</option>`).join('')}</select></label>
+        <label class="field full"><span>Observações</span><textarea name="notes" rows="2"></textarea></label>
+      </div>
+      <div id="invoiceTypeInfo" class="help" style="margin-top:10px">Selecione o Tipo de Movimento para definir financeiro, estoque e contabilização.</div>
+      <div class="section-title">Itens da Nota Fiscal</div>
+      <div class="table-wrap"><table class="table"><thead><tr><th>Produto / Serviço</th><th>Qtd.</th><th>Un.</th><th>Valor unitário</th><th>Natureza</th><th>Centro de Custo</th><th>Total</th><th></th></tr></thead><tbody id="invoiceItemBody"></tbody></table></div>
+      <div style="margin-top:9px"><button type="button" id="addInvoiceItem" class="btn secondary sm">+ Adicionar item</button></div>
+      <div class="form-actions"><button type="button" class="btn secondary" data-close>Cancelar</button><button class="btn primary">Lançar Nota Fiscal</button></div>
+    </form>`,true);
+
+  $('[data-close]').onclick=closeModal;
+  const tbody=$('#invoiceItemBody');
+
+  function addRow(row={}){
+    const tr=document.createElement('tr');
+    tr.innerHTML=`
+      <td><select class="inv-product" required><option value="">Selecione</option>${products.map(x=>`<option value="${x.id}" ${String(x.id)===String(row.product_id||'')?'selected':''}>${esc(x.code)} - ${esc(x.description)}</option>`).join('')}</select></td>
+      <td><input class="inv-qty" inputmode="decimal" value="${esc(row.quantity||'1')}" style="width:85px"></td>
+      <td><input class="inv-unit" value="${esc(row.unit||'UN')}" style="width:70px"></td>
+      <td><input class="inv-price" inputmode="decimal" value="${esc(row.unit_price||'0,00')}" style="width:110px"></td>
+      <td><select class="inv-nature">${natureOptions(row.budget_nature_id||'')}</select></td>
+      <td><select class="inv-cc">${ccOptions(row.cost_center_id||'')}</select></td>
+      <td class="inv-total" style="white-space:nowrap;font-weight:600">${money(0)}</td>
+      <td><button type="button" class="remove-line">×</button></td>`;
+    tbody.appendChild(tr);
+
+    const productSel=$('.inv-product',tr),qty=$('.inv-qty',tr),unit=$('.inv-unit',tr),price=$('.inv-price',tr),nature=$('.inv-nature',tr);
+    const recalc=()=>{
+      const q=Number(String(qty.value||'0').replace(/\./g,'').replace(',','.'))||0;
+      const p=Number(String(price.value||'0').replace(/\./g,'').replace(',','.'))||0;
+      $('.inv-total',tr).textContent=money(q*p);
+    };
+    productSel.onchange=()=>{
+      const p=productMap.get(String(productSel.value));
+      if(p){
+        unit.value=p.purchase_unit||p.unit||'UN';
+        const mt=typeMap.get(String($('#invoiceMovementType').value));
+        if(mt?.fetch_product_nature&&p.budget_nature_id)nature.value=p.budget_nature_id;
+      }
+      recalc();
+    };
+    qty.oninput=recalc;price.oninput=recalc;
+    $('.remove-line',tr).onclick=()=>tr.remove();
+    recalc();
+  }
+
+  addRow();
+  $('#addInvoiceItem').onclick=()=>addRow();
+
+  function syncType(){
+    const mt=typeMap.get(String($('#invoiceMovementType').value));
+    const ev=$('#invoiceAccountingEvent'),batch=$('#invoiceAccountingBatch');
+    if(!mt){
+      $('#invoiceTypeInfo').textContent='Selecione o Tipo de Movimento para definir financeiro, estoque e contabilização.';
+      ev.disabled=false;return;
+    }
+    $('#invoiceTypeInfo').innerHTML=`<b>Tipo ${esc(mt.code)}:</b> ${mt.generate_financial?'gera Contas a Pagar':'não gera financeiro'} • ${mt.stock_effect==='IN'?'entrada no estoque':mt.stock_effect==='OUT'?'saída do estoque':'sem efeito no estoque'} • ${mt.accounting_event_id?'possui Evento Contábil padrão':'sem Evento Contábil padrão'}.`;
+    if(mt.accounting_event_id)ev.value=mt.accounting_event_id;
+    if(!mt.allow_edit_accounting_event)ev.disabled=true;else ev.disabled=false;
+    if(!mt.accounting_event_id&&mt.require_accounting_event)ev.disabled=false;
+    batch.disabled=!(ev.value||mt.accounting_event_id);
+    $$('#invoiceItemBody tr').forEach(tr=>{
+      const p=productMap.get(String($('.inv-product',tr).value));
+      if(mt.fetch_product_nature&&p?.budget_nature_id)$('.inv-nature',tr).value=p.budget_nature_id;
+    });
+  }
+  $('#invoiceMovementType').onchange=syncType;
+  $('#invoiceAccountingEvent').onchange=()=>{$('#invoiceAccountingBatch').disabled=!$('#invoiceAccountingEvent').value};
+  syncType();
+
+  $('#purchaseInvoiceForm').onsubmit=async e=>{
+    e.preventDefault();
+    const f=new FormData(e.target),mt=typeMap.get(String(f.get('movement_type_id')));
+    const items=$$('#invoiceItemBody tr').map(tr=>({
+      product_id:$('.inv-product',tr).value,
+      quantity:$('.inv-qty',tr).value,
+      unit:$('.inv-unit',tr).value,
+      unit_price:$('.inv-price',tr).value,
+      budget_nature_id:$('.inv-nature',tr).value||null,
+      cost_center_id:$('.inv-cc',tr).value||null
+    })).filter(x=>x.product_id);
+    const eventId=$('#invoiceAccountingEvent').value||mt?.accounting_event_id||null;
+    try{
+      const d=await api('/api/purchase-invoices',{method:'POST',body:{
+        supplier_id:f.get('supplier_id'),movement_type_id:f.get('movement_type_id'),branch_id:f.get('branch_id')||null,
+        issue_date:f.get('issue_date'),entry_date:f.get('entry_date'),due_date:f.get('due_date')||null,
+        document_number:f.get('document_number'),series:f.get('series'),freight:f.get('freight'),
+        accounting_event_id:eventId,accounting_batch_id:eventId?f.get('accounting_batch_id')||null:null,
+        notes:f.get('notes'),items
+      }});
+      S.cache.purchaseInvoices=null;S.cache.batches=null;
+      closeModal();
+      let msg=`Nota Fiscal ${d.invoice.document_number||d.invoice.number} lançada.`;
+      if(d.invoice.financial_payable_id)msg+=' Contas a Pagar gerado.';
+      if(d.invoice.journal_entry_id)msg+=' Lançamento contábil gerado.';
+      toast(msg);renderPurchaseInvoices();
+    }catch(err){toast(err.message,'error')}
+  };
+}
+
+async function purchaseInvoiceView(id){
+  try{
+    const x=(await api(`/api/purchase-invoices/${id}`)).invoice;
+    openModal(`Nota Fiscal ${x.document_number||x.number}`,`${x.supplier_code} - ${x.supplier_name}`,`
+      <div class="grid three">
+        <div class="field"><span>Lançamento</span><b>${esc(x.number)}</b></div>
+        <div class="field"><span>Emissão</span><b>${dateBR(x.issue_date)}</b></div>
+        <div class="field"><span>Entrada</span><b>${dateBR(x.entry_date)}</b></div>
+        <div class="field"><span>Série</span><b>${esc(x.series||'—')}</b></div>
+        <div class="field"><span>Tipo de Movimento</span><b>${esc(x.movement_type_code)} - ${esc(x.movement_type_name)}</b></div>
+        <div class="field"><span>Filial</span><b>${esc(x.branch_code?x.branch_code+' - '+x.branch_name:'—')}</b></div>
+        <div class="field"><span>Frete</span><b>${money(x.freight)}</b></div>
+        <div class="field"><span>Total</span><b>${money(x.total)}</b></div>
+        <div class="field"><span>Vencimento</span><b>${dateBR(x.due_date)}</b></div>
+        <div class="field"><span>Contas a Pagar</span><b>${esc(x.payable_number||'Não gerado')}</b></div>
+        <div class="field"><span>Evento Contábil</span><b>${esc(x.accounting_event_code?x.accounting_event_code+' - '+x.accounting_event_name:'—')}</b></div>
+        <div class="field"><span>Lote</span><b>${esc(x.accounting_batch_code?x.accounting_batch_code+' - '+x.accounting_batch_description:'—')}</b></div>
+      </div>
+      <div class="section-title">Itens</div>
+      <div class="table-wrap"><table class="table"><thead><tr><th>#</th><th>Produto / Serviço</th><th>Qtd.</th><th>Valor unitário</th><th>Total</th><th>Natureza</th><th>Centro de Custo</th></tr></thead><tbody>
+        ${x.items.map(i=>`<tr><td>${i.line_no}</td><td><b>${esc(i.product_code)}</b> - ${esc(i.description)}</td><td>${qtyBR(i.quantity)} ${esc(i.unit)}</td><td>${money(i.unit_price)}</td><td>${money(i.total)}</td><td>${esc(i.nature_code?i.nature_code+' - '+i.nature_description:'—')}</td><td>${esc(i.cost_center_code?i.cost_center_code+' - '+i.cost_center_name:'—')}</td></tr>`).join('')}
+      </tbody></table></div>
+      <div class="form-actions"><button class="btn secondary" data-close>Fechar</button>${x.financial_payable_id?'<button class="btn secondary" id="openInvoicePayable">Abrir Contas a Pagar</button>':''}${x.journal_entry_id?'<button class="btn primary" id="openInvoiceJournal">Abrir lançamento contábil</button>':''}</div>`,true);
+    $('[data-close]').onclick=closeModal;
+    if($('#openInvoicePayable'))$('#openInvoicePayable').onclick=()=>{closeModal();nav('financial-payables')};
+    if($('#openInvoiceJournal'))$('#openInvoiceJournal').onclick=()=>{closeModal();entryView(x.journal_entry_id)};
   }catch(e){toast(e.message,'error')}
 }
 
@@ -3064,7 +3243,7 @@ setInterval(()=>checkSessionAccess(),30000);
     'branches-admin':{label:'Filiais',type:'grid'},users:{label:'Usuários',type:'people'},roles:{label:'Perfis e Permissões',type:'people'},
     accounts:{label:'Plano de Contas',type:'book'},'cost-centers':{label:'Centros de Custo',type:'people'},history:{label:'Históricos Padrão',type:'doc'},periods:{label:'Períodos Contábeis',type:'doc'},batches:{label:'Lotes',type:'grid'},entries:{label:'Lançamento',type:'file'},
     'movement-types':{label:'Tipos de Movimento',type:'grid'},'budget-natures':{label:'Naturezas Orçamentárias',type:'calc'},'movement-events':{label:'Eventos Contábeis de Movimento',type:'doc'},'purchase-products':{label:'Produtos / Serviços',type:'doc'},'purchase-suppliers':{label:'Fornecedores',type:'people'},
-    'purchase-requests':{label:'Solicitações',type:'doc'},'purchase-quotations':{label:'Cotações',type:'calc'},'purchase-orders':{label:'Ordens de Compra',type:'grid'},'purchase-receipts':{label:'Recebimentos',type:'file'},'stock-balances':{label:'Estoque Atual',type:'grid'},
+    'purchase-invoices':{label:'Notas Fiscais',type:'file'},'stock-balances':{label:'Estoque Atual',type:'grid'},
     'financial-cash-accounts':{label:'Contas / Caixa',type:'money'},
     'financial-accounting-events':{label:'Evento Contábil',type:'doc'},
     'financial-payables':{label:'Contas a Pagar',type:'money'}
@@ -3076,9 +3255,9 @@ setInterval(()=>checkSessionAccess(),30000);
       'Cadastros':[['Cadastros',['accounts','cost-centers','history']]],
       'Escrituração Contábil':[['Operações Contábeis',['periods','batches','entries']]]
     }},
-    'Gestão de Estoque, Compras e Faturamento':{icon:'grid',tabs:{
-      'Cadastros':[['Estoque, Compras e Faturamento',['movement-types','purchase-products','purchase-suppliers']],['Financeiros',['budget-natures']],['Contábeis',['movement-events']]],
-      'Compras':[['Processo de Compras',['purchase-requests','purchase-quotations','purchase-orders','purchase-receipts']]],
+    'Gestão de Notas Fiscais e Estoque':{icon:'grid',tabs:{
+      'Cadastros':[['Cadastros',['movement-types','purchase-products','purchase-suppliers']],['Financeiros',['budget-natures']],['Contábeis',['movement-events']]],
+      'Notas Fiscais':[['Lançamentos',['purchase-invoices']]],
       'Estoque':[['Estoque',['stock-balances']]]
     }},
     'Gestão Financeira':{icon:'chart',tabs:{'Cadastros':[['Financeiro',['financial-cash-accounts']],['Contabilidade',['financial-accounting-events']]],'Contas a Pagar / Receber':[['Operações Financeiras',['financial-payables']]]}}
@@ -3217,7 +3396,7 @@ setInterval(()=>checkSessionAccess(),30000);
   const back=menu.querySelector('[data-sub="backoffice"]');
   function showBackOffice(){
     menu.querySelectorAll('.sagas-module-item').forEach(x=>x.classList.toggle('active-hover',x===back));
-    const items=['Gestão Contábil','Gestão de Estoque, Compras e Faturamento','Gestão Financeira'].filter(moduleHasAccess);
+    const items=['Gestão Contábil','Gestão de Notas Fiscais e Estoque','Gestão Financeira'].filter(moduleHasAccess);
     submenu.style.top=`${back.offsetTop}px`;
     submenu.innerHTML=items.map(name=>`<div class="sagas-sub-item ${name===currentModule?'current':''}" data-module="${name}"><span class="sagas-switch-icon">${icon(modules[name].icon)}</span><span>${name}</span></div>`).join('');
     submenu.classList.toggle('show',!!items.length);
@@ -3589,8 +3768,8 @@ setInterval(()=>checkSessionAccess(),30000);
     'Financeiro':[
       ['financial-cash-accounts','Contas / Caixa'],['financial-accounting-events','Eventos Contábeis'],['financial-payables','Contas a Pagar']
     ],
-    'Estoque e compras':[
-      ['movement-types','Tipos de Movimento'],['budget-natures','Naturezas Orçamentárias'],['movement-events','Eventos Contábeis de Movimento'],['purchase-products','Produtos / Serviços'],['purchase-suppliers','Fornecedores'],['purchase-requests','Solicitações'],['purchase-quotations','Cotações'],['purchase-orders','Ordens de Compra'],['purchase-receipts','Recebimentos'],['stock-balances','Estoque Atual']
+    'Notas fiscais e estoque':[
+      ['movement-types','Tipos de Movimento'],['budget-natures','Naturezas Orçamentárias'],['movement-events','Eventos Contábeis de Movimento'],['purchase-products','Produtos / Serviços'],['purchase-suppliers','Fornecedores'],['purchase-invoices','Notas Fiscais'],['stock-balances','Estoque Atual']
     ]
   };
   const PAGE_MODULE={};Object.entries(V35_MODULES).forEach(([m,ps])=>ps.forEach(([p])=>PAGE_MODULE[p]=m));
@@ -3605,7 +3784,7 @@ setInterval(()=>checkSessionAccess(),30000);
     help:'<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9.8 9a2.5 2.5 0 1 1 4.2 1.8c-1.2 1-2 1.4-2 3M12 17h.01"/></svg>',
     bell:'<svg viewBox="0 0 24 24"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4"/></svg>'
   };
-  const moduleIcons={'Administração':svg.admin,'Contábil':svg.accounting,'Financeiro':svg.finance,'Estoque e compras':svg.stock};
+  const moduleIcons={'Administração':svg.admin,'Contábil':svg.accounting,'Financeiro':svg.finance,'Notas fiscais e estoque':svg.stock};
 
   const sidebar=document.createElement('aside');sidebar.className='sagas-v35-sidebar';sidebar.id='sagasV35Sidebar';
   sidebar.innerHTML=`
