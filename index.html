@@ -3479,5 +3479,226 @@ setInterval(()=>checkSessionAccess(),30000);
   };
 })();
 </script>
+<!-- SAGAS V35 MODERN SHELL -->
+<style id="sagas-v35-modern-shell-style">
+:root{
+  --v35-sidebar:#172136;
+  --v35-sidebar-2:#202c43;
+  --v35-sidebar-hover:#26344e;
+  --v35-blue:#4f7df3;
+  --v35-blue-soft:#edf3ff;
+  --v35-text:#18243d;
+  --v35-muted:#77839a;
+  --v35-line:#e3e8f0;
+  --v35-bg:#f6f8fb;
+  --v35-white:#fff;
+}
+#app.sagas-v35-shell{
+  display:grid!important;
+  grid-template-columns:330px minmax(0,1fr)!important;
+  grid-template-rows:88px minmax(0,1fr)!important;
+  width:100vw!important;height:100vh!important;min-height:100vh!important;
+  background:var(--v35-bg)!important;overflow:hidden!important;
+  font-family:Inter,"Segoe UI",Arial,sans-serif!important;
+}
+#app.sagas-v35-shell.hidden{display:none!important}
+#app.sagas-v35-shell>.sagas-windowbar,
+#app.sagas-v35-shell>.sagas-navrow,
+#app.sagas-v35-shell>.sagas-ribbon,
+#app.sagas-v35-shell>.sagas-document-tabs,
+#app.sagas-v35-shell>.sagas-statusbar,
+#app.sagas-v35-shell>#sidebar{display:none!important}
+.sagas-module-menu{display:none!important}
+#app.sagas-v35-shell>.sagas-workspace{
+  grid-column:2!important;grid-row:2!important;
+  position:relative!important;inset:auto!important;
+  width:auto!important;height:auto!important;min-width:0!important;min-height:0!important;
+  display:block!important;background:var(--v35-bg)!important;overflow:hidden!important;
+}
+#app.sagas-v35-shell .sagas-workspace>.main{
+  height:100%!important;min-height:0!important;width:100%!important;
+  margin:0!important;display:flex!important;flex-direction:column!important;background:transparent!important;
+}
+#app.sagas-v35-shell .sagas-workspace>.main>.topbar{display:none!important}
+#app.sagas-v35-shell .content{
+  flex:1!important;min-height:0!important;overflow:auto!important;
+  padding:28px 32px!important;background:var(--v35-bg)!important;
+}
+#app.sagas-v35-shell .content:has(.sagas-rm-list-page){padding:24px 28px!important;overflow:hidden!important}
+#app.sagas-v35-shell .sagas-rm-list-page{border:1px solid var(--v35-line);border-radius:12px;box-shadow:0 1px 2px rgba(16,24,40,.03);overflow:hidden}
+
+/* Sidebar */
+.sagas-v35-sidebar{
+  grid-column:1;grid-row:1 / span 2;background:var(--v35-sidebar);color:#fff;
+  display:flex;flex-direction:column;min-height:0;z-index:80;border-right:1px solid rgba(255,255,255,.03);
+}
+.sagas-v35-brand{height:88px;display:flex;align-items:center;gap:15px;padding:0 30px;border-bottom:1px solid rgba(255,255,255,.04)}
+.sagas-v35-brand-mark{width:45px;height:45px;border-radius:10px;background:linear-gradient(135deg,#5e8cff,#4775ed);display:flex;align-items:center;justify-content:center;font-size:21px;font-weight:800;box-shadow:0 7px 18px rgba(55,95,190,.3)}
+.sagas-v35-brand-text b{display:block;font-size:20px;letter-spacing:.2px}.sagas-v35-brand-text small{display:block;margin-top:5px;color:#91a4ca;font-size:11px;letter-spacing:1.8px}
+.sagas-v35-company-wrap{padding:15px 20px 14px;position:relative}
+.sagas-v35-company-card{width:100%;border:0;background:var(--v35-sidebar-2);color:#fff;border-radius:11px;padding:14px 15px;display:flex;align-items:center;gap:12px;text-align:left;cursor:pointer;transition:.15s}
+.sagas-v35-company-card:hover{background:#26334c}.sagas-v35-company-badge{width:36px;height:36px;flex:0 0 36px;border-radius:8px;background:#2e4267;color:#9ebeff;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700}
+.sagas-v35-company-name{min-width:0;flex:1}.sagas-v35-company-name b{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:13px}.sagas-v35-company-name small{display:block;margin-top:4px;color:#7f94b9;font-size:11px}.sagas-v35-chevron{color:#7f91af;font-size:18px;transition:.15s}
+.sagas-v35-company-card.open .sagas-v35-chevron{transform:rotate(180deg)}
+.sagas-v35-company-menu{position:absolute;left:20px;right:20px;top:76px;z-index:100;background:#fff;color:var(--v35-text);border:1px solid var(--v35-line);border-radius:10px;box-shadow:0 16px 35px rgba(10,20,40,.25);padding:6px;display:none;max-height:260px;overflow:auto}.sagas-v35-company-menu.show{display:block}
+.sagas-v35-company-option{width:100%;border:0;background:transparent;border-radius:7px;padding:10px 11px;text-align:left;cursor:pointer;color:var(--v35-text);font-size:12px}.sagas-v35-company-option:hover,.sagas-v35-company-option.active{background:#f0f4fb;color:#315fc8}
+.sagas-v35-nav-title{padding:22px 35px 14px;color:#7286ad;font-size:11px;font-weight:700;letter-spacing:1.7px}
+.sagas-v35-nav{flex:1;min-height:0;overflow:auto;padding:0 14px 18px}.sagas-v35-nav::-webkit-scrollbar{width:5px}.sagas-v35-nav::-webkit-scrollbar-thumb{background:#31405c;border-radius:5px}
+.sagas-v35-module{margin-bottom:4px}.sagas-v35-module-btn{width:100%;height:56px;border:0;background:transparent;color:#b5c3df;display:flex;align-items:center;gap:16px;border-radius:9px;padding:0 20px;font-size:18px;cursor:pointer;text-align:left;transition:.15s}
+.sagas-v35-module-btn:hover,.sagas-v35-module.open>.sagas-v35-module-btn{background:var(--v35-sidebar-hover);color:#fff}.sagas-v35-module-btn.active{color:#fff}.sagas-v35-module-icon{width:21px;height:21px;color:#8193b5;display:flex}.sagas-v35-module-btn:hover .sagas-v35-module-icon,.sagas-v35-module.open .sagas-v35-module-icon{color:#a9c0f0}.sagas-v35-module-icon svg{width:21px;height:21px;stroke:currentColor;fill:none;stroke-width:1.8}
+.sagas-v35-module-arrow{margin-left:auto;color:#8999b6;font-size:20px;transition:.18s}.sagas-v35-module.open .sagas-v35-module-arrow{transform:rotate(90deg)}
+.sagas-v35-submenu{display:none;padding:3px 8px 9px 54px}.sagas-v35-module.open .sagas-v35-submenu{display:block}.sagas-v35-subitem{display:block;width:100%;border:0;background:transparent;color:#93a4c2;text-align:left;border-radius:7px;padding:9px 12px;cursor:pointer;font-size:12px;line-height:1.25}.sagas-v35-subitem:hover{background:#22304a;color:#fff}.sagas-v35-subitem.active{background:rgba(79,125,243,.16);color:#a9c5ff;font-weight:600}
+.sagas-v35-sidebar-bottom{border-top:1px solid rgba(255,255,255,.06);padding:18px 20px 0}.sagas-v35-settings{height:56px;width:100%;border:0;background:transparent;color:#b4c1db;border-radius:9px;display:flex;align-items:center;gap:16px;padding:0 14px;font-size:18px;cursor:pointer}.sagas-v35-settings:hover{background:var(--v35-sidebar-hover);color:#fff}.sagas-v35-settings svg{width:20px;height:20px;stroke:#8395b6;fill:none;stroke-width:1.8}.sagas-v35-settings-menu{display:none;padding:3px 5px 8px 44px}.sagas-v35-settings-menu.show{display:block}
+.sagas-v35-user-bottom{height:70px;margin-top:8px;border-top:1px solid rgba(255,255,255,.06);display:flex;align-items:center;gap:12px;padding:0 10px}.sagas-v35-bottom-avatar{width:40px;height:40px;border-radius:50%;background:#263b5f;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:11px}.sagas-v35-bottom-user{min-width:0;flex:1}.sagas-v35-bottom-user b{display:block;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.sagas-v35-bottom-user small{display:block;color:#7790bb;margin-top:4px;font-size:10px}.sagas-v35-logout{border:0;background:transparent;color:#8092b0;cursor:pointer;font-size:20px;padding:6px}
+
+/* Topbar */
+.sagas-v35-topbar{grid-column:2;grid-row:1;background:#fff;border-bottom:1px solid var(--v35-line);height:88px;display:flex;align-items:center;padding:0 30px;z-index:60}
+.sagas-v35-breadcrumb{display:flex;align-items:center;gap:11px;color:#8b96a9;font-size:13px;min-width:0}.sagas-v35-breadcrumb .module{color:#8a95a7}.sagas-v35-breadcrumb .sep{color:#b3bccb;font-size:18px}.sagas-v35-breadcrumb .page{color:#26344e;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sagas-v35-top-actions{margin-left:auto;display:flex;align-items:center;gap:10px}.sagas-v35-help-btn,.sagas-v35-bell{height:52px;border:1px solid #dbe1ea;background:#fff;border-radius:12px;color:#56637b;display:flex;align-items:center;justify-content:center;gap:10px;cursor:pointer}.sagas-v35-help-btn{padding:0 17px;font-size:18px}.sagas-v35-help-btn svg,.sagas-v35-bell svg{width:18px;height:18px;stroke:currentColor;fill:none;stroke-width:1.8}.sagas-v35-bell{width:47px;position:relative}.sagas-v35-bell-dot{position:absolute;right:9px;top:9px;width:7px;height:7px;border-radius:50%;background:#eb5262;border:2px solid #fff}
+.sagas-v35-top-user{display:flex;align-items:center;gap:11px;margin-left:9px;padding-left:7px}.sagas-v35-top-avatar{width:40px;height:40px;border-radius:50%;background:#edf2fb;color:#315eaf;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700}.sagas-v35-top-user-name b{display:block;color:#29364d;font-size:12px}.sagas-v35-top-user-name small{display:block;color:#8b96a8;font-size:10px;margin-top:4px}.sagas-v35-top-user-caret{color:#9ba6b7;margin-left:4px}
+
+/* Module landing state */
+.sagas-v35-module-home{height:100%;min-height:450px;display:flex;align-items:center;justify-content:center;text-align:center;color:var(--v35-text)}
+.sagas-v35-module-home-inner{margin-top:-40px}.sagas-v35-home-icon{width:62px;height:62px;margin:0 auto 22px;border-radius:16px;background:#e9f0ff;color:#567fdc;display:flex;align-items:center;justify-content:center}.sagas-v35-home-icon svg{width:26px;height:26px;stroke:currentColor;fill:none;stroke-width:1.7}.sagas-v35-module-home h2{font-size:24px;margin:0 0 11px;color:#17243e}.sagas-v35-module-home p{margin:0;color:#8b96aa;font-size:14px}
+.sagas-v35-float-help{position:fixed;right:16px;bottom:15px;width:42px;height:42px;border-radius:50%;border:0;background:#2e3136;color:white;font-size:24px;box-shadow:0 3px 10px rgba(0,0,0,.27);z-index:90;cursor:pointer}
+
+/* Existing operational screens harmonized with the new shell */
+#app.sagas-v35-shell .table-card,#app.sagas-v35-shell .card{border-color:var(--v35-line)!important;box-shadow:0 1px 2px rgba(16,24,40,.03)!important;border-radius:12px!important}
+#app.sagas-v35-shell .table-wrap{border-color:var(--v35-line)!important}
+#app.sagas-v35-shell .btn.primary{background:#4f7df3!important;border-color:#4f7df3!important}
+#app.sagas-v35-shell input:focus,#app.sagas-v35-shell select:focus,#app.sagas-v35-shell textarea:focus{border-color:#8cacf9!important;box-shadow:0 0 0 3px rgba(79,125,243,.10)!important}
+
+@media(max-width:1050px){
+  #app.sagas-v35-shell{grid-template-columns:260px minmax(0,1fr)!important}.sagas-v35-brand{padding:0 20px}.sagas-v35-module-btn{font-size:15px;padding:0 14px}.sagas-v35-company-wrap{padding-left:14px;padding-right:14px}.sagas-v35-company-menu{left:14px;right:14px}.sagas-v35-help-btn span{display:none}.sagas-v35-help-btn{width:48px;padding:0}.sagas-v35-topbar{padding:0 20px}}
+@media(max-width:760px){
+  #app.sagas-v35-shell{grid-template-columns:76px minmax(0,1fr)!important}.sagas-v35-brand-text,.sagas-v35-company-name,.sagas-v35-company-card .sagas-v35-chevron,.sagas-v35-nav-title,.sagas-v35-module-btn>span:not(.sagas-v35-module-icon),.sagas-v35-submenu,.sagas-v35-settings>span,.sagas-v35-settings-menu,.sagas-v35-bottom-user,.sagas-v35-logout{display:none!important}.sagas-v35-brand{padding:0;justify-content:center}.sagas-v35-company-wrap{padding:12px}.sagas-v35-company-card{justify-content:center;padding:9px}.sagas-v35-module-btn{justify-content:center;padding:0}.sagas-v35-sidebar-bottom{padding:10px}.sagas-v35-settings{justify-content:center;padding:0}.sagas-v35-user-bottom{justify-content:center;padding:0}.sagas-v35-top-user-name{display:none}.sagas-v35-topbar{padding:0 14px}.sagas-v35-breadcrumb .module{display:none}.sagas-v35-breadcrumb .sep{display:none}}
+</style>
+<script id="sagas-v35-modern-shell-script">
+(()=>{
+  const app=document.getElementById('app');
+  if(!app||document.getElementById('sagasV35Sidebar'))return;
+  app.classList.add('sagas-v35-shell');
+
+  const V35_MODULES={
+    'Administração':[
+      ['companies','Empresas'],['branches-admin','Filiais'],['users','Usuários'],['roles','Perfis e Permissões']
+    ],
+    'Contábil':[
+      ['accounts','Plano de Contas'],['cost-centers','Centros de Custo'],['history','Históricos Padrão'],['periods','Períodos Contábeis'],['batches','Lotes'],['entries','Lançamentos Contábeis']
+    ],
+    'Financeiro':[
+      ['financial-cash-accounts','Contas / Caixa'],['financial-accounting-events','Eventos Contábeis'],['financial-payables','Contas a Pagar']
+    ],
+    'Estoque e compras':[
+      ['movement-types','Tipos de Movimento'],['budget-natures','Naturezas Orçamentárias'],['movement-events','Eventos Contábeis de Movimento'],['purchase-products','Produtos / Serviços'],['purchase-suppliers','Fornecedores'],['purchase-requests','Solicitações'],['purchase-quotations','Cotações'],['purchase-orders','Ordens de Compra'],['purchase-receipts','Recebimentos'],['stock-balances','Estoque Atual']
+    ]
+  };
+  const PAGE_MODULE={};Object.entries(V35_MODULES).forEach(([m,ps])=>ps.forEach(([p])=>PAGE_MODULE[p]=m));
+  const safeCan=p=>{try{return typeof canPage==='function'?canPage(p):true}catch{return true}};
+  const svg={
+    admin:'<svg viewBox="0 0 24 24"><path d="M4 21h16M6 21V8l6-4 6 4v13M9 11h1M14 11h1M9 15h1M14 15h1"/></svg>',
+    accounting:'<svg viewBox="0 0 24 24"><path d="M4 6h16v12H4zM7 9h10M7 13h4M7 17h7"/></svg>',
+    finance:'<svg viewBox="0 0 24 24"><path d="M4 7h15a2 2 0 0 1 2 2v8H4a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2z"/><path d="M17 11h4M5 7V5h12v2"/></svg>',
+    stock:'<svg viewBox="0 0 24 24"><path d="m12 3 8 4.5-8 4.5-8-4.5zM4 7.5V16l8 5 8-5V7.5M12 12v9"/></svg>',
+    settings:'<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 0 0-.1-1l2-1.5-2-3.4-2.4 1A8 8 0 0 0 15 6.2L14.7 4h-5.4L9 6.2a8 8 0 0 0-1.5.9l-2.4-1-2 3.4L5.1 11a7 7 0 0 0 0 2l-2 1.5 2 3.4 2.4-1a8 8 0 0 0 1.5.9l.3 2.2h5.4l.3-2.2a8 8 0 0 0 1.5-.9l2.4 1 2-3.4-2-1.5a7 7 0 0 0 .1-1z"/></svg>',
+    file:'<svg viewBox="0 0 24 24"><path d="M7 3h7l4 4v14H7zM14 3v5h5"/></svg>',
+    help:'<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9.8 9a2.5 2.5 0 1 1 4.2 1.8c-1.2 1-2 1.4-2 3M12 17h.01"/></svg>',
+    bell:'<svg viewBox="0 0 24 24"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4"/></svg>'
+  };
+  const moduleIcons={'Administração':svg.admin,'Contábil':svg.accounting,'Financeiro':svg.finance,'Estoque e compras':svg.stock};
+
+  const sidebar=document.createElement('aside');sidebar.className='sagas-v35-sidebar';sidebar.id='sagasV35Sidebar';
+  sidebar.innerHTML=`
+    <div class="sagas-v35-brand"><div class="sagas-v35-brand-mark">S</div><div class="sagas-v35-brand-text"><b>SAGAS</b><small>GESTÃO INTEGRADA</small></div></div>
+    <div class="sagas-v35-company-wrap">
+      <button class="sagas-v35-company-card" id="sagasV35CompanyCard"><span class="sagas-v35-company-badge" id="sagasV35CompanyBadge">--</span><span class="sagas-v35-company-name"><b id="sagasV35CompanyName">Empresa</b><small id="sagasV35CompanyCode">Matriz</small></span><span class="sagas-v35-chevron">⌄</span></button>
+      <div class="sagas-v35-company-menu" id="sagasV35CompanyMenu"></div>
+    </div>
+    <div class="sagas-v35-nav-title">MÓDULOS</div>
+    <div class="sagas-v35-nav" id="sagasV35Nav"></div>
+    <div class="sagas-v35-sidebar-bottom">
+      <button class="sagas-v35-settings" id="sagasV35Settings">${svg.settings}<span>Configurações</span></button>
+      <div class="sagas-v35-settings-menu" id="sagasV35SettingsMenu">
+        <button class="sagas-v35-subitem" data-v35-action="account">Minha conta</button>
+        <button class="sagas-v35-subitem" data-v35-action="password">Alterar senha</button>
+        <button class="sagas-v35-subitem" data-v35-action="api">Configurar API</button>
+      </div>
+      <div class="sagas-v35-user-bottom"><div class="sagas-v35-bottom-avatar" id="sagasV35BottomAvatar">U</div><div class="sagas-v35-bottom-user"><b id="sagasV35BottomUser">Usuário</b><small>Administrador</small></div><button class="sagas-v35-logout" id="sagasV35Logout" title="Sair">↪</button></div>
+    </div>`;
+
+  const top=document.createElement('header');top.className='sagas-v35-topbar';top.id='sagasV35Topbar';
+  top.innerHTML=`<div class="sagas-v35-breadcrumb"><span class="module" id="sagasV35CrumbModule">Contábil</span><span class="sep">›</span><span class="page" id="sagasV35CrumbPage">Início</span></div><div class="sagas-v35-top-actions"><button class="sagas-v35-help-btn" id="sagasV35Help">${svg.help}<span>Central de ajuda</span></button><button class="sagas-v35-bell" id="sagasV35Bell">${svg.bell}<span class="sagas-v35-bell-dot"></span></button><div class="sagas-v35-top-user"><div class="sagas-v35-top-avatar" id="sagasV35TopAvatar">U</div><div class="sagas-v35-top-user-name"><b id="sagasV35TopUser">Usuário</b><small>Administrador</small></div><span class="sagas-v35-top-user-caret">⌄</span></div></div>`;
+  app.append(sidebar,top);
+  const floatHelp=document.createElement('button');floatHelp.className='sagas-v35-float-help';floatHelp.textContent='?';floatHelp.title='Ajuda';document.body.appendChild(floatHelp);
+
+  const navArea=document.getElementById('sagasV35Nav');
+  Object.entries(V35_MODULES).forEach(([name,pages])=>{
+    const visible=pages.filter(([p])=>safeCan(p));if(!visible.length)return;
+    const wrap=document.createElement('div');wrap.className='sagas-v35-module';wrap.dataset.v35Module=name;
+    wrap.innerHTML=`<button class="sagas-v35-module-btn"><span class="sagas-v35-module-icon">${moduleIcons[name]}</span><span>${name}</span><span class="sagas-v35-module-arrow">›</span></button><div class="sagas-v35-submenu">${visible.map(([p,label])=>`<button class="sagas-v35-subitem" data-v35-page="${p}">${label}</button>`).join('')}</div>`;
+    navArea.appendChild(wrap);
+  });
+
+  let currentModule=PAGE_MODULE[S.page]||'Contábil';
+  function moduleHome(name){
+    currentModule=name;S.page='';
+    document.querySelectorAll('.sagas-v35-module').forEach(m=>m.classList.toggle('open',m.dataset.v35Module===name));
+    document.querySelectorAll('[data-v35-page]').forEach(b=>b.classList.remove('active'));
+    const title=document.getElementById('pageTitle'),sub=document.getElementById('pageSub'),content=document.getElementById('content');
+    if(title)title.textContent=name;if(sub)sub.textContent='Selecione uma função';
+    if(content)content.innerHTML=`<div class="sagas-v35-module-home"><div class="sagas-v35-module-home-inner"><div class="sagas-v35-home-icon">${svg.file}</div><h2>${name}</h2><p>Selecione uma função do módulo para visualizar a tela operacional.</p></div></div>`;
+    document.getElementById('sagasV35CrumbModule').textContent=name;document.getElementById('sagasV35CrumbPage').textContent='';
+  }
+  document.querySelectorAll('.sagas-v35-module-btn').forEach(btn=>btn.onclick=()=>{
+    const wrap=btn.closest('.sagas-v35-module'),name=wrap.dataset.v35Module;
+    if(wrap.classList.contains('open')&&currentModule===name){wrap.classList.remove('open');return}
+    moduleHome(name);
+  });
+  document.querySelectorAll('[data-v35-page]').forEach(btn=>btn.onclick=async e=>{
+    e.stopPropagation();const p=btn.dataset.v35Page;currentModule=PAGE_MODULE[p]||currentModule;
+    document.querySelectorAll('.sagas-v35-module').forEach(m=>m.classList.toggle('open',m.dataset.v35Module===currentModule));
+    await nav(p);
+  });
+
+  function syncCompany(){
+    const select=document.getElementById('companySelect');const opt=select?.options?.[select.selectedIndex];const c=S.companies?.find(x=>x.id===S.companyId);
+    const code=c?.code||String(opt?.text||'').split(' - ')[0]||'--';const name=c?.legal_name||String(opt?.text||'').replace(/^.*? - /,'')||'Empresa';
+    document.getElementById('sagasV35CompanyBadge').textContent=String(code).replace(/[^A-Za-z0-9]/g,'').slice(0,2).toUpperCase()||'EV';
+    document.getElementById('sagasV35CompanyName').textContent=name;document.getElementById('sagasV35CompanyCode').textContent=`Matriz · ${code}`;
+    const menu=document.getElementById('sagasV35CompanyMenu');menu.innerHTML=(S.companies||[]).map(x=>`<button class="sagas-v35-company-option ${x.id===S.companyId?'active':''}" data-company-id="${x.id}">${x.code} - ${x.legal_name}</button>`).join('');
+    menu.querySelectorAll('[data-company-id]').forEach(b=>b.onclick=()=>{if(!select)return;select.value=b.dataset.companyId;select.dispatchEvent(new Event('change',{bubbles:true}));closeCompanyMenu()});
+  }
+  function closeCompanyMenu(){document.getElementById('sagasV35CompanyMenu').classList.remove('show');document.getElementById('sagasV35CompanyCard').classList.remove('open')}
+  document.getElementById('sagasV35CompanyCard').onclick=e=>{e.stopPropagation();syncCompany();document.getElementById('sagasV35CompanyMenu').classList.toggle('show');document.getElementById('sagasV35CompanyCard').classList.toggle('open')};
+  document.addEventListener('click',closeCompanyMenu);
+  document.getElementById('companySelect')?.addEventListener('change',()=>setTimeout(syncCompany,0));
+
+  function syncUser(){const name=S.user?.name||document.getElementById('userName')?.textContent||'Usuário';const initials=name.split(/\s+/).filter(Boolean).slice(0,2).map(x=>x[0]).join('').toUpperCase()||'U';['sagasV35TopAvatar','sagasV35BottomAvatar'].forEach(id=>document.getElementById(id).textContent=initials);['sagasV35TopUser','sagasV35BottomUser'].forEach(id=>document.getElementById(id).textContent=name)}
+  function syncPage(p){
+    if(!p)return;const module=PAGE_MODULE[p]||currentModule;currentModule=module;
+    document.querySelectorAll('.sagas-v35-module').forEach(m=>m.classList.toggle('open',m.dataset.v35Module===module));
+    document.querySelectorAll('[data-v35-page]').forEach(b=>b.classList.toggle('active',b.dataset.v35Page===p));
+    const label=meta?.[p]?.[0]||document.getElementById('pageTitle')?.textContent||p;
+    document.getElementById('sagasV35CrumbModule').textContent=module;document.getElementById('sagasV35CrumbPage').textContent=label;
+    syncCompany();syncUser();
+  }
+
+  document.getElementById('sagasV35Settings').onclick=()=>document.getElementById('sagasV35SettingsMenu').classList.toggle('show');
+  document.querySelector('[data-v35-action="account"]').onclick=()=>document.getElementById('myAccountApp')?.click();
+  document.querySelector('[data-v35-action="password"]').onclick=()=>document.getElementById('changePasswordApp')?.click();
+  document.querySelector('[data-v35-action="api"]').onclick=()=>document.getElementById('apiConfigApp')?.click();
+  document.getElementById('sagasV35Logout').onclick=()=>document.getElementById('logoutBtn')?.click();
+  document.getElementById('sagasV35Help').onclick=()=>toast('Central de ajuda em desenvolvimento.');
+  floatHelp.onclick=()=>toast('Central de ajuda em desenvolvimento.');
+  document.getElementById('sagasV35Bell').onclick=()=>toast('Você não possui novas notificações.');
+
+  const v35OriginalNav=nav;
+  nav=async function(p){const r=await v35OriginalNav(p);syncPage(S.page||p);return r};
+  const titleNode=document.getElementById('pageTitle');if(titleNode)new MutationObserver(()=>{if(S.page)syncPage(S.page)}).observe(titleNode,{childList:true,subtree:true});
+  const userNode=document.getElementById('userName');if(userNode)new MutationObserver(syncUser).observe(userNode,{childList:true,subtree:true});
+  window.SAGAS_V35={syncPage,moduleHome,syncCompany,syncUser};
+  syncCompany();syncUser();if(S.page)syncPage(S.page);else moduleHome(currentModule);
+})();
+</script>
 </body>
 </html>
