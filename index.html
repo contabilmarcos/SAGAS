@@ -1847,7 +1847,7 @@ async function renderEntries(){
         <button class="btn secondary sm" data-open="${x.id}">Abrir</button>
         ${create?`<button class="btn secondary sm" data-duplicate-entry="${x.id}">Duplicar</button>`:''}
         ${x.status==='POSTED'&&x.official_status!=='INTEGRATED'&&edit?`<button class="btn secondary sm" data-edit-entry="${x.id}">Editar</button>`:''}
-        ${x.status==='POSTED'&&x.official_status!=='INTEGRATED'&&del?`<button class="btn danger sm" data-delete-entry="${x.id}">Excluir</button>`:''}
+        ${['POSTED','VOID'].includes(x.status)&&x.official_status!=='INTEGRATED'&&del?`<button class="btn danger sm" data-delete-entry="${x.id}">Excluir</button>`:''}
       </div></td>
     </tr>`).join(''):null,
     emptyTitle:'Nenhum lançamento',
@@ -2145,7 +2145,9 @@ async function entryForm(editId=null,duplicateId=null){
 async function entryView(id){
   try{
     const e=(await api('/api/journal-entries/'+id)).entry;
-    const maintainable=e.status==='POSTED'&&e.official_status!=='INTEGRATED';
+    const editable=e.status==='POSTED'&&e.official_status!=='INTEGRATED';
+    const voidable=e.status==='POSTED'&&e.official_status!=='INTEGRATED';
+    const deletable=['POSTED','VOID'].includes(e.status)&&e.official_status!=='INTEGRATED';
     const company=currentCompany();
 
     const historyText=l=>{
@@ -2217,9 +2219,9 @@ async function entryView(id){
       <div class="form-actions">
         <button id="printEntryBtn" class="btn secondary">Imprimir</button>
         ${can('accounting.entry.create')?'<button id="duplicateEntryBtn" class="btn secondary">Duplicar</button>':''}
-        ${maintainable&&can('accounting.entry.delete')?'<button id="deleteEntryBtn" class="btn danger">Excluir</button>':''}
-        ${maintainable&&can('accounting.entry.void')?'<button id="voidBtn" class="btn secondary">Anular</button>':''}
-        ${maintainable&&can('accounting.entry.edit')?'<button id="editEntryBtn" class="btn primary">Editar</button>':''}
+        ${deletable&&can('accounting.entry.delete')?'<button id="deleteEntryBtn" class="btn danger">Excluir</button>':''}
+        ${voidable&&can('accounting.entry.void')?'<button id="voidBtn" class="btn secondary">Anular</button>':''}
+        ${editable&&can('accounting.entry.edit')?'<button id="editEntryBtn" class="btn primary">Editar</button>':''}
         <button class="btn secondary" data-close>Fechar</button>
       </div>`,
       true
