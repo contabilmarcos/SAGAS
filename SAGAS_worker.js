@@ -1,4 +1,4 @@
-// SAGAS Worker v34 - correção do cadastro de Eventos Contábeis de Movimento
+// SAGAS Worker v35 - correção de validação de Natureza no lançamento de Nota Fiscal
 // ===== utils.js =====
 function json(data, status = 200, extraHeaders = {}) {
   return new Response(JSON.stringify(data), {
@@ -413,7 +413,7 @@ async function bootstrap(env, request, body) {
 
 // ===== accounting.js =====
 async function assertCompanyEntity(env, table, id, companyId) {
-  const allowed = new Set(["accounts","cost_centers","history_templates","branches","accounting_periods","journal_batches"]);
+  const allowed = new Set(["accounts","cost_centers","history_templates","branches","accounting_periods","journal_batches","budget_natures"]);
   if (!allowed.has(table)) throw new Error("Tabela não permitida");
   const row = await env.DB.prepare(`SELECT * FROM ${table} WHERE id=? AND company_id=?`).bind(id, companyId).first();
   if (!row) throw new HttpError(400, `Registro inválido em ${table}: ${id}`, "VALIDATION_ERROR");
