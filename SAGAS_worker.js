@@ -1,4 +1,4 @@
-// SAGAS Worker v26 - estabilidade e performance sem travar o carregamento
+// SAGAS Worker v33 - correção do cadastro de Eventos Contábeis de Movimento
 // ===== utils.js =====
 function json(data, status = 200, extraHeaders = {}) {
   return new Response(JSON.stringify(data), {
@@ -4282,7 +4282,7 @@ async function saveMovementAccountingEvent(env,request,auth,companyId,id,body){
     items.push({
       line_no:no++,side,incidence,account_origin:origin,account_id:accountId,percentage:pct,
       branch_id:raw.branch_id||null,cost_center_id:raw.cost_center_id||null,
-      history_template_id:raw.history_template_id||null,history_complement:normalizedHistoryComplement,
+      history_template_id:raw.history_template_id||null,history_complement:cleanText(raw.history_complement,1000),
       formula_expression:formulaExpression,condition_expression:conditionExpression
     });
   }
