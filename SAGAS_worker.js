@@ -1,4 +1,4 @@
-// SAGAS Worker v33 - correção do cadastro de Eventos Contábeis de Movimento
+// SAGAS Worker v34 - correção do cadastro de Eventos Contábeis de Movimento
 // ===== utils.js =====
 function json(data, status = 200, extraHeaders = {}) {
   return new Response(JSON.stringify(data), {
@@ -991,6 +991,10 @@ async function deleteHistory(env, request, auth, companyId, id) {
 
 
 async function ensureAccountingPeriodSchema(env) {
+  return ensureSchemaRevision(env, 'accounting_period', 1, () => migrateEnsureAccountingPeriodSchema(env));
+}
+
+async function migrateEnsureAccountingPeriodSchema(env) {
   const info=await env.DB.prepare(`PRAGMA table_info(accounting_periods)`).all();
   const columns=new Set((info.results||[]).map(x=>x.name));
 
@@ -1218,6 +1222,10 @@ async function deletePeriod(env, request, auth, companyId, id) {
 
 
 async function ensureBatchIntegrationSchema(env) {
+  return ensureSchemaRevision(env, 'batch_integration', 1, () => migrateEnsureBatchIntegrationSchema(env));
+}
+
+async function migrateEnsureBatchIntegrationSchema(env) {
   const batchInfo=await env.DB.prepare(`PRAGMA table_info(journal_batches)`).all();
   const batchCols=new Set((batchInfo.results||[]).map(x=>x.name));
 
@@ -1766,6 +1774,11 @@ async function listOfficialEntries(env, companyId, limit=300) {
 
 
 async function migrateLegacyDraftEntries(env, companyId) {
+  return ensureSchemaRevision(env, `legacy_drafts:${companyId}`, 1,
+    () => migrateLegacyDraftEntriesOnce(env, companyId));
+}
+
+async function migrateLegacyDraftEntriesOnce(env, companyId) {
   await env.DB.prepare(`
     UPDATE journal_entries
     SET status='POSTED',
@@ -1781,6 +1794,10 @@ async function migrateLegacyDraftEntries(env, companyId) {
 
 
 async function ensureEntryMaintenanceSchema(env) {
+  return ensureSchemaRevision(env, 'entry_maintenance', 1, () => migrateEnsureEntryMaintenanceSchema(env));
+}
+
+async function migrateEnsureEntryMaintenanceSchema(env) {
   // Colunas de rastreabilidade de edição.
   const info=await env.DB.prepare(`PRAGMA table_info(journal_entries)`).all();
   const cols=new Set((info.results||[]).map(x=>x.name));
@@ -2155,6 +2172,10 @@ async function createEntry(env, request, auth, companyId, body) {
 
 
 async function ensureViewFilterSchema(env) {
+  return ensureSchemaRevision(env, 'view_filter', 1, () => migrateEnsureViewFilterSchema(env));
+}
+
+async function migrateEnsureViewFilterSchema(env) {
   await env.DB.prepare(`
     CREATE TABLE IF NOT EXISTS user_view_filters (
       id TEXT PRIMARY KEY,
@@ -5328,6 +5349,32 @@ async function receiptIntegrationLinks(env,companyId,receiptId){
   return {payable:payable?{...payable,amount:centsToMoney(payable.amount_cents),balance:centsToMoney(payable.balance_cents)}:null,journal_entry:entry?{...entry,amount:centsToMoney(entry.total_debit_cents)}:null};
 }
 
+// SAGAS Worker v34: migrações por versão persistida no D1 (sem cache global do Worker).
+// Ao alterar a definição de um schema no futuro, incremente sua revisão aqui.
+async function ensureSchemaRevision(env, scope, revision, migrate) {
+  let row;
+  try {
+    row = await env.DB.prepare(`SELECT revision FROM sagas_schema_revisions WHERE scope=?`).bind(scope).first();
+  } catch (error) {
+    const message = String(error?.message || error || '');
+    if (!/no such table: sagas_schema_revisions/i.test(message)) throw error;
+    await env.DB.prepare(`CREATE TABLE IF NOT EXISTS sagas_schema_revisions (
+      scope TEXT PRIMARY KEY,
+      revision INTEGER NOT NULL,
+      applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )`).run();
+    row = await env.DB.prepare(`SELECT revision FROM sagas_schema_revisions WHERE scope=?`).bind(scope).first();
+  }
+  if (Number(row?.revision) >= revision) return;
+  // A migração é executada até o fim antes de marcar a revisão como concluída.
+  // Se falhar, o próximo acesso poderá tentar novamente; nunca marca como pronta.
+  await migrate();
+  await env.DB.prepare(`INSERT INTO sagas_schema_revisions(scope,revision,applied_at)
+    VALUES (?, ?, CURRENT_TIMESTAMP)
+    ON CONFLICT(scope) DO UPDATE SET revision=excluded.revision,applied_at=CURRENT_TIMESTAMP
+  `).bind(scope,revision).run();
+}
+
 async function route(request, env) {
   const url=new URL(request.url), path=url.pathname.replace(/\/+$/,"" )||"/", method=request.method.toUpperCase();
   if (method==="OPTIONS") return new Response(null,{status:204});
@@ -5377,14 +5424,25 @@ async function route(request, env) {
     path.startsWith("/api/stock-balances");
 
   if (needsPurchasingSchema) {
-    await ensurePurchasingSchema(env);
-    await ensurePurchaseIntegrationSchema(env);
-    await ensureRmPurchasingSchema(env);
+    await ensureSchemaRevision(env, 'purchasing', 1, async () => {
+      await ensurePurchasingSchema(env);
+      await ensurePurchaseIntegrationSchema(env);
+      await ensureRmPurchasingSchema(env);
+    });
   }
 
   if (path.startsWith("/api/financial-accounting-events") || path.startsWith("/api/financial-cash-accounts") || path.startsWith("/api/financial-payables") || path==="/api/auth/permissions") {
-    await ensureFinancialAccountingEventSchema(env);
-    await ensureFinancialCashAccountSchema(env);
+    await ensureSchemaRevision(env, 'financial', 1, async () => {
+      await ensureFinancialAccountingEventSchema(env);
+      await ensureFinancialCashAccountSchema(env);
+    });
+  }
+
+  // Em bancos novos, o cadastro das permissões pode acontecer antes de existir
+  // financial_payables. Confere as colunas da baixa depois da criação da tabela.
+  if (path.startsWith("/api/financial-payables")) {
+    await ensureSchemaRevision(env, 'financial_payment_columns', 1,
+      () => ensureFinancialCashAccountSchema(env));
   }
 
   if (method==="GET" && path==="/api/auth/permissions") return ok({permissions:await getEffectivePermissions(env,auth.user.id,companyId)});
