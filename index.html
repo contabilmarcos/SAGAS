@@ -239,7 +239,7 @@ function save(){localStorage.setItem('erp_token',S.token||'');localStorage.setIt
 function clear(){S.token='';S.user=null;S.companies=[];S.companyId='';S.cache={};['erp_token','erp_user','erp_companies','erp_company'].forEach(localStorage.removeItem.bind(localStorage))}
 let sessionCheckBusy=false;
 function loseSession(message='Sua sessão foi encerrada. Entre novamente.'){if(!S.token)return;clear();S.permissions=[];closeModal();showLogin();toast(message,'error')}
-async function api(path,opt={}){if(!S.api)throw Error('Configure a URL da API.');const h={...(opt.headers||{})};let body=opt.body;if(body&&typeof body!=='string'){h['Content-Type']='application/json';body=JSON.stringify(body)}if(S.token)h.Authorization='Bearer '+S.token;if(S.companyId&&opt.company!==false)h['X-Company-Id']=S.companyId;const r=await fetch(S.api.replace(/\/+$/,'')+path,{...opt,headers:h,body});let d={};try{d=await r.json()}catch{}if(!r.ok||d.ok===false){const e=Error(d?.error?.message||`Erro HTTP ${r.status}`);e.status=r.status;e.code=d?.error?.code;if(r.status===401&&opt.authRedirect!==false)loseSession('Seu acesso foi encerrado. Entre novamente.');throw e}return d}
+async function api(path,opt={}){if(!S.api)throw Error('Configure a URL da API.');const h={...(opt.headers||{})};let body=opt.body;if(body&&typeof body!=='string'){h['Content-Type']='application/json';body=JSON.stringify(body)}if(S.token)h.Authorization='Bearer '+S.token;if(S.companyId&&opt.company!==false)h['X-Company-Id']=S.companyId;const requestStarted=performance.now();const r=await fetch(S.api.replace(/\/+$/,'')+path,{...opt,headers:h,body});if(performance.now()-requestStarted>1200)console.info('[SAGAS] Consulta lenta:',path,Math.round(performance.now()-requestStarted)+'ms');let d={};try{d=await r.json()}catch{}if(!r.ok||d.ok===false){const e=Error(d?.error?.message||`Erro HTTP ${r.status}`);e.status=r.status;e.code=d?.error?.code;if(r.status===401&&opt.authRedirect!==false)loseSession('Seu acesso foi encerrado. Entre novamente.');throw e}return d}
 async function checkSessionAccess(){if(sessionCheckBusy||!S.token||!S.api)return;sessionCheckBusy=true;try{const d=await api('/api/auth/me',{company:false,authRedirect:false});S.user=d.user;S.companies=d.companies||[];if(!S.companies.length){loseSession('Seu usuário não possui mais acesso ativo a nenhuma empresa.');return}if(!S.companies.some(c=>c.id===S.companyId)){S.companyId=S.companies[0].id;S.cache={};save();chrome();await loadPermissions();if(!canPage(S.page))S.page=firstAllowedPage();await nav(S.page)}}catch(e){if(e.status===401)loseSession('Seu acesso foi encerrado. Entre novamente.')}finally{sessionCheckBusy=false}}
 function openModal(t,sub,html,large=false){$('#modalTitle').textContent=t;$('#modalSub').textContent=sub||'';$('#modalBody').innerHTML=html;$('#modal').classList.toggle('large',large);$('#modalBackdrop').classList.remove('hidden')}
 function closeModal(){$('#modalBackdrop').classList.add('hidden')}
@@ -421,7 +421,28 @@ function roleForm(p,role=null){
 }
 
 function accountClass(v){return({ASSET:'Ativo',LIABILITY:'Passivo',EQUITY:'Patrimônio Líquido',REVENUE:'Receita',EXPENSE:'Despesa',RESULT:'Resultado',COMPENSATION:'Compensação',OTHER:'Outras'})[v]||v||'-'}
-async function load(k,path,key,force=false){if(!force&&S.cache[k])return S.cache[k];const d=await api(path);return S.cache[k]=d[key]||[]}
+// v39: cache curto somente para listas de cadastros; mantido por empresa/sessão.
+const __sagasListCacheTime = new Map();
+const __sagasListPending = new Map();
+const __sagasListTTL = 45000; // 45 segundos. Alterações que limpam S.cache[k] são imediatas.
+async function load(k,path,key,force=false){
+  const scope = `${S.companyId}|${S.token}|${S.api}|${k}`;
+  const item = S.cache[k];
+  const stamp = __sagasListCacheTime.get(scope)||0;
+  if (item!=null && Date.now()-stamp<__sagasListTTL) return item;
+  if (__sagasListPending.has(scope)) return __sagasListPending.get(scope);
+  const companyAtStart=S.companyId, tokenAtStart=S.token, apiAtStart=S.api;
+  const request=api(path).then(d=>{
+    const result=d[key]||[];
+    if (companyAtStart===S.companyId && tokenAtStart===S.token && apiAtStart===S.api) {
+      S.cache[k]=result;
+      __sagasListCacheTime.set(scope,Date.now());
+    }
+    return result;
+  }).finally(()=>{__sagasListPending.delete(scope)});
+  __sagasListPending.set(scope,request);
+  return request;
+}
 const accounts=f=>load('accounts','/api/accounts','accounts',f), ccs=f=>load('ccs','/api/cost-centers','cost_centers',f), histories=f=>load('hist','/api/history-templates','history_templates',f), periods=f=>load('periods','/api/accounting-periods','periods',f), batches=f=>load('batches','/api/journal-batches','batches',f), branches=f=>load('branches','/api/branches','branches',f);
 const movementTypes=f=>load('movementTypes','/api/movement-types','movement_types',f), budgetNatures=f=>load('budgetNatures','/api/budget-natures','natures',f), movementEvents=f=>load('movementEvents','/api/movement-accounting-events','events',f);
 const purchaseProducts=f=>load('purchaseProducts','/api/purchase-products','products',f), purchaseSuppliers=f=>load('purchaseSuppliers','/api/purchase-suppliers','suppliers',f), purchaseInvoices=f=>load('purchaseInvoices','/api/purchase-invoices','invoices',f);
@@ -3227,7 +3248,7 @@ function bootstrap(){if(!S.api)return apiConfig();openModal('Primeiro acesso','U
 $('#modalClose').onclick=closeModal;$('#modalBackdrop').onclick=e=>{if(e.target===$('#modalBackdrop'))closeModal()};$('#apiConfigLogin').onclick=apiConfig;$('#apiConfigApp').onclick=apiConfig;$('#myAccountApp').onclick=myAccount;$('#changePasswordApp').onclick=changePassword;$('#bootstrapBtn').onclick=bootstrap;$('#loginForm').onsubmit=async e=>{e.preventDefault();if(!S.api)return apiConfig();try{const d=await api('/api/auth/login',{method:'POST',company:false,authRedirect:false,body:{email:$('#loginEmail').value.trim(),password:$('#loginPassword').value}});if(!(d.companies||[]).length)throw Error('Seu usuário não possui acesso ativo a nenhuma empresa.');S.token=d.token;S.user=d.user;S.companies=d.companies||[];S.companyId=S.companies[0].id;save();showApp()}catch(x){toast(x.message,'error')}};$('#logoutBtn').onclick=async()=>{try{await api('/api/auth/logout',{method:'POST',company:false,body:{}})}catch{}clear();showLogin()};$('#companySelect').onchange=async e=>{S.companyId=e.target.value;S.cache={};save();await loadPermissions();if(!canPage(S.page))S.page=firstAllowedPage();nav(S.page)};$$('.nav[data-page]').forEach(b=>b.onclick=()=>{nav(b.dataset.page);$('#sidebar').classList.remove('open')});$('#menuBtn').onclick=()=>$('#sidebar').classList.toggle('open');
 window.addEventListener('focus',()=>checkSessionAccess());
 document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')checkSessionAccess()});
-setInterval(()=>checkSessionAccess(),30000);
+setInterval(()=>checkSessionAccess(),180000);
 
 (async()=>{apiStatus();if(S.token&&S.api){try{const d=await api('/api/auth/me',{company:false,authRedirect:false});S.user=d.user;S.companies=d.companies||[];if(!S.companies.some(x=>x.id===S.companyId))S.companyId=S.companies[0]?.id||'';save();if(S.user&&S.companies.length)return showApp()}catch{clear()}}showLogin()})();
 
