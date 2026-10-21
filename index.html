@@ -173,6 +173,12 @@ html,body{width:100%;height:100%;overflow:hidden;font-family:"Segoe UI",Tahoma,A
         <button class="nav" data-page="periods">□ <span>Períodos Contábeis</span></button>
         <button class="nav" data-page="batches">▤ <span>Lotes</span></button>
         <button class="nav" data-page="entries">⇄ <span>Lançamentos</span></button>
+        <div class="nav-section-title" data-nav-section="payroll">FOLHA DE PAGAMENTO</div>
+        <button class="nav" data-page="payroll-categories">▤ <span>Categorias</span></button>
+        <button class="nav" data-page="payroll-departments">▤ <span>Departamentos</span></button>
+        <button class="nav" data-page="payroll-positions">▤ <span>Cargos</span></button>
+        <button class="nav" data-page="payroll-employees">▤ <span>Funcionários</span></button>
+        <button class="nav" data-page="payroll-events">▤ <span>Eventos da Folha</span></button>
         <div class="nav-section-title" data-nav-section="purchases">NOTAS FISCAIS E ESTOQUE</div>
         <button class="nav" data-page="movement-types">▦ <span>Tipos de Movimento</span></button>
         <button class="nav" data-page="budget-natures">◇ <span>Naturezas Orçamentárias</span></button>
@@ -226,6 +232,11 @@ const meta={companies:['Empresas','Empresas disponíveis para o usuário'], 'bra
   'stock-balances':['Estoque Atual','Saldo físico por produto'],
   'financial-cash-accounts':['Contas / Caixa','Caixas e contas bancárias com defaults contábeis'],
   'financial-accounting-events':['Eventos Contábeis','Eventos contábeis próprios da Gestão Financeira'],
+  'payroll-categories':['Categorias','Categorias de funcionários'],
+  'payroll-departments':['Departamentos','Departamentos da empresa'],
+  'payroll-positions':['Cargos','Cargos e salários cadastrados'],
+  'payroll-employees':['Funcionários','Cadastro dos funcionários e salários por cargo'],
+  'payroll-events':['Eventos da Folha','Cadastro de eventos para utilização futura na folha'],
   'financial-payables':['Contas a Pagar','Títulos financeiros gerados pelos Tipos de Movimento configurados para financeiro']};
 function toast(m,t='success'){const e=document.createElement('div');e.className='toast '+t;e.textContent=m;$('#toasts').appendChild(e);setTimeout(()=>e.remove(),4200)}
 function money(v){return new Intl.NumberFormat('pt-BR',{style:'currency',currency:'BRL'}).format(Number(v||0))}
@@ -310,11 +321,11 @@ function installSagasColumnFilters(root=document.getElementById('content')){
 
 function tablePage({newLabel,onNew,cols,rows,emptyTitle,emptyText,placeholder='Pesquisar...'}){const newButton=newLabel&&onNew?`<button id="newBtn" class="btn primary">+ ${esc(newLabel)}</button>`:'';$('#content').innerHTML=`<div class="toolbar"><input id="search" class="search" placeholder="${esc(placeholder)}">${newButton}</div><div class="table-wrap"><table class="table"><thead><tr>${cols.map(x=>`<th>${esc(x)}</th>`).join('')}</tr></thead><tbody id="tbody">${rows||empty(cols.length,emptyTitle,emptyText)}</tbody></table></div>`;if($('#newBtn'))$('#newBtn').onclick=onNew;$('#search').oninput=e=>{const q=e.target.value.toLowerCase().trim();$$('#tbody tr').forEach(r=>r.style.display=!q||r.innerText.toLowerCase().includes(q)?'':'none')}}
 
-const pagePermission={companies:'core.company.manage','branches-admin':'core.branch.read',users:'core.user.read',roles:'core.role.manage',accounts:'accounting.account.read','cost-centers':'accounting.cost_center.read',history:'accounting.history.read',periods:'accounting.period.read',batches:'accounting.batch.read',entries:'accounting.entry.read','movement-types':'purchasing.movement_type.read','budget-natures':'purchasing.nature.read','movement-events':'purchasing.accounting_event.read','purchase-products':'purchasing.product.read','purchase-suppliers':'purchasing.supplier.read','purchase-invoices':'purchasing.receipt.read','stock-balances':'purchasing.product.read','financial-cash-accounts':'financial.cash_account.read','financial-accounting-events':'financial.accounting_event.read','financial-payables':'financial.payable.read'};
-const navGroups={admin:['companies','branches-admin','users','roles'],accounting:['accounts','cost-centers','history','periods','batches','entries'],purchases:['movement-types','budget-natures','movement-events','purchase-products','purchase-suppliers','purchase-invoices','stock-balances'],finance:['financial-cash-accounts','financial-accounting-events','financial-payables']};
+const pagePermission={companies:'core.company.manage','branches-admin':'core.branch.read',users:'core.user.read',roles:'core.role.manage',accounts:'accounting.account.read','cost-centers':'accounting.cost_center.read',history:'accounting.history.read',periods:'accounting.period.read',batches:'accounting.batch.read',entries:'accounting.entry.read','movement-types':'purchasing.movement_type.read','budget-natures':'purchasing.nature.read','movement-events':'purchasing.accounting_event.read','purchase-products':'purchasing.product.read','purchase-suppliers':'purchasing.supplier.read','purchase-invoices':'purchasing.receipt.read','stock-balances':'purchasing.product.read','financial-cash-accounts':'financial.cash_account.read','financial-accounting-events':'financial.accounting_event.read','financial-payables':'financial.payable.read','payroll-categories':'payroll.read','payroll-departments':'payroll.read','payroll-positions':'payroll.read','payroll-employees':'payroll.read','payroll-events':'payroll.read'};
+const navGroups={admin:['companies','branches-admin','users','roles'],accounting:['accounts','cost-centers','history','periods','batches','entries'],purchases:['movement-types','budget-natures','movement-events','purchase-products','purchase-suppliers','purchase-invoices','stock-balances'],finance:['financial-cash-accounts','financial-accounting-events','financial-payables'],payroll:['payroll-categories','payroll-departments','payroll-positions','payroll-employees','payroll-events']};
 function can(code){return S.permissions.includes(code)}
 function canPage(page){const code=pagePermission[page];return !code||can(code)}
-function firstAllowedPage(){return ['companies','branches-admin','users','roles','accounts','cost-centers','history','periods','batches','entries','movement-types','budget-natures','movement-events','purchase-products','purchase-suppliers','purchase-invoices','stock-balances','financial-cash-accounts','financial-accounting-events','financial-payables'].find(canPage)||'accounts'}
+function firstAllowedPage(){return ['companies','branches-admin','users','roles','accounts','cost-centers','history','periods','batches','entries','movement-types','budget-natures','movement-events','purchase-products','purchase-suppliers','purchase-invoices','stock-balances','financial-cash-accounts','financial-accounting-events','financial-payables','payroll-categories','payroll-departments','payroll-positions','payroll-employees','payroll-events'].find(canPage)||'accounts'}
 function applyMenuAccess(){$$('.nav[data-page]').forEach(btn=>btn.classList.toggle('hidden',!canPage(btn.dataset.page)));Object.entries(navGroups).forEach(([group,pages])=>{const title=$(`[data-nav-section="${group}"]`);if(title)title.classList.toggle('hidden',!pages.some(canPage))})}
 async function loadPermissions(){if(!S.companyId){S.permissions=[];applyMenuAccess();return}const d=await api('/api/auth/permissions');S.permissions=d.permissions||[];applyMenuAccess()}
 
@@ -322,12 +333,116 @@ function showLogin(){$('#app').classList.add('hidden');$('#loginScreen').classLi
 async function showApp(){$('#loginScreen').classList.add('hidden');$('#app').classList.remove('hidden');chrome();await loadPermissions();if(!canPage(S.page))S.page=firstAllowedPage();await nav(S.page)}
 function chrome(){$('#userName').textContent=S.user?.name||'Usuário';$('#userEmail').textContent=S.user?.email||'';$('#avatar').textContent=(S.user?.name||'U').trim()[0].toUpperCase();$('#companySelect').innerHTML=S.companies.map(c=>`<option value="${esc(c.id)}">${esc(c.code)} - ${esc(c.legal_name)}</option>`).join('');$('#companySelect').value=S.companyId}
 function apiStatus(){$('#apiStatus').textContent=S.api?'API: '+S.api:'API não configurada'}
-async function nav(p){if(!canPage(p))p=firstAllowedPage();S.page=p;$('#pageTitle').textContent=meta[p][0];$('#pageSub').textContent=meta[p][1];$$('.nav[data-page]').forEach(b=>b.classList.toggle('active',b.dataset.page===p));$('#content').innerHTML='<div class="empty"><b>Carregando...</b></div>';try{if(p==='companies')await renderCompanies();if(p==='branches-admin')await renderBranchesAdmin();if(p==='users')await renderUsers();if(p==='roles')await renderRoles();if(p==='accounts')await renderAccounts();if(p==='cost-centers')await renderCC();if(p==='history')await renderHistory();if(p==='periods')await renderPeriods();if(p==='batches')await renderBatches();if(p==='entries')await renderEntries();if(p==='movement-types')await renderMovementTypes();if(p==='budget-natures')await renderBudgetNatures();if(p==='movement-events')await renderMovementEvents();if(p==='purchase-products')await renderPurchaseProducts();if(p==='purchase-suppliers')await renderPurchaseSuppliers();if(p==='purchase-invoices')await renderPurchaseInvoices();if(p==='purchase-requests')await renderPurchaseRequests();if(p==='purchase-quotations')await renderPurchaseQuotations();if(p==='purchase-orders')await renderPurchaseOrders();if(p==='purchase-receipts')await renderPurchaseReceipts();if(p==='stock-balances')await renderStockBalances();if(p==='financial-cash-accounts')await renderFinancialCashAccounts();if(p==='financial-accounting-events')await renderFinancialAccountingEvents();if(p==='financial-payables')await renderFinancialPayables()}catch(e){$('#content').innerHTML=`<div class="empty"><b>Não foi possível carregar</b>${esc(e.message)}</div>`;if(e.status===401){clear();showLogin()}}}
+async function nav(p){if(!canPage(p))p=firstAllowedPage();S.page=p;$('#pageTitle').textContent=meta[p][0];$('#pageSub').textContent=meta[p][1];$$('.nav[data-page]').forEach(b=>b.classList.toggle('active',b.dataset.page===p));$('#content').innerHTML='<div class="empty"><b>Carregando...</b></div>';try{if(p==='companies')await renderCompanies();if(p==='branches-admin')await renderBranchesAdmin();if(p==='users')await renderUsers();if(p==='roles')await renderRoles();if(p==='accounts')await renderAccounts();if(p==='cost-centers')await renderCC();if(p==='history')await renderHistory();if(p==='periods')await renderPeriods();if(p==='batches')await renderBatches();if(p==='entries')await renderEntries();if(p==='movement-types')await renderMovementTypes();if(p==='budget-natures')await renderBudgetNatures();if(p==='movement-events')await renderMovementEvents();if(p==='purchase-products')await renderPurchaseProducts();if(p==='purchase-suppliers')await renderPurchaseSuppliers();if(p==='purchase-invoices')await renderPurchaseInvoices();if(p==='purchase-requests')await renderPurchaseRequests();if(p==='purchase-quotations')await renderPurchaseQuotations();if(p==='purchase-orders')await renderPurchaseOrders();if(p==='purchase-receipts')await renderPurchaseReceipts();if(p==='stock-balances')await renderStockBalances();if(p==='financial-cash-accounts')await renderFinancialCashAccounts();if(p==='financial-accounting-events')await renderFinancialAccountingEvents();if(p==='financial-payables')await renderFinancialPayables();if(p.startsWith('payroll-'))await renderPayroll(p)}catch(e){$('#content').innerHTML=`<div class="empty"><b>Não foi possível carregar</b>${esc(e.message)}</div>`;if(e.status===401){clear();showLogin()}}}
 
 async function refreshSession(){const d=await api('/api/auth/me',{company:false});S.user=d.user;S.companies=d.companies||[];if(!S.companies.length){loseSession('Seu usuário não possui acesso ativo a nenhuma empresa.');return}if(!S.companies.some(c=>c.id===S.companyId))S.companyId=S.companies[0]?.id||'';save();chrome();await loadPermissions()}
 async function companyList(force=false){if(!force&&S.cache.companies)return S.cache.companies;const d=await api('/api/companies',{company:false});return S.cache.companies=d.companies||[]}
 async function roleList(force=false){if(!force&&S.cache.roles)return S.cache.roles;const d=await api('/api/roles');return S.cache.roles=d.roles||[]}
 async function permissionList(force=false){if(!force&&S.cache.permissions)return S.cache.permissions;const d=await api('/api/permissions');return S.cache.permissions=d.permissions||[]}
+
+
+// ===== Folha de Pagamento: cadastros, sem cálculo =====
+const PAYROLL_UI={
+  'payroll-categories':{kind:'categories',title:'Categoria',plural:'Categorias'},
+  'payroll-departments':{kind:'departments',title:'Departamento',plural:'Departamentos'},
+  'payroll-positions':{kind:'positions',title:'Cargo',plural:'Cargos'},
+  'payroll-employees':{kind:'employees',title:'Funcionário',plural:'Funcionários'},
+  'payroll-events':{kind:'events',title:'Evento da Folha',plural:'Eventos da Folha'}
+};
+const payrollCache={};
+async function payrollData(kind,refresh=false){
+  const key=S.companyId+':'+kind;
+  if(!refresh&&payrollCache[key])return payrollCache[key];
+  const result=(await api('/api/payroll/'+kind)).items||[];
+  payrollCache[key]=result;
+  return result;
+}
+function invalidatePayroll(){Object.keys(payrollCache).forEach(k=>delete payrollCache[k])}
+const payrollTypeName=x=>({PROVENTO:'Provento',DESCONTO:'Desconto',INFORMATIVO:'Informativo'})[x]||x;
+const payrollUnitName=x=>({VALOR:'Valor',DIAS:'Dias',HORAS:'Horas',PERCENTUAL:'Percentual'})[x]||x;
+
+async function renderPayroll(page){
+  const cfg=PAYROLL_UI[page];if(!cfg)return;
+  const a=await payrollData(cfg.kind,true),manage=can('payroll.manage');
+  let cols,rows;
+  const actions=x=>manage?`<div class="actions"><button class="btn secondary sm" data-payroll-edit="${esc(x.id)}">Editar</button><button class="btn danger sm" data-payroll-delete="${esc(x.id)}">Excluir</button></div>`:'';
+  if(cfg.kind==='employees'){
+    cols=['Nome','Categoria','Departamento','Cargo','Salário','Admissão','Situação','Ações'];
+    rows=a.map(x=>`<tr><td><b>${esc(x.name)}</b></td><td>${esc(x.category_name||'—')}</td><td>${esc(x.department_name||'—')}</td><td>${esc(x.position_name||'—')}</td><td>${money(x.salary)}</td><td>${dateBR(x.admission_date)}</td><td>${x.active?'<span class="badge green">Ativo</span>':'<span class="badge gray">Inativo</span>'}</td><td>${actions(x)}</td></tr>`).join('');
+  }else if(cfg.kind==='positions'){
+    cols=['Nome do Cargo','Salário','Situação','Ações'];
+    rows=a.map(x=>`<tr><td><b>${esc(x.name)}</b></td><td>${money(x.salary)}</td><td>${x.active?'<span class="badge green">Ativo</span>':'<span class="badge gray">Inativo</span>'}</td><td>${actions(x)}</td></tr>`).join('');
+  }else if(cfg.kind==='events'){
+    cols=['Código','Evento','Tipo','Referência','Situação','Ações'];
+    rows=a.map(x=>`<tr><td class="code">${esc(x.code)}</td><td><b>${esc(x.name)}</b></td><td>${esc(payrollTypeName(x.event_type))}</td><td>${esc(payrollUnitName(x.reference_unit))}</td><td>${x.active?'<span class="badge green">Ativo</span>':'<span class="badge gray">Inativo</span>'}</td><td>${actions(x)}</td></tr>`).join('');
+  }else{
+    cols=['Descrição','Situação','Ações'];
+    rows=a.map(x=>`<tr><td><b>${esc(x.name)}</b></td><td>${x.active?'<span class="badge green">Ativo</span>':'<span class="badge gray">Inativo</span>'}</td><td>${actions(x)}</td></tr>`).join('');
+  }
+  tablePage({newLabel:manage?'Novo '+cfg.title:null,onNew:manage?()=>payrollForm(page):null,cols,rows:rows||null,emptyTitle:'Nenhum cadastro encontrado',emptyText:'Cadastre os dados em '+cfg.plural+'.',placeholder:'Pesquisar '+cfg.plural.toLowerCase()+'...'});
+  $$('[data-payroll-edit]').forEach(b=>b.onclick=()=>payrollForm(page,a.find(x=>x.id===b.dataset.payrollEdit)));
+  $$('[data-payroll-delete]').forEach(b=>b.onclick=()=>payrollDeleteForm(page,a.find(x=>x.id===b.dataset.payrollDelete)));
+}
+
+async function payrollForm(page,item=null){
+  const cfg=PAYROLL_UI[page],kind=cfg.kind;
+  const data=kind==='employees'?await Promise.all([
+    payrollData('categories'),payrollData('departments'),payrollData('positions')
+  ]):null;
+  const sel=(name,arr,selected,optional=true)=>`<select name="${name}" ${optional?'':'required'}><option value="">${optional?'Não informado':'Selecione'}</option>${arr.filter(x=>x.active||x.id===selected).map(x=>`<option value="${esc(x.id)}" ${selected===x.id?'selected':''}>${esc(x.name)}</option>`).join('')}</select>`;
+  const input=(name,value,requiredField=false)=>`<input name="${name}" value="${esc(value||'')}" ${requiredField?'required':''}>`;
+  let fields=`<label class="field full"><span>${kind==='positions'?'Nome do Cargo':kind==='events'?'Descrição do Evento':kind==='employees'?'Nome do Funcionário':'Nome / Descrição'}</span>${input('name',item?.name,true)}</label>`;
+  if(kind==='positions')fields+=`<label class="field"><span>Salário do Cargo (R$)</span><input name="salary" inputmode="decimal" required value="${esc(item?Number(item.salary).toFixed(2).replace('.',','):'0,00')}"></label>`;
+  if(kind==='employees'){
+    const [categories,departments,positions]=data;
+    if(!positions.some(x=>x.active||x.id===item?.position_id))return toast('Cadastre um cargo ativo antes de cadastrar funcionários.','error');
+    fields+=`<label class="field"><span>Categoria</span>${sel('category_id',categories,item?.category_id)}</label>
+      <label class="field"><span>Departamento</span>${sel('department_id',departments,item?.department_id)}</label>
+      <label class="field"><span>Cargo</span>${sel('position_id',positions,item?.position_id,false)}</label>
+      <label class="field"><span>Salário do Cargo (R$)</span><input id="payrollEmployeeSalary" readonly value="${item?money(item.salary):'—'}" style="background:#f3f6fb"></label>
+      <label class="field"><span>Data de Admissão</span><input name="admission_date" type="date" value="${esc(item?.admission_date||new Date().toISOString().slice(0,10))}" required></label>`;
+  }
+  if(kind==='events')fields+=`<label class="field"><span>Código do Evento</span>${input('code',item?.code,true)}</label>
+    <label class="field"><span>Tipo de Evento</span><select name="event_type">${[['PROVENTO','Provento'],['DESCONTO','Desconto'],['INFORMATIVO','Informativo']].map(([v,l])=>`<option value="${v}" ${item?.event_type===v?'selected':''}>${l}</option>`).join('')}</select></label>
+    <label class="field"><span>Referência</span><select name="reference_unit">${[['VALOR','Valor'],['DIAS','Dias'],['HORAS','Horas'],['PERCENTUAL','Percentual']].map(([v,l])=>`<option value="${v}" ${item?.reference_unit===v?'selected':''}>${l}</option>`).join('')}</select></label>`;
+  fields+=`<label class="check full"><input type="checkbox" name="active" ${item?.active===0?'':'checked'}> Ativo</label>`;
+  openModal(item?'Editar '+cfg.title:'Novo '+cfg.title,kind==='events'?'Somente cadastro do evento. Cálculos de folha serão implementados posteriormente.':kind==='employees'?'O salário é preenchido automaticamente pelo cargo selecionado.':'Cadastro da Folha de Pagamento.',
+    `<form id="payrollRegistrationForm"><div class="grid">${fields}</div><div class="form-actions"><button class="btn secondary" type="button" data-close>Cancelar</button><button class="btn primary" type="submit">Salvar</button></div></form>`);
+  $('[data-close]').onclick=closeModal;
+  if(kind==='employees'){
+    const p=Object.fromEntries(data[2].map(x=>[x.id,x]));
+    const positionSelect=$('#payrollRegistrationForm [name=position_id]');
+    const salaryDisplay=$('#payrollEmployeeSalary');
+    const update=()=>{salaryDisplay.value=p[positionSelect.value]?money(p[positionSelect.value].salary):'—'};
+    positionSelect.addEventListener('change',update);update();
+  }
+  $('#payrollRegistrationForm').onsubmit=async e=>{
+    e.preventDefault();
+    const form=e.target,b=Object.fromEntries(new FormData(form));
+    b.active=form.elements.active.checked;
+    if(kind==='employees'){
+      b.category_id=b.category_id||null;
+      b.department_id=b.department_id||null;
+    }
+    try{
+      await api('/api/payroll/'+kind+(item?'/'+encodeURIComponent(item.id):''),{method:item?'PATCH':'POST',body:b});
+      invalidatePayroll();closeModal();toast(cfg.title+' salvo com sucesso.');await renderPayroll(page);
+    }catch(err){toast(err.message,'error')}
+  };
+}
+function payrollDeleteForm(page,item){
+  if(!item)return;
+  const cfg=PAYROLL_UI[page];
+  openModal('Excluir '+cfg.title,'A exclusão só será realizada após sua confirmação.',
+    `<div style="padding:8px 0"><p>Deseja excluir <b>${esc(item.name)}</b>?</p><p class="help">Se estiver vinculado a funcionário, o cadastro não será excluído; você pode inativá-lo.</p><div class="form-actions"><button class="btn secondary" data-close>Cancelar</button><button class="btn danger" id="confirmPayrollDelete">Excluir</button></div></div>`);
+  $('[data-close]').onclick=closeModal;
+  $('#confirmPayrollDelete').onclick=async()=>{
+    try{
+      await api('/api/payroll/'+cfg.kind+'/'+encodeURIComponent(item.id),{method:'DELETE'});
+      invalidatePayroll();closeModal();toast('Registro excluído.');await renderPayroll(page);
+    }catch(err){toast(err.message,'error')}
+  };
+}
 
 async function renderCompanies(){const a=await companyList(true),manage=can('core.company.manage');tablePage({newLabel:manage?'Nova empresa':null,onNew:manage?companyForm:null,cols:['Código','Razão Social','Nome Fantasia','CNPJ','Situação'],rows:a.length?a.map(x=>`<tr><td class="code">${esc(x.code)}</td><td>${esc(x.legal_name)}</td><td>${esc(x.trade_name||'')}</td><td class="code">${esc(x.tax_id||'')}</td><td>${x.active?'<span class="badge green">Ativa</span>':'<span class="badge red">Inativa</span>'}</td></tr>`).join(''):null,emptyTitle:'Nenhuma empresa disponível',emptyText:manage?'Cadastre uma empresa adicional no SAGAS.':'Nenhuma empresa disponível para consulta.',placeholder:'Pesquisar empresa...'})}
 function companyForm(){openModal('Nova empresa','O usuário atual será proprietário da nova empresa.',`<form id="companyForm"><div class="grid"><label class="field"><span>Código</span><input name="code" required></label><label class="field"><span>CNPJ</span><input name="tax_id" inputmode="numeric"></label><label class="field full"><span>Razão Social</span><input name="legal_name" required></label><label class="field"><span>Nome Fantasia</span><input name="trade_name"></label><label class="field"><span>Filial inicial</span><input name="branch_name" value="Matriz"></label></div><div class="form-actions"><button type="button" class="btn secondary" data-close>Cancelar</button><button class="btn primary">Criar empresa</button></div></form>`);$('[data-close]').onclick=closeModal;$('#companyForm').onsubmit=async e=>{e.preventDefault();const b=Object.fromEntries(new FormData(e.target));b.tax_id=String(b.tax_id||'').replace(/\D/g,'');try{await api('/api/companies',{method:'POST',company:false,body:b});closeModal();S.cache.companies=null;await refreshSession();toast('Empresa criada.');renderCompanies()}catch(x){toast(x.message,'error')}}}
@@ -449,7 +564,7 @@ function resetUserPasswordForm(u){
 }
 
 
-function permLabel(c){return({'core.company.manage':'Gerenciar empresa','core.branch.read':'Consultar filiais','core.branch.manage':'Gerenciar filiais','core.user.read':'Consultar usuários','core.user.manage':'Gerenciar usuários','core.role.manage':'Gerenciar perfis e permissões','core.audit.read':'Consultar auditoria','accounting.period.read':'Consultar períodos contábeis','accounting.period.manage':'Gerenciar períodos contábeis','accounting.account.read':'Consultar plano de contas','accounting.account.manage':'Gerenciar plano de contas','accounting.cost_center.read':'Consultar centros de custo','accounting.cost_center.manage':'Gerenciar centros de custo','accounting.history.read':'Consultar históricos padrão','accounting.history.manage':'Gerenciar históricos padrão','accounting.batch.read':'Consultar lotes','accounting.batch.manage':'Gerenciar lotes','accounting.entry.read':'Consultar lançamentos','accounting.entry.create':'Criar lançamentos','accounting.entry.edit':'Editar lançamentos','accounting.entry.delete':'Excluir lançamentos','accounting.entry.post':'Contabilizar lançamentos','accounting.entry.void':'Anular lançamentos','purchasing.movement_type.read':'Consultar tipos de movimento','purchasing.movement_type.manage':'Gerenciar tipos de movimento','purchasing.nature.read':'Consultar naturezas orçamentárias/financeiras','purchasing.nature.manage':'Gerenciar naturezas orçamentárias/financeiras','purchasing.accounting_event.read':'Consultar eventos contábeis de movimentos','purchasing.accounting_event.manage':'Gerenciar eventos contábeis de movimentos','purchasing.product.read':'Consultar produtos e serviços','purchasing.product.manage':'Gerenciar produtos e serviços','purchasing.supplier.read':'Consultar fornecedores','purchasing.supplier.manage':'Gerenciar fornecedores','purchasing.request.read':'Consultar solicitações de compra','purchasing.request.manage':'Gerenciar solicitações de compra','purchasing.quotation.read':'Consultar cotações','purchasing.quotation.manage':'Gerenciar cotações','purchasing.order.read':'Consultar ordens de compra','purchasing.order.manage':'Gerenciar ordens de compra','purchasing.receipt.read':'Consultar recebimentos','purchasing.receipt.manage':'Registrar recebimentos','purchasing.integration.read':'Consultar integração de compras','purchasing.integration.manage':'Configurar integração de compras','financial.payable.read':'Consultar contas a pagar','financial.payable.manage':'Gerenciar contas a pagar','financial.accounting_event.read':'Consultar eventos contábeis financeiros','financial.accounting_event.manage':'Gerenciar eventos contábeis financeiros','financial.cash_account.read':'Consultar Contas/Caixa','financial.cash_account.manage':'Gerenciar Contas/Caixa'})[c]||c}
+function permLabel(c){return({'core.company.manage':'Gerenciar empresa','core.branch.read':'Consultar filiais','core.branch.manage':'Gerenciar filiais','core.user.read':'Consultar usuários','core.user.manage':'Gerenciar usuários','core.role.manage':'Gerenciar perfis e permissões','core.audit.read':'Consultar auditoria','accounting.period.read':'Consultar períodos contábeis','accounting.period.manage':'Gerenciar períodos contábeis','accounting.account.read':'Consultar plano de contas','accounting.account.manage':'Gerenciar plano de contas','accounting.cost_center.read':'Consultar centros de custo','accounting.cost_center.manage':'Gerenciar centros de custo','accounting.history.read':'Consultar históricos padrão','accounting.history.manage':'Gerenciar históricos padrão','accounting.batch.read':'Consultar lotes','accounting.batch.manage':'Gerenciar lotes','accounting.entry.read':'Consultar lançamentos','accounting.entry.create':'Criar lançamentos','accounting.entry.edit':'Editar lançamentos','accounting.entry.delete':'Excluir lançamentos','accounting.entry.post':'Contabilizar lançamentos','accounting.entry.void':'Anular lançamentos','purchasing.movement_type.read':'Consultar tipos de movimento','purchasing.movement_type.manage':'Gerenciar tipos de movimento','purchasing.nature.read':'Consultar naturezas orçamentárias/financeiras','purchasing.nature.manage':'Gerenciar naturezas orçamentárias/financeiras','purchasing.accounting_event.read':'Consultar eventos contábeis de movimentos','purchasing.accounting_event.manage':'Gerenciar eventos contábeis de movimentos','purchasing.product.read':'Consultar produtos e serviços','purchasing.product.manage':'Gerenciar produtos e serviços','purchasing.supplier.read':'Consultar fornecedores','purchasing.supplier.manage':'Gerenciar fornecedores','purchasing.request.read':'Consultar solicitações de compra','purchasing.request.manage':'Gerenciar solicitações de compra','purchasing.quotation.read':'Consultar cotações','purchasing.quotation.manage':'Gerenciar cotações','purchasing.order.read':'Consultar ordens de compra','purchasing.order.manage':'Gerenciar ordens de compra','purchasing.receipt.read':'Consultar recebimentos','purchasing.receipt.manage':'Registrar recebimentos','purchasing.integration.read':'Consultar integração de compras','purchasing.integration.manage':'Configurar integração de compras','financial.payable.read':'Consultar contas a pagar','financial.payable.manage':'Gerenciar contas a pagar','financial.accounting_event.read':'Consultar eventos contábeis financeiros','financial.accounting_event.manage':'Gerenciar eventos contábeis financeiros','financial.cash_account.read':'Consultar Contas/Caixa','financial.cash_account.manage':'Gerenciar Contas/Caixa','payroll.read':'Consultar cadastros da Folha','payroll.manage':'Gerenciar cadastros da Folha'})[c]||c}
 async function renderRoles(){const [a,p]=await Promise.all([roleList(true),permissionList(true)]);tablePage({newLabel:'Novo perfil',onNew:()=>roleForm(p),cols:['Código','Perfil','Descrição','Tipo',''],rows:a.length?a.map(x=>`<tr><td class="code">${esc(x.code)}</td><td>${esc(x.name)}</td><td>${esc(x.description||'')}</td><td>${x.system_role?'<span class="badge blue">Sistema</span>':'<span class="badge gray">Personalizado</span>'}</td><td><div class="actions">${x.system_role?'':`<button class="btn secondary sm" data-edit-role="${x.id}">Editar</button>`}</div></td></tr>`).join(''):null,emptyTitle:'Nenhum perfil cadastrado',emptyText:'Crie perfis para controlar o acesso dos usuários.',placeholder:'Pesquisar perfil...'});$$('[data-edit-role]').forEach(b=>b.onclick=async()=>{try{const d=await api(`/api/roles/${b.dataset.editRole}`);roleForm(p,d.role)}catch(x){toast(x.message,'error')}})}
 function roleForm(p,role=null){
   p=p.filter(x=>!['purchasing.location.read','purchasing.location.manage'].includes(x.code));
@@ -3443,7 +3558,8 @@ setInterval(()=>checkSessionAccess(),180000);
     'purchase-invoices':{label:'Notas Fiscais',type:'file'},'stock-balances':{label:'Estoque Atual',type:'grid'},
     'financial-cash-accounts':{label:'Contas / Caixa',type:'money'},
     'financial-accounting-events':{label:'Evento Contábil',type:'doc'},
-    'financial-payables':{label:'Contas a Pagar',type:'money'}
+    'financial-payables':{label:'Contas a Pagar',type:'money'},
+    'payroll-categories':{label:'Categorias',type:'people'},'payroll-departments':{label:'Departamentos',type:'people'},'payroll-positions':{label:'Cargos',type:'people'},'payroll-employees':{label:'Funcionários',type:'people'},'payroll-events':{label:'Eventos da Folha',type:'doc'}
   };
 
   const modules={
@@ -3457,6 +3573,7 @@ setInterval(()=>checkSessionAccess(),180000);
       'Notas Fiscais':[['Lançamentos',['purchase-invoices']]],
       'Estoque':[['Estoque',['stock-balances']]]
     }},
+    'Gestão da Folha de Pagamento':{icon:'people',tabs:{'Cadastros':[['Cadastros de Pessoal',['payroll-categories','payroll-departments','payroll-positions','payroll-employees']],['Eventos',['payroll-events']]]}},
     'Gestão Financeira':{icon:'chart',tabs:{'Cadastros':[['Financeiro',['financial-cash-accounts']],['Contabilidade',['financial-accounting-events']]],'Contas a Pagar / Receber':[['Operações Financeiras',['financial-payables']]]}}
   };
 
@@ -3593,7 +3710,7 @@ setInterval(()=>checkSessionAccess(),180000);
   const back=menu.querySelector('[data-sub="backoffice"]');
   function showBackOffice(){
     menu.querySelectorAll('.sagas-module-item').forEach(x=>x.classList.toggle('active-hover',x===back));
-    const items=['Gestão Contábil','Gestão de Notas Fiscais e Estoque','Gestão Financeira'].filter(moduleHasAccess);
+    const items=['Gestão Contábil','Gestão de Notas Fiscais e Estoque','Gestão Financeira','Gestão da Folha de Pagamento'].filter(moduleHasAccess);
     submenu.style.top=`${back.offsetTop}px`;
     submenu.innerHTML=items.map(name=>`<div class="sagas-sub-item ${name===currentModule?'current':''}" data-module="${name}"><span class="sagas-switch-icon">${icon(modules[name].icon)}</span><span>${name}</span></div>`).join('');
     submenu.classList.toggle('show',!!items.length);
@@ -3965,6 +4082,7 @@ setInterval(()=>checkSessionAccess(),180000);
     'Financeiro':[
       ['financial-cash-accounts','Contas / Caixa'],['financial-accounting-events','Eventos Contábeis'],['financial-payables','Contas a Pagar']
     ],
+    'Folha de Pagamento':[['payroll-categories','Categorias'],['payroll-departments','Departamentos'],['payroll-positions','Cargos'],['payroll-employees','Funcionários'],['payroll-events','Eventos da Folha']],
     'Notas fiscais e estoque':[
       ['movement-types','Tipos de Movimento'],['budget-natures','Naturezas Orçamentárias'],['movement-events','Eventos Contábeis de Movimento'],['purchase-products','Produtos / Serviços'],['purchase-suppliers','Fornecedores'],['purchase-invoices','Notas Fiscais'],['stock-balances','Estoque Atual']
     ]
@@ -3981,7 +4099,7 @@ setInterval(()=>checkSessionAccess(),180000);
     help:'<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9.8 9a2.5 2.5 0 1 1 4.2 1.8c-1.2 1-2 1.4-2 3M12 17h.01"/></svg>',
     bell:'<svg viewBox="0 0 24 24"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4"/></svg>'
   };
-  const moduleIcons={'Administração':svg.admin,'Contábil':svg.accounting,'Financeiro':svg.finance,'Notas fiscais e estoque':svg.stock};
+  const moduleIcons={'Administração':svg.admin,'Contábil':svg.accounting,'Financeiro':svg.finance,'Folha de Pagamento':svg.admin,'Notas fiscais e estoque':svg.stock};
 
   const sidebar=document.createElement('aside');sidebar.className='sagas-v35-sidebar';sidebar.id='sagasV35Sidebar';
   sidebar.innerHTML=`
