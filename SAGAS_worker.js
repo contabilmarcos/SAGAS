@@ -1,4 +1,4 @@
-// SAGAS Worker v35 - correção de validação de Natureza no lançamento de Nota Fiscal
+// SAGAS Worker v37 - cadastros de folha | base v36 - correção de validação de Natureza no lançamento de Nota Fiscal
 // ===== utils.js =====
 function json(data, status = 200, extraHeaders = {}) {
   return new Response(JSON.stringify(data), {
@@ -5502,6 +5502,178 @@ async function ensureSchemaRevision(env, scope, revision, migrate) {
   `).bind(scope,revision).run();
 }
 
+
+// ===== Folha de Pagamento: primeira etapa — cadastros, sem cálculo =====
+const PAYROLL_TABLES={
+  categories:'payroll_categories',
+  departments:'payroll_departments',
+  positions:'payroll_positions',
+  employees:'payroll_employees',
+  events:'payroll_events'
+};
+
+async function ensurePayrollSchema(env){
+  await env.DB.batch([
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS payroll_categories (
+      id TEXT PRIMARY KEY,company_id TEXT NOT NULL,name TEXT NOT NULL,
+      active INTEGER NOT NULL DEFAULT 1,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(company_id,name)
+    )`),
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS payroll_departments (
+      id TEXT PRIMARY KEY,company_id TEXT NOT NULL,name TEXT NOT NULL,
+      active INTEGER NOT NULL DEFAULT 1,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(company_id,name)
+    )`),
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS payroll_positions (
+      id TEXT PRIMARY KEY,company_id TEXT NOT NULL,name TEXT NOT NULL,
+      salary_cents INTEGER NOT NULL CHECK(salary_cents>=0),
+      active INTEGER NOT NULL DEFAULT 1,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(company_id,name)
+    )`),
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS payroll_employees (
+      id TEXT PRIMARY KEY,company_id TEXT NOT NULL,name TEXT NOT NULL,
+      category_id TEXT,department_id TEXT,position_id TEXT NOT NULL,
+      salary_cents INTEGER NOT NULL CHECK(salary_cents>=0),
+      admission_date TEXT NOT NULL,active INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )`),
+    env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_payroll_employee_company ON payroll_employees(company_id,name)`),
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS payroll_events (
+      id TEXT PRIMARY KEY,company_id TEXT NOT NULL,code TEXT NOT NULL,
+      name TEXT NOT NULL,event_type TEXT NOT NULL CHECK(event_type IN ('PROVENTO','DESCONTO','INFORMATIVO')),
+      reference_unit TEXT NOT NULL CHECK(reference_unit IN ('VALOR','DIAS','HORAS','PERCENTUAL')),
+      active INTEGER NOT NULL DEFAULT 1,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(company_id,code)
+    )`)
+  ]);
+  for(const [code,description] of [
+    ['payroll.read','Consultar cadastros da folha de pagamento'],
+    ['payroll.manage','Cadastrar e alterar informações da folha de pagamento']
+  ]){
+    await env.DB.prepare(`INSERT OR IGNORE INTO permissions (id,code,module,description)
+      VALUES (?,?,'PAYROLL',?)`).bind(uuid(),code,description).run();
+  }
+  await env.DB.prepare(`INSERT OR IGNORE INTO role_permissions(role_id,permission_id)
+    SELECT r.id,p.id FROM roles r CROSS JOIN permissions p
+    WHERE r.code='ADMIN' AND p.code IN ('payroll.read','payroll.manage')`).run();
+}
+
+function payrollKindTable(kind){
+  if(!Object.prototype.hasOwnProperty.call(PAYROLL_TABLES,kind))
+    throw new HttpError(404,'Cadastro da folha não encontrado.','NOT_FOUND');
+  return PAYROLL_TABLES[kind];
+}
+
+async function listPayroll(env,companyId,kind){
+  const table=payrollKindTable(kind);
+  let sql;
+  if(kind==='employees')sql=`SELECT e.*,p.name AS position_name,
+    d.name AS department_name,c.name AS category_name
+    FROM payroll_employees e
+    LEFT JOIN payroll_positions p ON p.id=e.position_id AND p.company_id=e.company_id
+    LEFT JOIN payroll_departments d ON d.id=e.department_id AND d.company_id=e.company_id
+    LEFT JOIN payroll_categories c ON c.id=e.category_id AND c.company_id=e.company_id
+    WHERE e.company_id=? ORDER BY e.name COLLATE NOCASE`;
+  else sql=`SELECT * FROM ${table} WHERE company_id=? ORDER BY ${kind==='events'?'code':'name'} COLLATE NOCASE`;
+  const res=await env.DB.prepare(sql).bind(companyId).all();
+  return (res.results||[]).map(x=>({
+    ...x,...('salary_cents' in x?{salary:centsToMoney(x.salary_cents)}:{})
+  }));
+}
+
+async function getPayroll(env,companyId,kind,id){
+  payrollKindTable(kind);
+  const all=await listPayroll(env,companyId,kind);
+  const item=all.find(x=>x.id===id);
+  if(!item)throw new HttpError(404,'Registro não encontrado na empresa.','NOT_FOUND');
+  return item;
+}
+
+async function payrollReference(env,companyId,kind,id,label){
+  if(!id)return null;
+  const table=payrollKindTable(kind);
+  const row=await env.DB.prepare(`SELECT * FROM ${table} WHERE company_id=? AND id=?`).bind(companyId,id).first();
+  if(!row)throw new HttpError(400,`${label} não pertence à empresa selecionada.`,'VALIDATION_ERROR');
+  if(!row.active)throw new HttpError(409,`${label} está inativo.`,'INACTIVE_REFERENCE');
+  return row;
+}
+
+function payrollEventType(v){
+  const s=String(v||'').toUpperCase();
+  if(!['PROVENTO','DESCONTO','INFORMATIVO'].includes(s))throw new HttpError(400,'Tipo de evento inválido.','VALIDATION_ERROR');
+  return s;
+}
+function payrollReferenceUnit(v){
+  const s=String(v||'').toUpperCase();
+  if(!['VALOR','DIAS','HORAS','PERCENTUAL'].includes(s))throw new HttpError(400,'Unidade de referência inválida.','VALIDATION_ERROR');
+  return s;
+}
+
+async function savePayroll(env,request,auth,companyId,kind,id,body){
+  const table=payrollKindTable(kind);
+  await requirePermission(env,auth.user.id,companyId,'payroll.manage');
+  const before=id?await getPayroll(env,companyId,kind,id):null;
+  const entryId=id||uuid();
+  const name=cleanText(required(body.name,'nome'),200);
+  if(!name)throw new HttpError(400,'Informe o nome.','VALIDATION_ERROR');
+  const active=bool01(body.active,1);
+  let columns=['name','active'], values=[name,active];
+  if(kind==='positions'){
+    const salary=moneyToCents(required(body.salary,'salário do cargo'));
+    if(salary<0)throw new HttpError(400,'O salário do cargo não pode ser negativo.','VALIDATION_ERROR');
+    columns.push('salary_cents');values.push(salary);
+  }else if(kind==='employees'){
+    const position=await payrollReference(env,companyId,'positions',required(body.position_id,'cargo'),'Cargo');
+    const categoryId=cleanText(body.category_id,80)||null;
+    const departmentId=cleanText(body.department_id,80)||null;
+    if(categoryId)await payrollReference(env,companyId,'categories',categoryId,'Categoria');
+    if(departmentId)await payrollReference(env,companyId,'departments',departmentId,'Departamento');
+    const admissionDate=isoDate(body.admission_date,'data de admissão');
+    // Salário vem SEMPRE do cadastro do cargo no momento do salvamento.
+    columns.push('position_id','category_id','department_id','salary_cents','admission_date');
+    values.push(position.id,categoryId,departmentId,position.salary_cents,admissionDate);
+  }else if(kind==='events'){
+    const code=cleanText(required(body.code,'código do evento'),30).toUpperCase();
+    const type=payrollEventType(body.event_type),unit=payrollReferenceUnit(body.reference_unit);
+    columns.push('code','event_type','reference_unit');values.push(code,type,unit);
+  }
+  try{
+    if(id){
+      await env.DB.prepare(`UPDATE ${table} SET ${columns.map(c=>`${c}=?`).join(',')},updated_at=CURRENT_TIMESTAMP
+        WHERE id=? AND company_id=?`).bind(...values,id,companyId).run();
+    }else{
+      await env.DB.prepare(`INSERT INTO ${table} (id,company_id,${columns.join(',')})
+        VALUES (${Array(columns.length+2).fill('?').join(',')})`).bind(entryId,companyId,...values).run();
+    }
+  }catch(err){
+    if(/UNIQUE constraint failed/i.test(String(err?.message||err)))
+      throw new HttpError(409,kind==='events'?'Já existe um evento com esse código.':'Já existe um cadastro com esse nome.','DUPLICATE');
+    throw err;
+  }
+  const after=await getPayroll(env,companyId,kind,entryId);
+  await audit(env,{companyId,userId:auth.user.id,action:id?'UPDATE':'CREATE',entity:table,entityId:entryId,before,after,request});
+  return after;
+}
+
+async function deletePayroll(env,request,auth,companyId,kind,id){
+  const table=payrollKindTable(kind);
+  await requirePermission(env,auth.user.id,companyId,'payroll.manage');
+  const before=await getPayroll(env,companyId,kind,id);
+  if(kind==='categories'||kind==='departments'||kind==='positions'){
+    const column={categories:'category_id',departments:'department_id',positions:'position_id'}[kind];
+    const ref=await env.DB.prepare(`SELECT 1 AS used FROM payroll_employees WHERE company_id=? AND ${column}=? LIMIT 1`).bind(companyId,id).first();
+    if(ref)throw new HttpError(409,'Cadastro utilizado por funcionário. Inative em vez de excluir.','IN_USE');
+  }
+  await env.DB.prepare(`DELETE FROM ${table} WHERE id=? AND company_id=?`).bind(id,companyId).run();
+  await audit(env,{companyId,userId:auth.user.id,action:'DELETE',entity:table,entityId:id,before,request});
+  return {deleted:true,id};
+}
+
 async function route(request, env) {
   const url=new URL(request.url), path=url.pathname.replace(/\/+$/,"" )||"/", method=request.method.toUpperCase();
   if (method==="OPTIONS") return new Response(null,{status:204});
@@ -5538,6 +5710,12 @@ async function route(request, env) {
   if (method==="POST" && path==="/api/companies") return ok({company:await createCompany(env,request,auth,await readJson(request))},201);
 
   const companyId=await currentCompany(request,env,auth);
+
+  // Cadastros da folha são migrados somente ao acessar uma rota da folha
+  // ou quando o sistema consulta as permissões, não em todas as chamadas do Worker.
+  if(path.startsWith('/api/payroll/') || path==='/api/auth/permissions' || path==='/api/permissions'){
+    await ensureSchemaRevision(env,'payroll',1,()=>ensurePayrollSchema(env));
+  }
 
   // v26: não executa migrações/CREATE TABLE de Compras em toda chamada do sistema.
   // Essas estruturas só são verificadas quando a própria rota pertence ao módulo
@@ -5818,6 +5996,27 @@ async function route(request, env) {
   p=routeMatch(path,"/api/financial-payables/:id/unpay"); if(p&&method==="POST")return ok({payable:await undoFinancialPayablePayment(env,request,auth,companyId,p.id)});
   p=routeMatch(path,"/api/financial-payables/:id/cancel"); if(p&&method==="POST")return ok({payable:await cancelFinancialPayable(env,request,auth,companyId,p.id)});
   p=routeMatch(path,"/api/financial-payables/:id"); if(p&&method==="GET"){await requirePermission(env,auth.user.id,companyId,"financial.payable.read");return ok({payable:await getFinancialPayable(env,companyId,p.id)});}
+
+  // Folha de Pagamento — apenas cadastros, sem rotinas de cálculo.
+  p=routeMatch(path,'/api/payroll/:kind');
+  if(p){
+    payrollKindTable(p.kind);
+    if(method==='GET'){
+      await requirePermission(env,auth.user.id,companyId,'payroll.read');
+      return ok({items:await listPayroll(env,companyId,p.kind)});
+    }
+    if(method==='POST')return ok({item:await savePayroll(env,request,auth,companyId,p.kind,null,await readJson(request))},201);
+  }
+  p=routeMatch(path,'/api/payroll/:kind/:id');
+  if(p){
+    payrollKindTable(p.kind);
+    if(method==='GET'){
+      await requirePermission(env,auth.user.id,companyId,'payroll.read');
+      return ok({item:await getPayroll(env,companyId,p.kind,p.id)});
+    }
+    if(method==='PATCH')return ok({item:await savePayroll(env,request,auth,companyId,p.kind,p.id,await readJson(request))});
+    if(method==='DELETE')return ok(await deletePayroll(env,request,auth,companyId,p.kind,p.id));
+  }
 
   if(method==="GET"&&path==="/api/stock-balances"){await requirePermission(env,auth.user.id,companyId,"purchasing.product.read");return ok({balances:await listStockBalances(env,companyId)});}
 
