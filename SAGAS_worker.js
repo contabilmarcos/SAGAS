@@ -3290,7 +3290,7 @@ async function validatePurchaseRequestItems(env,companyId,items,movementType) {
     if(!product.active)throw new HttpError(409,`Produto/serviço ${product.code} está inativo.`,'INACTIVE_PRODUCT');
     let cc=null;
     const ccId=raw.cost_center_id||movementType.default_cost_center_id||null;
-    if(ccId){ cc=await assertCompanyEntity(env,'cost_centers',ccId,companyId); if(!cc.active)throw new HttpError(409,'Centro de custo inativo.','INACTIVE_COST_CENTER'); }
+    if(ccId){ cc=await validateCostCenterForEntry(env,companyId,ccId); if(!cc.active)throw new HttpError(409,'Centro de custo inativo.','INACTIVE_COST_CENTER'); }
 
     let natureId=cleanText(raw.budget_nature_id,80)||null;
     if(movementType.fetch_product_nature && product.budget_nature_id) natureId=product.budget_nature_id;
@@ -3632,10 +3632,50 @@ async function createReceipt(env,request,auth,companyId,body) {
 }
 
 
+// v36: parcelas independentes do fluxo antigo de ordens / cotações.
+async function ensurePurchaseInvoiceInstallmentsSchema(env){
+  await ensureSchemaRevision(env,'purchase_invoice_installments',1,async()=>{
+    await env.DB.batch([
+      env.DB.prepare(`CREATE TABLE IF NOT EXISTS purchase_invoice_installments (
+        id TEXT PRIMARY KEY, company_id TEXT NOT NULL, invoice_id TEXT NOT NULL,
+        installment_no INTEGER NOT NULL, due_date TEXT NOT NULL,
+        amount_cents INTEGER NOT NULL, payable_id TEXT,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(invoice_id,installment_no)
+      )`),
+      env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_invoice_installments_invoice ON purchase_invoice_installments(company_id,invoice_id,installment_no)`)
+    ]);
+  });
+}
+
+function validateInvoiceInstallments(body,totalCents,defaultDate){
+  const input=Array.isArray(body.installments)?body.installments:null;
+  const count=input?input.length:1;
+  if(count<1||count>60)throw new HttpError(400,'Informe de 1 a 60 parcelas.','VALIDATION_ERROR');
+  const result=(input||[{due_date:body.due_date||defaultDate,amount:centsToMoney(totalCents)}]).map((x,i)=>{
+    const due=isoDate(x.due_date||'','vencimento da parcela '+(i+1));
+    const amount=moneyToCents(x.amount);
+    if(amount<=0)throw new HttpError(400,'O valor da parcela '+(i+1)+' deve ser maior que zero.','VALIDATION_ERROR');
+    return {no:i+1,due_date:due,amount_cents:amount};
+  });
+  const sum=result.reduce((n,x)=>n+x.amount_cents,0);
+  if(sum!==totalCents)throw new HttpError(400,'A soma das parcelas deve ser igual ao valor total da Nota Fiscal.','INSTALLMENT_TOTAL_MISMATCH');
+  return result;
+}
+
+async function invoicePayables(env,companyId,invoiceId){
+  const r=await env.DB.prepare(`SELECT * FROM financial_payables
+    WHERE company_id=? AND source_type='PURCHASE_INVOICE'
+      AND (source_id=? OR source_id LIKE ?)
+    ORDER BY due_date,number`).bind(companyId,invoiceId,invoiceId+':%').all();
+  return r.results||[];
+}
+
 async function listPurchaseInvoices(env,companyId){
   const r=await env.DB.prepare(`
     SELECT i.id,i.number,i.issue_date,i.entry_date,i.document_number,i.series,i.total_cents,i.status,
            i.generate_financial,i.stock_effect,i.financial_payable_id,i.journal_entry_id,
+           (SELECT COUNT(*) FROM purchase_invoice_installments pi WHERE pi.company_id=i.company_id AND pi.invoice_id=i.id) AS installment_count,
            s.code AS supplier_code,s.name AS supplier_name,
            mt.code AS movement_type_code,mt.name AS movement_type_name,
            COUNT(ii.id) AS item_count
@@ -3685,8 +3725,19 @@ async function getPurchaseInvoice(env,companyId,id){
     WHERE ii.company_id=? AND ii.invoice_id=?
     ORDER BY ii.line_no
   `).bind(companyId,id).all();
+  const ir=await env.DB.prepare(`SELECT pi.*,fp.number AS payable_number,fp.status AS payable_status
+     FROM purchase_invoice_installments pi
+     LEFT JOIN financial_payables fp ON fp.id=pi.payable_id AND fp.company_id=pi.company_id
+     WHERE pi.company_id=? AND pi.invoice_id=? ORDER BY pi.installment_no`).bind(companyId,id).all();
+  const installments=(ir.results||[]).map(x=>({...x,amount:centsToMoney(x.amount_cents)}));
+  if(!installments.length){
+    const legacy=await invoicePayables(env,companyId,id);
+    if(legacy.length)legacy.forEach((x,i)=>installments.push({installment_no:i+1,due_date:x.due_date,amount:centsToMoney(x.amount_cents),payable_id:x.id,payable_number:x.number,payable_status:x.status}));
+    else installments.push({installment_no:1,due_date:inv.due_date,amount:centsToMoney(inv.total_cents),payable_id:null});
+  }
   return {
     ...inv,
+    installments,
     total:centsToMoney(inv.total_cents),
     freight:centsToMoney(inv.freight_cents),
     payable_balance:inv.payable_balance_cents==null?null:centsToMoney(inv.payable_balance_cents),
@@ -3746,7 +3797,7 @@ async function createPurchaseInvoice(env,request,auth,companyId,body){
     }
 
     const costCenterId=cleanText(raw.cost_center_id,80)||movementType.default_cost_center_id||null;
-    if(costCenterId)await assertCompanyEntity(env,'cost_centers',costCenterId,companyId);
+    if(costCenterId)await validateCostCenterForEntry(env,companyId,costCenterId);
 
     const total=Math.round(Number(unitPrice)*Number(q)/1000);
     itemsSubtotal+=total;
@@ -3797,22 +3848,34 @@ async function createPurchaseInvoice(env,request,auth,companyId,body){
 
   const id=uuid();
   const number=await nextPurchaseNumber(env,companyId,'purchase_invoices','NF-');
-  const finalDue=body.due_date?isoDate(body.due_date,'vencimento financeiro'):issueDate;
+  const installments=validateInvoiceInstallments(body,totalCents,issueDate);
+  const finalDue=installments[0].due_date;
   const stmts=[];
   let payableMeta=null,journalMeta=null;
 
-  if(movementType.generate_financial){
-    const payableId=uuid(),payableNumber=await nextPayableNumber(env,companyId);
-    stmts.push(env.DB.prepare(`
-      INSERT INTO financial_payables
-      (id,company_id,number,supplier_id,source_type,source_id,receipt_id,issue_date,due_date,document_number,description,amount_cents,balance_cents,status,created_by)
-      VALUES (?,?,?,?,?,?,NULL,?,?,?,?,?,?,'OPEN',?)
-    `).bind(
-      payableId,companyId,payableNumber,supplier.id,'PURCHASE_INVOICE',id,
-      issueDate,finalDue,doc,`Nota Fiscal ${doc||number} - ${supplier.name}`,
-      totalCents,totalCents,auth.user.id
-    ));
-    payableMeta={id:payableId,number:payableNumber};
+  // Cada parcela é um título financeiro próprio, inclusive com vencimento editável.
+  // Primeiro título preserva source_id=id para compatibilidade com notas antigas.
+  let payableNumberBase='';
+  if(movementType.generate_financial)payableNumberBase=await nextPayableNumber(env,companyId);
+  const matchNo=payableNumberBase.match(/^(.*?)(\d+)$/);
+  if(movementType.generate_financial&&!matchNo)throw new HttpError(409,'Não foi possível gerar a sequência do Contas a Pagar.','FINANCE_SEQUENCE_ERROR');
+  for(const part of installments){
+    const payableId=movementType.generate_financial?uuid():null;
+    if(payableId){
+      const payableNumber=matchNo[1]+String(Number(matchNo[2])+part.no-1).padStart(matchNo[2].length,'0');
+      const sourceId=part.no===1?id:`${id}:${part.no}`;
+      stmts.push(env.DB.prepare(`
+        INSERT INTO financial_payables
+        (id,company_id,number,supplier_id,source_type,source_id,receipt_id,issue_date,due_date,document_number,description,amount_cents,balance_cents,status,created_by)
+        VALUES (?,?,?,?,?,?,NULL,?,?,?,?,?,?,'OPEN',?)
+      `).bind(payableId,companyId,payableNumber,supplier.id,'PURCHASE_INVOICE',sourceId,
+        issueDate,part.due_date,doc,`Nota Fiscal ${doc||number} - Parcela ${part.no}/${installments.length} - ${supplier.name}`,
+        part.amount_cents,part.amount_cents,auth.user.id));
+      if(part.no===1)payableMeta={id:payableId,number:payableNumber};
+    }
+    stmts.push(env.DB.prepare(`INSERT INTO purchase_invoice_installments
+      (id,company_id,invoice_id,installment_no,due_date,amount_cents,payable_id)
+      VALUES (?,?,?,?,?,?,?)`).bind(uuid(),companyId,id,part.no,part.due_date,part.amount_cents,payableId));
   }
 
   if(eventId){
@@ -3886,6 +3949,70 @@ async function createPurchaseInvoice(env,request,auth,companyId,body){
   await audit(env,{companyId,userId:auth.user.id,action:'CREATE',entity:'purchase_invoice',entityId:id,after:{number,document_number:doc,total:centsToMoney(totalCents)},request});
 
   return getPurchaseInvoice(env,companyId,id);
+}
+
+async function deletePurchaseInvoice(env,request,auth,companyId,id){
+  await requirePermission(env,auth.user.id,companyId,'purchasing.receipt.manage');
+  const invoice=await getPurchaseInvoice(env,companyId,id);
+  const payables=await invoicePayables(env,companyId,id);
+  for(const payable of payables){
+    if(payable.status!=='OPEN'||Number(payable.balance_cents)!==Number(payable.amount_cents)||payable.payment_date||payable.paid_at){
+      throw new HttpError(409,`A parcela ${payable.number} já possui baixa ou movimentação financeira. Desfaça a baixa antes de excluir a Nota Fiscal.`,'INVOICE_HAS_PAYMENTS');
+    }
+    if(payable.payment_journal_entry_id){
+      throw new HttpError(409,`A parcela ${payable.number} ainda está vinculada à contabilização de uma baixa.`,'INVOICE_PAYMENT_ACCOUNTING_LINK');
+    }
+  }
+
+  const entryIds=new Set();
+  if(invoice.journal_entry_id)entryIds.add(invoice.journal_entry_id);
+  const found=await env.DB.prepare(`SELECT id FROM journal_entries
+    WHERE company_id=? AND source_module='PURCHASES' AND source_reference=?`).bind(companyId,`INVOICE:${id}`).all();
+  for(const x of found.results||[])entryIds.add(x.id);
+  await ensureBatchIntegrationSchema(env);
+  await ensureAccountingPeriodSchema(env);
+  for(const entryId of entryIds){
+    const entry=await env.DB.prepare(`SELECT * FROM journal_entries WHERE id=? AND company_id=?`).bind(entryId,companyId).first();
+    if(!entry)continue;
+    if(entry.official_status==='INTEGRATED')throw new HttpError(409,'A Nota Fiscal possui contabilização no Lote 0. Desfaça a integração antes de excluir.','INVOICE_OFFICIAL_ACCOUNTING');
+    if(!['POSTED','VOID'].includes(entry.status))throw new HttpError(409,'A contabilização da Nota Fiscal não está em situação que permita exclusão.','INVOICE_ACCOUNTING_LOCKED');
+    const batch=await assertCompanyEntity(env,'journal_batches',entry.batch_id,companyId);
+    if(batch.status!=='OPEN')throw new HttpError(409,'Abra o lote contábil antes de excluir a Nota Fiscal.','INVOICE_BATCH_CLOSED');
+    const period=await assertCompanyEntity(env,'accounting_periods',batch.period_id,companyId);
+    assertDateOpenInPeriod(period,entry.entry_date);
+  }
+
+  const stock=await env.DB.prepare(`SELECT product_id,SUM(quantity_milli) AS delta
+    FROM product_stock_movements WHERE company_id=? AND source_type='PURCHASE_INVOICE' AND source_id=?
+    GROUP BY product_id`).bind(companyId,id).all();
+  const stockUpdates=[];
+  for(const m of stock.results||[]){
+    const bal=await env.DB.prepare(`SELECT id,quantity_milli FROM product_stock_balances
+      WHERE company_id=? AND product_id=?`).bind(companyId,m.product_id).first();
+    const next=Number(bal?.quantity_milli||0)-Number(m.delta||0);
+    if(next<0)throw new HttpError(409,'Não é possível excluir: parte do estoque da nota já foi consumida. Regularize o saldo antes.','INVOICE_STOCK_CONSUMED');
+    if(!bal&&Number(m.delta||0))throw new HttpError(409,'Saldo de estoque da Nota Fiscal não encontrado.','INVOICE_STOCK_MISSING');
+    if(bal)stockUpdates.push(env.DB.prepare(`UPDATE product_stock_balances SET quantity_milli=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND company_id=?`).bind(next,bal.id,companyId));
+  }
+
+  const stmts=[...stockUpdates];
+  stmts.push(env.DB.prepare(`DELETE FROM product_stock_movements WHERE company_id=? AND source_type='PURCHASE_INVOICE' AND source_id=?`).bind(companyId,id));
+  for(const entryId of entryIds){
+    stmts.push(env.DB.prepare(`DELETE FROM allocation_lines WHERE company_id=? AND journal_line_id IN
+      (SELECT id FROM journal_lines WHERE company_id=? AND entry_id=?)`).bind(companyId,companyId,entryId));
+    stmts.push(env.DB.prepare(`DELETE FROM journal_lines WHERE company_id=? AND entry_id=?`).bind(companyId,entryId));
+    stmts.push(env.DB.prepare(`DELETE FROM journal_entries WHERE company_id=? AND id=?`).bind(companyId,entryId));
+  }
+  stmts.push(env.DB.prepare(`DELETE FROM purchase_invoice_installments WHERE company_id=? AND invoice_id=?`).bind(companyId,id));
+  stmts.push(env.DB.prepare(`DELETE FROM financial_payables WHERE company_id=? AND source_type='PURCHASE_INVOICE' AND (source_id=? OR source_id LIKE ?)`)
+    .bind(companyId,id,id+':%'));
+  stmts.push(env.DB.prepare(`DELETE FROM purchase_invoice_items WHERE company_id=? AND invoice_id=?`).bind(companyId,id));
+  stmts.push(env.DB.prepare(`DELETE FROM purchase_invoices WHERE company_id=? AND id=?`).bind(companyId,id));
+  await env.DB.batch(stmts);
+  await audit(env,{companyId,userId:auth.user.id,action:'DELETE',entity:'purchase_invoice',entityId:id,
+    before:{number:invoice.number,document_number:invoice.document_number,total:invoice.total,
+      payables:payables.map(x=>x.number),journal_entries:[...entryIds]},request});
+  return {deleted:true,id};
 }
 
 async function listStockBalances(env,companyId) {
@@ -4087,7 +4214,7 @@ async function saveMovementType(env,request,auth,companyId,id,body){
   }
   const defaultCc=cleanText(body.default_cost_center_id,80)||null;
   if(defaultCc){
-    const cc=await assertCompanyEntity(env,'cost_centers',defaultCc,companyId);
+    const cc=await validateCostCenterForEntry(env,companyId,defaultCc);
     if(!cc.active) throw new HttpError(409,'Centro de custo padrão está inativo.','INACTIVE_COST_CENTER');
   }
   const stockEffect=['NONE','IN','OUT'].includes(String(body.stock_effect||'NONE').toUpperCase())?String(body.stock_effect||'NONE').toUpperCase():'NONE';
@@ -4203,7 +4330,7 @@ async function saveBudgetNature(env,request,auth,companyId,id,body){
     const pct=Number(raw.percentage??100);
     if(!Number.isFinite(pct)||pct<=0||pct>100) throw new HttpError(400,'Percentual de default inválido.','INVALID_PERCENTAGE');
     if(raw.branch_id) await assertCompanyEntity(env,'branches',raw.branch_id,companyId);
-    if(raw.cost_center_id) await assertCompanyEntity(env,'cost_centers',raw.cost_center_id,companyId);
+    if(raw.cost_center_id) await validateCostCenterForEntry(env,companyId,raw.cost_center_id);
     if(raw.history_template_id) await assertCompanyEntity(env,'history_templates',raw.history_template_id,companyId);
     normalized.push({side,account_id:account.id,percentage:pct,branch_id:raw.branch_id||null,cost_center_id:raw.cost_center_id||null,history_template_id:raw.history_template_id||null,history_complement:cleanText(raw.history_complement,1000)});
   }
@@ -4298,7 +4425,7 @@ async function saveMovementAccountingEvent(env,request,auth,companyId,id,body){
     const pct=Number(raw.percentage??100);
     if(!Number.isFinite(pct)||pct<=0||pct>100) throw new HttpError(400,'Percentual do evento inválido.','INVALID_PERCENTAGE');
     if(raw.branch_id) await assertCompanyEntity(env,'branches',raw.branch_id,companyId);
-    if(raw.cost_center_id) await assertCompanyEntity(env,'cost_centers',raw.cost_center_id,companyId);
+    if(raw.cost_center_id) await validateCostCenterForEntry(env,companyId,raw.cost_center_id);
     if(raw.history_template_id) await assertCompanyEntity(env,'history_templates',raw.history_template_id,companyId);
     items.push({
       line_no:no++,side,incidence,account_origin:origin,account_id:accountId,percentage:pct,
@@ -5283,7 +5410,7 @@ async function saveFinancialAccountingEvent(env,request,auth,companyId,id,body){
       if(!['D','C'].includes(String(raw.default_side||'').toUpperCase())) throw new HttpError(400,'Informe se o default da Conta/Caixa será de Débito ou Crédito.','VALIDATION_ERROR');
     }
     if(raw.branch_id) await assertCompanyEntity(env,'branches',raw.branch_id,companyId);
-    if(raw.cost_center_id) await assertCompanyEntity(env,'cost_centers',raw.cost_center_id,companyId);
+    if(raw.cost_center_id) await validateCostCenterForEntry(env,companyId,raw.cost_center_id);
     let normalizedHistoryComplement=cleanText(raw.history_complement,1000);
     if(raw.history_template_id){
       const h=await assertCompanyEntity(env,'history_templates',raw.history_template_id,companyId);
@@ -5626,6 +5753,8 @@ async function route(request, env) {
   if (p && method==="DELETE") return ok(await deletePurchaseMaster(env,request,auth,companyId,"supplier",p.id));
 
 
+  if(path.startsWith('/api/purchase-invoices'))await ensurePurchaseInvoiceInstallmentsSchema(env);
+
   // ---- Lançamento direto de Nota Fiscal ----
   if(method==="GET"&&path==="/api/purchase-invoices"){
     await requirePermission(env,auth.user.id,companyId,"purchasing.receipt.read");
@@ -5639,6 +5768,7 @@ async function route(request, env) {
     await requirePermission(env,auth.user.id,companyId,"purchasing.receipt.read");
     return ok({invoice:await getPurchaseInvoice(env,companyId,p.id)});
   }
+  if(p&&method==='DELETE')return ok(await deletePurchaseInvoice(env,request,auth,companyId,p.id));
 
   if (method==="GET" && path==="/api/purchase-requests") { await requirePermission(env,auth.user.id,companyId,"purchasing.request.read"); return ok({requests:await listPurchaseRequests(env,companyId)}); }
   if (method==="POST" && path==="/api/purchase-requests") return ok({request:await createPurchaseRequest(env,request,auth,companyId,await readJson(request))},201);
