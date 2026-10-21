@@ -118,6 +118,14 @@ html,body{width:100%;height:100%;overflow:hidden;font-family:"Segoe UI",Tahoma,A
 }
 </style>
 
+<style id="sagas-v40-autofiltro-styles">
+#content tr.sagas-column-hidden{display:none!important}
+#content .sagas-auto-filter-row th{padding:3px 4px;background:#edf3f9;border-bottom:1px solid #cbd5e1;font-weight:400;vertical-align:middle;white-space:nowrap;}
+#content .sagas-auto-filter-input{box-sizing:border-box;width:100%;min-width:55px;max-width:100%;height:26px;border:1px solid #cbd5e1;background:#fff;border-radius:4px;padding:3px 5px;font:11px 'Segoe UI',Arial,sans-serif;color:#243447;outline:none;}
+#content .sagas-auto-filter-input:focus{border-color:#4c79df;box-shadow:0 0 0 1px #4c79df}
+#content .sagas-rm-grid .sagas-auto-filter-row th{top:27px;position:sticky;z-index:2;background:#eaf2fa}
+#content .sagas-auto-filter-row input[type="date"]{min-width:116px}
+</style>
 </head>
 <body>
   <div id="toasts"></div>
@@ -245,6 +253,61 @@ function openModal(t,sub,html,large=false){$('#modalTitle').textContent=t;$('#mo
 function closeModal(){$('#modalBackdrop').classList.add('hidden')}
 function badge(s){const m={OPEN:['Aberto','green'],CLOSED:['Fechado','gray'],LOCKED:['Bloqueado','red'],POSTED:['Contabilizado','green'],VOID:['Anulado','red'],OFFICIAL:['Oficial','blue'],INTEGRATED:['Lote 0','blue'],PENDING:['Pendente','yellow'],RELEASED:['Liberada','blue'],QUOTING:['Em cotação','yellow'],ORDERED:['Pedido gerado','blue'],PARTIAL:['Parcial','yellow'],FULFILLED:['Atendida','green'],CANCELLED:['Cancelada','red'],RECEIVED:['Recebida','green'],PAID:['Pago','green']};const x=m[s]||[s||'-','gray'];return`<span class="badge ${x[1]}">${esc(x[0])}</span>`}
 function empty(cols,t,x){return`<tr><td colspan="${cols}"><div class="empty"><b>${esc(t)}</b>${esc(x)}</div></td></tr>`}
+// Autofiltro SAGAS: aplicado à grade operacional de cada módulo, nunca aos modais.
+function installSagasColumnFilters(root=document.getElementById('content')){
+  if(!root)return;
+  const dateColumns=/^(data|emiss[aã]o|entrada|vencimento|pagamento|criado em|atualizado em|compet[eê]ncia)$/i;
+  const tidy=value=>String(value||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().trim();
+  root.querySelectorAll('table').forEach(table=>{
+    const head=table.tHead,body=table.tBodies[0];
+    if(!head||!body||table.dataset.sagasAutofiltro==='1')return;
+    const header=head.rows[0];
+    if(!header||!header.cells.length)return;
+    table.dataset.sagasAutofiltro='1';
+    const filterRow=head.insertRow(1);filterRow.className='sagas-auto-filter-row';
+    [...header.cells].forEach((cell,index)=>{
+      const th=document.createElement('th');
+      const label=cell.textContent.trim();
+      const skip=/^(a[cç][oõ]es|\[x\]|d\/c|#|^$)$/i.test(label);
+      if(!skip){
+        const date=dateColumns.test(label);
+        const input=document.createElement('input');
+        input.className='sagas-auto-filter-input';
+        input.type=date?'date':'search';
+        input.placeholder=date?'Data':'Filtrar...';
+        input.setAttribute('aria-label','Filtrar '+label);
+        input.dataset.col=String(index);
+        input.addEventListener('input',()=>{
+          const active=[...filterRow.querySelectorAll('input')].filter(x=>x.value.trim());
+          [...body.rows].forEach(row=>{
+            const pass=active.every(f=>{
+              const value=tidy(row.cells[Number(f.dataset.col)]?.innerText||'');
+              if(f.type!=='date')return value.includes(tidy(f.value));
+              const [year,month,day]=f.value.split('-');
+              return value.includes(tidy(`${day}/${month}/${year}`))||value.includes(f.value);
+            });
+            row.classList.toggle('sagas-column-hidden',!pass);
+          });
+        });
+        th.appendChild(input);
+      }
+      filterRow.appendChild(th);
+    });
+  });
+}
+
+// Também contempla grades montadas por funções próprias (Lotes/Lançamentos).
+(function initSagasAutoFilters(){
+  const root=document.getElementById('content');if(!root)return;
+  let scheduled=false;
+  const observer=new MutationObserver(()=>{
+    if(scheduled)return;scheduled=true;
+    requestAnimationFrame(()=>{scheduled=false;installSagasColumnFilters(root)});
+  });
+  observer.observe(root,{childList:true,subtree:true});
+  installSagasColumnFilters(root);
+})();
+
 function tablePage({newLabel,onNew,cols,rows,emptyTitle,emptyText,placeholder='Pesquisar...'}){const newButton=newLabel&&onNew?`<button id="newBtn" class="btn primary">+ ${esc(newLabel)}</button>`:'';$('#content').innerHTML=`<div class="toolbar"><input id="search" class="search" placeholder="${esc(placeholder)}">${newButton}</div><div class="table-wrap"><table class="table"><thead><tr>${cols.map(x=>`<th>${esc(x)}</th>`).join('')}</tr></thead><tbody id="tbody">${rows||empty(cols.length,emptyTitle,emptyText)}</tbody></table></div>`;if($('#newBtn'))$('#newBtn').onclick=onNew;$('#search').oninput=e=>{const q=e.target.value.toLowerCase().trim();$$('#tbody tr').forEach(r=>r.style.display=!q||r.innerText.toLowerCase().includes(q)?'':'none')}}
 
 const pagePermission={companies:'core.company.manage','branches-admin':'core.branch.read',users:'core.user.read',roles:'core.role.manage',accounts:'accounting.account.read','cost-centers':'accounting.cost_center.read',history:'accounting.history.read',periods:'accounting.period.read',batches:'accounting.batch.read',entries:'accounting.entry.read','movement-types':'purchasing.movement_type.read','budget-natures':'purchasing.nature.read','movement-events':'purchasing.accounting_event.read','purchase-products':'purchasing.product.read','purchase-suppliers':'purchasing.supplier.read','purchase-invoices':'purchasing.receipt.read','stock-balances':'purchasing.product.read','financial-cash-accounts':'financial.cash_account.read','financial-accounting-events':'financial.accounting_event.read','financial-payables':'financial.payable.read'};
@@ -576,11 +639,11 @@ async function renderAccounts(){
           ${hasChildren
             ? `<button class="btn secondary sm" data-tree-toggle="${x.id}" title="${isCollapsed?'Expandir':'Recolher'}" style="padding:2px 7px;min-width:28px">${isCollapsed?'▶':'▼'}</button>`
             : `<span style="display:inline-block;width:28px"></span>`}
-          <span>${esc(x.code)}</span>
+          <span style="font-weight:${x.analytic?700:400}">${esc(x.code)}</span>
         </div>
       </td>
-      <td class="code">${esc(x.reduced_code||'')}</td>
-      <td>${esc(x.name)}</td>
+      <td class="code" style="font-weight:${x.analytic?700:400}">${esc(x.reduced_code||'')}</td>
+      <td style="font-weight:${x.analytic?700:400}">${esc(x.name)}</td>
       <td>${esc(accountClass(x.account_class))}</td>
       <td>${x.analytic?'<span class="badge blue">Analítica</span>':'<span class="badge gray">Sintética</span>'}</td>
       <td>${x.active?'<span class="badge green">Ativa</span>':'<span class="badge red">Inativa</span>'}</td>
@@ -2351,7 +2414,7 @@ async function movementTypeForm(id=null){
   const x=id?(await api(`/api/movement-types/${id}`)).movement_type:null;
   const destSet=new Set((x?.destinations||[]).map(d=>String(d.id)));
   const activeEvents=events.filter(e=>e.active||e.id===x?.accounting_event_id);
-  const activeCenters=centers.filter(c=>c.active);
+  const activeCenters=centers.filter(c=>c.active&&parseCostCenterMaskLocal(c.code)?.analytic);
   openModal(x?'Editar Tipo de Movimento':'Novo Tipo de Movimento',
     'Parametrização funcional baseada em Tipo de Movimento, Evento Contábil, Natureza e relacionamento de movimentos.',
     `<form id="movementTypeForm">
@@ -2416,7 +2479,7 @@ async function renderBudgetNatures(){
 async function budgetNatureForm(id=null){
   const [ar,br,cc,hi]=await Promise.all([accounts(true),branches(),ccs(),histories()]);
   const x=id?(await api(`/api/budget-natures/${id}`)).nature:null;
-  const accts=ar.filter(a=>a.active&&a.analytic),bs=br.filter(b=>b.active),centers=cc.filter(c=>c.active),hs=hi.filter(h=>h.active);
+  const accts=ar.filter(a=>a.active&&a.analytic),bs=br.filter(b=>b.active),centers=cc.filter(c=>c.active&&parseCostCenterMaskLocal(c.code)?.analytic),hs=hi.filter(h=>h.active);
   openModal(x?'Editar Natureza Orçamentária / Financeira':'Nova Natureza Orçamentária / Financeira',
     'A Natureza pode fornecer os defaults contábeis utilizados pelo Evento Contábil do movimento.',
     `<form id="budgetNatureForm">
@@ -2468,7 +2531,7 @@ async function renderMovementEvents(){
 async function movementEventForm(id=null){
   const [ar,br,cc,hi]=await Promise.all([accounts(true),branches(),ccs(),histories()]);
   const x=id?(await api(`/api/movement-accounting-events/${id}`)).event:null;
-  const accts=ar.filter(a=>a.active&&a.analytic),bs=br.filter(b=>b.active),centers=cc.filter(c=>c.active),hs=hi.filter(h=>h.active);
+  const accts=ar.filter(a=>a.active&&a.analytic),bs=br.filter(b=>b.active),centers=cc.filter(c=>c.active&&parseCostCenterMaskLocal(c.code)?.analytic),hs=hi.filter(h=>h.active);
   openModal(x?'Editar Evento Contábil':'Novo Evento Contábil',
     'Configure as partidas com conta fixa ou Natureza do item. A fórmula é opcional; quando vazia, a Incidência continua sendo usada como antes.',
     `<form id="movementEventForm">
@@ -2789,7 +2852,7 @@ async function renderPurchaseInvoices(){
   tablePage({
     newLabel:manage?'Nova Nota Fiscal':null,
     onNew:manage?()=>purchaseInvoiceForm():null,
-    cols:['Lançamento','Nota Fiscal','Emissão','Entrada','Fornecedor','Tipo de Movimento','Itens','Valor','Financeiro','Contábil','Ações'],
+    cols:['Lançamento','Nota Fiscal','Emissão','Entrada','Fornecedor','Tipo de Movimento','Itens','Parcelas','Valor','Financeiro','Contábil','Ações'],
     rows:a.length?a.map(x=>`<tr>
       <td class="code">${esc(x.number)}</td>
       <td>${esc(x.document_number||'—')}${x.series?` / ${esc(x.series)}`:''}</td>
@@ -2798,15 +2861,17 @@ async function renderPurchaseInvoices(){
       <td>${esc(x.supplier_code)} - ${esc(x.supplier_name)}</td>
       <td>${esc(x.movement_type_code)} - ${esc(x.movement_type_name)}</td>
       <td>${Number(x.item_count||0)}</td>
+      <td>${Number(x.installment_count||1)}</td>
       <td><b>${money(x.total)}</b></td>
       <td>${x.financial_payable_id?'<span class="badge blue">Gerado</span>':'<span class="badge gray">Não gera</span>'}</td>
       <td>${x.journal_entry_id?'<span class="badge green">Contabilizado</span>':'<span class="badge gray">Sem lançamento</span>'}</td>
-      <td><button class="btn secondary sm" data-open-invoice="${x.id}">Abrir</button></td>
+      <td><div class="actions"><button class="btn secondary sm" data-open-invoice="${x.id}">Abrir</button>${manage?`<button class="btn danger sm" data-delete-invoice="${x.id}">Excluir</button>`:""}</div></td>
     </tr>`).join(''):null,
     emptyTitle:'Nenhuma Nota Fiscal lançada',
     emptyText:manage?'Clique em Nova Nota Fiscal para registrar uma nota de fornecedor.':'Nenhuma Nota Fiscal disponível.'
   });
   $$('[data-open-invoice]').forEach(b=>b.onclick=()=>purchaseInvoiceView(b.dataset.openInvoice));
+  $$('[data-delete-invoice]').forEach(b=>b.onclick=()=>purchaseInvoiceDeleteModal(b.dataset.deleteInvoice));
 }
 
 async function purchaseInvoiceForm(){
@@ -2815,7 +2880,7 @@ async function purchaseInvoiceForm(){
   ]);
   const suppliers=ss.filter(x=>x.active),products=pp.filter(x=>x.active),types=mts.filter(x=>x.active);
   const activeBranches=br.filter(x=>x.active),events=evs.filter(x=>x.active),openBatches=ba.filter(x=>x.status==='OPEN');
-  const natures=ns.filter(x=>x.active&&x.synthetic_analytic==='ANALYTIC'),costCenters=centers.filter(x=>x.active);
+  const natures=ns.filter(x=>x.active&&x.synthetic_analytic==='ANALYTIC'),costCenters=centers.filter(x=>x.active&&parseCostCenterMaskLocal(x.code)?.analytic);
   if(!suppliers.length)return toast('Cadastre ao menos um fornecedor ativo.','error');
   if(!products.length)return toast('Cadastre ao menos um produto ou serviço ativo.','error');
   if(!types.length)return toast('Cadastre ao menos um Tipo de Movimento ativo.','error');
@@ -2831,9 +2896,9 @@ async function purchaseInvoiceForm(){
       <div class="grid three">
         <label class="field" style="grid-column:span 2"><span>Fornecedor</span><select name="supplier_id" required><option value="">Selecione</option>${suppliers.map(x=>`<option value="${x.id}">${esc(x.code)} - ${esc(x.name)}</option>`).join('')}</select></label>
         <label class="field"><span>Tipo de Movimento</span><select name="movement_type_id" id="invoiceMovementType" required><option value="">Selecione</option>${types.map(x=>`<option value="${x.id}">${esc(x.code)} - ${esc(x.name)}</option>`).join('')}</select></label>
-        <label class="field"><span>Emissão</span><input name="issue_date" type="date" value="${today}" required></label>
-        <label class="field"><span>Entrada</span><input name="entry_date" type="date" value="${today}" required></label>
-        <label class="field"><span>Vencimento</span><input name="due_date" type="date" value="${today}"></label>
+        <label class="field"><span>Emissão</span><input name="issue_date" id="invoiceIssueDate" type="date" value="${today}" required></label>
+        <label class="field"><span>Entrada</span><input name="entry_date" id="invoiceEntryDate" type="date" value="${today}" required></label>
+        <label class="field"><span>1º Vencimento</span><input name="due_date" id="invoiceFirstDue" type="date" value="${today}" required></label>
         <label class="field"><span>Número da Nota</span><input name="document_number" required></label>
         <label class="field"><span>Série</span><input name="series"></label>
         <label class="field"><span>Filial</span><select name="branch_id"><option value="">Sem filial</option>${activeBranches.map(x=>`<option value="${x.id}">${esc(x.code)} - ${esc(x.name)}</option>`).join('')}</select></label>
@@ -2843,6 +2908,11 @@ async function purchaseInvoiceForm(){
         <label class="field full"><span>Observações</span><textarea name="notes" rows="2"></textarea></label>
       </div>
       <div id="invoiceTypeInfo" class="help" style="margin-top:10px">Selecione o Tipo de Movimento para definir financeiro, estoque e contabilização.</div>
+      <div class="section-title">Parcelamento da Nota Fiscal</div>
+      <div class="grid three"><label class="field"><span>Quantidade de parcelas</span><input type="number" id="invoiceInstallmentCount" min="1" max="60" value="1" required></label>
+      <div class="field" style="align-self:end"><button type="button" class="btn secondary sm" id="invoiceSplitInstallments">Distribuir valores igualmente</button></div></div>
+      <div class="table-wrap"><table class="table"><thead><tr><th>Parcela</th><th>Vencimento</th><th>Valor da parcela (R$)</th></tr></thead><tbody id="invoiceInstallmentsBody"></tbody></table></div>
+      <div class="help" id="invoiceInstallmentsSummary">Os valores das parcelas devem somar o total da nota.</div>
       <div class="section-title">Itens da Nota Fiscal</div>
       <div class="table-wrap"><table class="table"><thead><tr><th>Produto / Serviço</th><th>Qtd.</th><th>Un.</th><th>Valor unitário</th><th>Natureza</th><th>Centro de Custo</th><th>Total</th><th></th></tr></thead><tbody id="invoiceItemBody"></tbody></table></div>
       <div style="margin-top:9px"><button type="button" id="addInvoiceItem" class="btn secondary sm">+ Adicionar item</button></div>
@@ -2851,6 +2921,71 @@ async function purchaseInvoiceForm(){
 
   $('[data-close]').onclick=closeModal;
   const tbody=$('#invoiceItemBody');
+  const issueInput=$('#invoiceIssueDate'),entryInput=$('#invoiceEntryDate'),firstDueInput=$('#invoiceFirstDue');
+  issueInput.addEventListener('change',()=>{entryInput.value=issueInput.value});
+
+  const intNum=n=>new Intl.NumberFormat('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2}).format(n/100);
+  const cents=v=>Math.round((Number(String(v||'0').replace(/\./g,'').replace(',','.'))||0)*100);
+  function duePlusMonths(date,months){
+    if(!date)return '';
+    const [year,month,day]=date.split('-').map(Number);
+    const total=year*12+(month-1)+months;
+    const y=Math.floor(total/12),m=total%12;
+    const last=new Date(Date.UTC(y,m+1,0)).getUTCDate();
+    return `${y}-${String(m+1).padStart(2,'0')}-${String(Math.min(day,last)).padStart(2,'0')}`;
+  }
+  function invoiceTotalCents(){
+    let total=cents(document.querySelector('#purchaseInvoiceForm [name="freight"]').value);
+    $$('#invoiceItemBody tr').forEach(tr=>{
+      const q=Number(String($('.inv-qty',tr).value||'0').replace(/\./g,'').replace(',','.'))||0;
+      total+=Math.round(q*cents($('.inv-price',tr).value));
+    });
+    return total;
+  }
+  let invoiceAmountsEdited=false;
+  function updateInvoiceInstallmentSummary(){
+    const total=invoiceTotalCents();
+    const parts=$$('#invoiceInstallmentsBody .invoice-parcel-amount').reduce((n,x)=>n+cents(x.value),0);
+    const summary=$('#invoiceInstallmentsSummary');
+    summary.textContent=`Total da nota: ${money(total/100)} • Total das parcelas: ${money(parts/100)} • Diferença: ${money((total-parts)/100)}`;
+    summary.style.color=total===parts?'#198754':'#b45309';
+  }
+  function refreshInvoiceInstallments(){
+    if(!invoiceAmountsEdited){
+      const inputs=$$('#invoiceInstallmentsBody .invoice-parcel-amount');
+      if(inputs.length){
+        const total=invoiceTotalCents(),base=Math.floor(total/inputs.length),rest=total-base*inputs.length;
+        inputs.forEach((x,i)=>x.value=intNum(base+(i===inputs.length-1?rest:0)));
+      }
+    }
+    updateInvoiceInstallmentSummary();
+  }
+  function buildInvoiceInstallments(rebalance=true){
+    if(rebalance)invoiceAmountsEdited=false;
+    const body=$('#invoiceInstallmentsBody');
+    const count=Math.max(1,Math.min(60,Number($('#invoiceInstallmentCount').value)||1));
+    $('#invoiceInstallmentCount').value=count;
+    const previous=[...body.rows].map(r=>({date:r.querySelector('.invoice-parcel-date')?.value,
+      amount:r.querySelector('.invoice-parcel-amount')?.value}));
+    const total=invoiceTotalCents();
+    const base=Math.floor(total/count),rest=total-base*count;
+    body.innerHTML='';
+    for(let i=0;i<count;i++){
+      const r=body.insertRow();
+      r.innerHTML=`<td>${i+1}/${count}</td><td><input class="invoice-parcel-date" type="date" required></td><td><input class="invoice-parcel-amount" inputmode="decimal" required></td>`;
+      r.querySelector('.invoice-parcel-date').value=(!rebalance&&previous[i]?.date)||duePlusMonths(firstDueInput.value,i);
+      r.querySelector('.invoice-parcel-amount').value=(!rebalance&&previous[i]?.amount)||intNum(base+(i===count-1?rest:0));
+      r.querySelector('.invoice-parcel-amount').addEventListener('input',()=>{invoiceAmountsEdited=true;updateInvoiceInstallmentSummary()});
+      r.querySelector('.invoice-parcel-date').addEventListener('change',()=>{if(i===0)firstDueInput.value=r.querySelector('.invoice-parcel-date').value});
+    }
+    updateInvoiceInstallmentSummary();
+  }
+  $('#invoiceInstallmentCount').addEventListener('input',()=>buildInvoiceInstallments());
+  $('#invoiceSplitInstallments').onclick=()=>buildInvoiceInstallments();
+  firstDueInput.addEventListener('change',()=>{
+    $$('#invoiceInstallmentsBody .invoice-parcel-date').forEach((input,i)=>input.value=duePlusMonths(firstDueInput.value,i));
+  });
+  document.querySelector('#purchaseInvoiceForm [name="freight"]').addEventListener('input',refreshInvoiceInstallments);
 
   function addRow(row={}){
     const tr=document.createElement('tr');
@@ -2870,6 +3005,7 @@ async function purchaseInvoiceForm(){
       const q=Number(String(qty.value||'0').replace(/\./g,'').replace(',','.'))||0;
       const p=Number(String(price.value||'0').replace(/\./g,'').replace(',','.'))||0;
       $('.inv-total',tr).textContent=money(q*p);
+      updateInvoiceInstallmentSummary();
     };
     productSel.onchange=()=>{
       const p=productMap.get(String(productSel.value));
@@ -2881,12 +3017,13 @@ async function purchaseInvoiceForm(){
       recalc();
     };
     qty.oninput=recalc;price.oninput=recalc;
-    $('.remove-line',tr).onclick=()=>tr.remove();
+    $('.remove-line',tr).onclick=()=>{tr.remove();refreshInvoiceInstallments()};
     recalc();
   }
 
   addRow();
-  $('#addInvoiceItem').onclick=()=>addRow();
+  buildInvoiceInstallments();
+  $('#addInvoiceItem').onclick=()=>{addRow();refreshInvoiceInstallments()};
 
   function syncType(){
     const mt=typeMap.get(String($('#invoiceMovementType').value));
@@ -2921,13 +3058,24 @@ async function purchaseInvoiceForm(){
       cost_center_id:$('.inv-cc',tr).value||null
     })).filter(x=>x.product_id);
     const eventId=$('#invoiceAccountingEvent').value||mt?.accounting_event_id||null;
+    const installments=$$('#invoiceInstallmentsBody tr').map(tr=>({
+      due_date:tr.querySelector('.invoice-parcel-date').value,
+      amount:tr.querySelector('.invoice-parcel-amount').value
+    }));
+    if(installments.some(x=>!x.due_date||cents(x.amount)<=0)){
+      toast('Informe vencimento e valor válido para todas as parcelas.','error');return;
+    }
+    const totalParcelas=installments.reduce((n,x)=>n+cents(x.amount),0);
+    if(totalParcelas!==invoiceTotalCents()){
+      toast('A soma das parcelas deve ser igual ao total da Nota Fiscal. Use "Distribuir valores igualmente" para ajustar.','error');return;
+    }
     try{
       const d=await api('/api/purchase-invoices',{method:'POST',body:{
         supplier_id:f.get('supplier_id'),movement_type_id:f.get('movement_type_id'),branch_id:f.get('branch_id')||null,
         issue_date:f.get('issue_date'),entry_date:f.get('entry_date'),due_date:f.get('due_date')||null,
         document_number:f.get('document_number'),series:f.get('series'),freight:f.get('freight'),
         accounting_event_id:eventId,accounting_batch_id:eventId?f.get('accounting_batch_id')||null:null,
-        notes:f.get('notes'),items
+        notes:f.get('notes'),items,installments
       }});
       S.cache.purchaseInvoices=null;S.cache.batches=null;
       closeModal();
@@ -2952,19 +3100,45 @@ async function purchaseInvoiceView(id){
         <div class="field"><span>Filial</span><b>${esc(x.branch_code?x.branch_code+' - '+x.branch_name:'—')}</b></div>
         <div class="field"><span>Frete</span><b>${money(x.freight)}</b></div>
         <div class="field"><span>Total</span><b>${money(x.total)}</b></div>
-        <div class="field"><span>Vencimento</span><b>${dateBR(x.due_date)}</b></div>
+        <div class="field"><span>Parcelas</span><b>${x.installments?.length||1}</b></div>
         <div class="field"><span>Contas a Pagar</span><b>${esc(x.payable_number||'Não gerado')}</b></div>
         <div class="field"><span>Evento Contábil</span><b>${esc(x.accounting_event_code?x.accounting_event_code+' - '+x.accounting_event_name:'—')}</b></div>
         <div class="field"><span>Lote</span><b>${esc(x.accounting_batch_code?x.accounting_batch_code+' - '+x.accounting_batch_description:'—')}</b></div>
       </div>
+      <div class="section-title">Parcelas / Contas a Pagar</div>
+      <div class="table-wrap"><table class="table"><thead><tr><th>Parcela</th><th>Vencimento</th><th>Valor</th><th>Título Financeiro</th><th>Situação</th></tr></thead><tbody>
+        ${(x.installments||[]).map(p=>`<tr><td>${p.installment_no}/${x.installments.length}</td><td>${dateBR(p.due_date)}</td><td>${money(p.amount)}</td><td>${esc(p.payable_number||'—')}</td><td>${esc(p.payable_status||'—')}</td></tr>`).join('')}
+      </tbody></table></div>
       <div class="section-title">Itens</div>
       <div class="table-wrap"><table class="table"><thead><tr><th>#</th><th>Produto / Serviço</th><th>Qtd.</th><th>Valor unitário</th><th>Total</th><th>Natureza</th><th>Centro de Custo</th></tr></thead><tbody>
         ${x.items.map(i=>`<tr><td>${i.line_no}</td><td><b>${esc(i.product_code)}</b> - ${esc(i.description)}</td><td>${qtyBR(i.quantity)} ${esc(i.unit)}</td><td>${money(i.unit_price)}</td><td>${money(i.total)}</td><td>${esc(i.nature_code?i.nature_code+' - '+i.nature_description:'—')}</td><td>${esc(i.cost_center_code?i.cost_center_code+' - '+i.cost_center_name:'—')}</td></tr>`).join('')}
       </tbody></table></div>
-      <div class="form-actions"><button class="btn secondary" data-close>Fechar</button>${x.financial_payable_id?'<button class="btn secondary" id="openInvoicePayable">Abrir Contas a Pagar</button>':''}${x.journal_entry_id?'<button class="btn primary" id="openInvoiceJournal">Abrir lançamento contábil</button>':''}</div>`,true);
+      <div class="form-actions"><button class="btn secondary" data-close>Fechar</button>${can('purchasing.receipt.manage')?'<button class="btn danger" id="deleteInvoiceView">Excluir Nota Fiscal</button>':''}${x.financial_payable_id?'<button class="btn secondary" id="openInvoicePayable">Abrir Contas a Pagar</button>':''}${x.journal_entry_id?'<button class="btn primary" id="openInvoiceJournal">Abrir lançamento contábil</button>':''}</div>`,true);
     $('[data-close]').onclick=closeModal;
+    if($('#deleteInvoiceView'))$('#deleteInvoiceView').onclick=()=>purchaseInvoiceDeleteModal(id);
     if($('#openInvoicePayable'))$('#openInvoicePayable').onclick=()=>{closeModal();nav('financial-payables')};
     if($('#openInvoiceJournal'))$('#openInvoiceJournal').onclick=()=>{closeModal();entryView(x.journal_entry_id)};
+  }catch(e){toast(e.message,'error')}
+}
+
+async function purchaseInvoiceDeleteModal(id){
+  try{
+    const x=(await api(`/api/purchase-invoices/${id}`)).invoice;
+    openModal('Excluir Nota Fiscal',`Nota ${x.document_number||x.number} — ${x.supplier_name}`,`
+      <div style="margin-bottom:12px">A exclusão remove a nota, todas as parcelas em aberto e a contabilização vinculada; reverte a movimentação de estoque, quando houver.</div>
+      <div><b>Nota:</b> ${esc(x.document_number||x.number)} — <b>Valor:</b> ${money(x.total)}</div>
+      <div style="margin-top:8px"><b>Parcelas:</b> ${x.installments.length}</div>
+      <div style="margin-top:8px;color:#ae3542">Se houver parcela paga, contabilização oficial ou estoque já consumido, a exclusão será bloqueada.</div>
+      <div class="form-actions"><button type="button" class="btn secondary" data-close>Cancelar</button><button type="button" class="btn danger" id="confirmInvoiceDelete">Excluir Nota Fiscal</button></div>`);
+    $('[data-close]').onclick=closeModal;
+    $('#confirmInvoiceDelete').onclick=async()=>{
+      const btn=$('#confirmInvoiceDelete');btn.disabled=true;
+      try{
+        await api(`/api/purchase-invoices/${id}`,{method:'DELETE'});
+        S.cache.purchaseInvoices=null;S.cache.financialPayables=null;S.cache.batches=null;
+        closeModal();toast('Nota Fiscal, parcelas e integrações excluídas.');renderPurchaseInvoices();
+      }catch(e){toast(e.message,'error');btn.disabled=false}
+    };
   }catch(e){toast(e.message,'error')}
 }
 
@@ -3130,7 +3304,7 @@ async function renderFinancialAccountingEvents(){
 async function financialAccountingEventForm(id=null){
   const [ac,br,cc,hi]=await Promise.all([accounts(true),branches(),ccs(),histories()]);
   const x=id?(await api(`/api/financial-accounting-events/${id}`)).event:null;
-  const accountsActive=ac.filter(a=>a.active&&a.analytic),branchesActive=br.filter(b=>b.active),centers=cc.filter(c=>c.active),hist=hi.filter(h=>h.active);
+  const accountsActive=ac.filter(a=>a.active&&a.analytic),branchesActive=br.filter(b=>b.active),centers=cc.filter(c=>c.active&&parseCostCenterMaskLocal(c.code)?.analytic),hist=hi.filter(h=>h.active);
   const draft={items:(x?.items||[]).map(i=>({...i}))};
   const nextNum=x?.number||(Math.max(0,...((window.__sagasFinEventRows||[]).map(e=>Number(e.number)||0)))+1);
   const branchSearch=new Set(x?.search_branch||['BAIXA']);
