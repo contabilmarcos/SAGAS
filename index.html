@@ -380,7 +380,7 @@ async function renderPayrollMovements(){
   const manage=can('payroll.manage')&&current.status==='OPEN';
   const rows=(data.items||[]).map(m=>`<tr><td>${esc(m.employee_name)}</td><td>${esc(m.event_code)} — ${esc(m.event_name)}</td><td>${esc(m.unit==='VALOR'?money(m.value):String(m.value).replace('.',',')+' '+payrollUnitName(m.unit))}</td><td>${dateBR(m.created_at)}</td><td>${manage?`<button class="btn danger sm" data-pmv-delete="${esc(m.id)}">Excluir</button>`:''}</td></tr>`).join('');
   $('#content').innerHTML=`<div class="toolbar"><select id="pmvPeriod" class="search" style="max-width:220px">${periods.map(p=>`<option value="${esc(p.id)}" ${p.id===selected?'selected':''}>${esc(p.competence.slice(5)+'/ '+p.competence.slice(0,4))} ${p.status==='OPEN'?'':'(bloqueada)'}</option>`).join('')}</select>
-    ${manage?'<button id="pmvNew" class="btn primary">+ Novo lançamento</button>':''}<button id="pmvPreview" class="btn secondary">Conferir lançamentos</button><button id="pmvSalaryPreview" class="btn secondary">Prévia do salário</button><button id="pmvFormulaPreview" class="btn secondary">Simular eventos</button><button id="pmvTaxScenario" class="btn secondary">Cenário tributário</button><button id="pmvLaborPreview" class="btn secondary">Conferir proporcionalidade</button><button id="pmvConference" class="btn secondary">Demonstrativo preliminar</button><button id="pmvEnvelope11" class="btn secondary">Envelopes preliminares</button><button id="pmvComposition14" class="btn secondary">Conferência da folha</button><button id="pmvIncidences15" class="btn secondary">Incidências INSS/IRRF/FGTS</button><button id="pmvTaxes16" class="btn secondary">Simulação de tributos</button><button id="pmvEnvelope17" class="btn secondary">Consolidar envelopes</button><button id="pmvValidate18" class="btn secondary">Validar envelopes</button><button id="pmvRemediation19" class="btn secondary">Corrigir pendências</button></div>
+    ${manage?'<button id="pmvNew" class="btn primary">+ Novo lançamento</button>':''}<button id="pmvPreview" class="btn secondary">Conferir lançamentos</button><button id="pmvSalaryPreview" class="btn secondary">Prévia do salário</button><button id="pmvFormulaPreview" class="btn secondary">Simular eventos</button><button id="pmvTaxScenario" class="btn secondary">Cenário tributário</button><button id="pmvLaborPreview" class="btn secondary">Conferir proporcionalidade</button><button id="pmvConference" class="btn secondary">Demonstrativo preliminar</button><button id="pmvEnvelope11" class="btn secondary">Envelopes preliminares</button><button id="pmvComposition14" class="btn secondary">Conferência da folha</button><button id="pmvIncidences15" class="btn secondary">Incidências INSS/IRRF/FGTS</button><button id="pmvTaxes16" class="btn secondary">Simulação de tributos</button><button id="pmvEnvelope17" class="btn secondary">Consolidar envelopes</button><button id="pmvValidate18" class="btn secondary">Validar envelopes</button><button id="pmvRemediation19" class="btn secondary">Corrigir pendências</button><button id="pmvMemory20" class="btn secondary">Memória de cálculo</button></div>
     <p class="muted" style="font-size:12px;margin-bottom:12px">Lançamentos registrados para processamento futuro. Esta tela não calcula salários, impostos ou valores líquidos.</p>
     <div class="table-wrap"><table class="table"><thead><tr><th>Funcionário</th><th>Evento</th><th>Valor / Referência</th><th>Registrado</th><th>Ação</th></tr></thead><tbody>${rows||empty(5,'Nenhum lançamento','Use Novo lançamento para começar.')}</tbody></table></div>`;
   $('#pmvPeriod').onchange=e=>{window.sagasPayrollCompetence=e.target.value;renderPayrollMovements().catch(err=>toast(err.message,'error'))};
@@ -398,6 +398,7 @@ async function renderPayrollMovements(){
   if($('#pmvEnvelope17'))$('#pmvEnvelope17').onclick=()=>payrollEnvelopeConsolidationScreen17().catch(err=>toast(err.message,'error'));
   if($('#pmvValidate18'))$('#pmvValidate18').onclick=()=>payrollValidationScreen18().catch(err=>toast(err.message,'error'));
   if($('#pmvRemediation19'))$('#pmvRemediation19').onclick=()=>payrollRemediationScreen19().catch(err=>toast(err.message,'error'));
+  if($('#pmvMemory20'))$('#pmvMemory20').onclick=()=>payrollCalculationMemoryScreen20().catch(err=>toast(err.message,'error'));
   $$('[data-pmv-delete]').forEach(b=>b.onclick=()=>payrollMovementDelete(b.dataset.pmvDelete));
 }
 async function payrollMovementForm(competenceId){
@@ -847,6 +848,96 @@ function payrollDsrReviewForm13(employee,week,paymentDate){
       await payrollEnvelopePreviewResult11(paymentDate);
     }catch(err){toast(err.message,'error');btn.disabled=false;}
   };
+}
+
+// ===== SAGAS Folha Etapa 20: memoria do processamento aritmetico por lancamento =====
+async function payrollCalculationMemoryScreen20(){
+  if(!window.sagasPayrollCompetence){toast('Selecione uma competência.','error');return;}
+  openModal('Memória de cálculo dos eventos',
+    'Etapa 20 — rastreabilidade do salário e de cada lançamento da competência.',
+    '<form id="payrollMemoryForm20"><label class="field"><span>Data prevista de pagamento (referência do IRRF)</span>'+
+    '<input type="date" name="payment_date" min="2020-01-01" max="2026-12-31" required></label>'+
+    '<p class="help">Conferência de soma e fórmulas por evento. Sem cálculo líquido, férias e DSR definitivos, pagamento ou contabilização.</p>'+
+    '<div class="form-actions"><button type="button" class="btn secondary" id="memory20Cancel">Cancelar</button>'+
+    '<button type="submit" class="btn primary">Consultar memória</button></div></form>');
+  $('#memory20Cancel').onclick=closeModal;
+  const form=$('#payrollMemoryForm20');
+  form.onsubmit=async ev=>{
+    ev.preventDefault();
+    const btn=form.querySelector('[type=submit]');btn.disabled=true;
+    try{await payrollCalculationMemoryResult20(form.elements.payment_date.value);}
+    catch(err){
+      toast(err.status===404?'Publique o Worker v58 no Cloudflare para habilitar a memória de cálculo.':err.message,'error');
+      btn.disabled=false;
+    }
+  };
+}
+async function payrollCalculationMemoryResult20(paymentDate){
+  const id=window.sagasPayrollCompetence;
+  if(!id){toast('Selecione uma competência.','error');return;}
+  const data=await api('/api/payroll/calculation-memory?competence_id='+encodeURIComponent(id)+
+    '&payment_date='+encodeURIComponent(paymentDate));
+  const items=data.items||[];
+  const value=x=>typeof x==='number'&&Number.isFinite(x)?money(x):'Pendente';
+  const rows=items.map(e=>{
+    const p=e.processing_preview||{};
+    return '<tr><td class="code">'+esc(e.employee_code||'—')+'</td>'+
+      '<td><b>'+esc(e.employee_name)+'</b></td>'+
+      '<td>'+value(p.salary_proportional)+'</td><td>'+value(p.event_earnings)+'</td>'+
+      '<td>'+value(p.event_deductions)+'</td><td>'+value(p.subtotal_before_absences_taxes)+'</td>'+
+      '<td>'+esc((p.issues||[]).length)+'</td><td>'+esc(p.status||'PENDENTE')+'</td>'+
+      '<td><button type="button" class="btn secondary sm" data-mem20-emp="'+esc(e.employee_id)+'">Detalhar</button></td></tr>';
+  }).join('');
+  openModal('Memória de cálculo — '+String(data.competence?.competence||''),
+    'Conferência em centavos por funcionário, sem processamento definitivo.',
+    '<p class="help">Funcionários: '+esc(data.employee_count||0)+
+    ' · Subtotais conciliados: '+esc(data.reconciled_employee_count||0)+
+    ' · Com impedimentos: '+esc(data.pending_employee_count||0)+
+    ' · Lançamentos: '+esc(data.movement_line_count||0)+'</p>'+
+    '<div class="table-wrap"><table class="table"><thead><tr><th>ID</th><th>Funcionário</th>'+
+    '<th>Salário</th><th>Proventos</th><th>Descontos</th><th>Subtotal*</th>'+
+    '<th>Pendências</th><th>Status</th><th>Ação</th></tr></thead><tbody>'+
+    (rows||empty(9,'Sem funcionários','Não existem funcionários na competência selecionada.'))+
+    '</tbody></table></div>'+
+    '<p class="help">*O subtotal exclui faltas, DSR, impostos e encargos. Só aparece quando todas as origens coincidem. Não é salário líquido.</p>',true);
+  $$('[data-mem20-emp]',$('#modalBody')).forEach(b=>b.onclick=()=>{
+    const e=items.find(x=>x.employee_id===b.dataset.mem20Emp);
+    if(e)payrollCalculationMemoryEmployee20(e,paymentDate);
+  });
+}
+function payrollCalculationMemoryEmployee20(e,paymentDate){
+  const p=e.processing_preview||{};
+  const value=x=>typeof x==='number'&&Number.isFinite(x)?money(x):'Pendente';
+  const lines=(p.lines||[]).map(line=>
+    '<tr><td>'+esc(line.line)+'</td><td>'+esc(line.code||'—')+'</td>'+
+    '<td>'+esc(line.description||'—')+'</td><td>'+esc(line.type||'—')+'</td>'+
+    '<td>'+esc(line.origin||'—')+'</td><td>'+esc(line.unit||'—')+
+      (line.reference!==null&&line.reference!==undefined?' ('+esc(line.reference)+')':'')+'</td>'+
+    '<td>'+esc(line.expression||'—')+'</td>'+
+    '<td>'+esc(line.rule_version||'—')+'</td><td>'+value(line.value)+'</td>'+
+    '<td>'+esc(line.status||'—')+'</td></tr>').join('');
+  const problems=(p.issues||[]).map(x=>'<p><b>'+esc(x.code)+':</b> '+esc(x.detail)+'</p>').join('');
+  const notes=(p.notes||[]).map(x=>'<p>• '+esc(x)+'</p>').join('');
+  openModal('Memória de cálculo — '+e.employee_name,
+    'Funcionário '+(e.employee_code||'—')+' · Histórico e movimentos da competência.',
+    '<p><b>Situação:</b> '+esc(p.status||'PENDENTE')+
+    ' · <b>Total de linhas:</b> '+esc((p.lines||[]).length)+'</p>'+
+    '<div class="table-wrap"><table class="table"><thead><tr><th>#</th><th>Código</th>'+
+    '<th>Descrição</th><th>Tipo</th><th>Origem</th><th>Unidade/ref.</th>'+
+    '<th>Fórmula</th><th>Versão</th><th>Valor</th><th>Status</th></tr></thead><tbody>'+
+    (lines||empty(10,'Sem linhas','Não existem movimentos para detalhar.'))+
+    '</tbody></table></div>'+
+    '<p><b>Salário proporcional:</b> '+value(p.salary_proportional)+
+    ' · <b>Proventos:</b> '+value(p.event_earnings)+
+    ' · <b>Descontos:</b> '+value(p.event_deductions)+
+    ' · <b>Subtotal anterior:</b> '+value(p.source_subtotal)+'</p>'+
+    '<p><b>Subtotal conciliado (antes de ausências e tributos):</b> '+value(p.subtotal_before_absences_taxes)+'</p>'+
+    '<h4>Pendências da conferência</h4><div class="help">'+
+    (problems||'Nenhuma divergência aritmética nesta prévia. Ainda não é folha homologada.')+'</div>'+
+    (notes?'<h4>Observações</h4><div class="help">'+notes+'</div>':'')+
+    '<p class="help"><b>Esta memória não apura salário líquido e não gera pagamento, recolhimento, fechamento ou contabilização.</b></p>'+
+    '<div class="form-actions"><button type="button" class="btn secondary" id="mem20Back">Voltar</button></div>',true);
+  $('#mem20Back').onclick=()=>payrollCalculationMemoryResult20(paymentDate).catch(err=>toast(err.message,'error'));
 }
 
 // ===== SAGAS Folha Etapa 19: pendencias especificas e atalhos para cadastros existentes =====
