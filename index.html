@@ -380,7 +380,7 @@ async function renderPayrollMovements(){
   const manage=can('payroll.manage')&&current.status==='OPEN';
   const rows=(data.items||[]).map(m=>`<tr><td>${esc(m.employee_name)}</td><td>${esc(m.event_code)} — ${esc(m.event_name)}</td><td>${esc(m.unit==='VALOR'?money(m.value):String(m.value).replace('.',',')+' '+payrollUnitName(m.unit))}</td><td>${dateBR(m.created_at)}</td><td>${manage?`<button class="btn danger sm" data-pmv-delete="${esc(m.id)}">Excluir</button>`:''}</td></tr>`).join('');
   $('#content').innerHTML=`<div class="toolbar"><select id="pmvPeriod" class="search" style="max-width:220px">${periods.map(p=>`<option value="${esc(p.id)}" ${p.id===selected?'selected':''}>${esc(p.competence.slice(5)+'/ '+p.competence.slice(0,4))} ${p.status==='OPEN'?'':'(bloqueada)'}</option>`).join('')}</select>
-    ${manage?'<button id="pmvNew" class="btn primary">+ Novo lançamento</button>':''}<button id="pmvPreview" class="btn secondary">Conferir lançamentos</button><button id="pmvSalaryPreview" class="btn secondary">Prévia do salário</button><button id="pmvFormulaPreview" class="btn secondary">Simular eventos</button><button id="pmvTaxScenario" class="btn secondary">Cenário tributário</button><button id="pmvLaborPreview" class="btn secondary">Conferir proporcionalidade</button><button id="pmvConference" class="btn secondary">Demonstrativo preliminar</button></div>
+    ${manage?'<button id="pmvNew" class="btn primary">+ Novo lançamento</button>':''}<button id="pmvPreview" class="btn secondary">Conferir lançamentos</button><button id="pmvSalaryPreview" class="btn secondary">Prévia do salário</button><button id="pmvFormulaPreview" class="btn secondary">Simular eventos</button><button id="pmvTaxScenario" class="btn secondary">Cenário tributário</button><button id="pmvLaborPreview" class="btn secondary">Conferir proporcionalidade</button><button id="pmvConference" class="btn secondary">Demonstrativo preliminar</button><button id="pmvEnvelope11" class="btn secondary">Envelopes preliminares</button></div>
     <p class="muted" style="font-size:12px;margin-bottom:12px">Lançamentos registrados para processamento futuro. Esta tela não calcula salários, impostos ou valores líquidos.</p>
     <div class="table-wrap"><table class="table"><thead><tr><th>Funcionário</th><th>Evento</th><th>Valor / Referência</th><th>Registrado</th><th>Ação</th></tr></thead><tbody>${rows||empty(5,'Nenhum lançamento','Use Novo lançamento para começar.')}</tbody></table></div>`;
   $('#pmvPeriod').onchange=e=>{window.sagasPayrollCompetence=e.target.value;renderPayrollMovements().catch(err=>toast(err.message,'error'))};
@@ -391,6 +391,7 @@ async function renderPayrollMovements(){
   if($('#pmvTaxScenario'))$('#pmvTaxScenario').onclick=()=>payrollTaxScenarioScreen().catch(err=>toast(err.message,'error'));
   if($('#pmvLaborPreview'))$('#pmvLaborPreview').onclick=()=>payrollLaborPreviewScreen().catch(err=>toast(err.message,'error'));
   if($('#pmvConference'))$('#pmvConference').onclick=()=>payrollConferencePreviewScreen().catch(err=>toast(err.message,'error'));
+  if($('#pmvEnvelope11'))$('#pmvEnvelope11').onclick=()=>payrollEnvelopePreviewScreen11().catch(err=>toast(err.message,'error'));
   $$('[data-pmv-delete]').forEach(b=>b.onclick=()=>payrollMovementDelete(b.dataset.pmvDelete));
 }
 async function payrollMovementForm(competenceId){
@@ -660,6 +661,110 @@ async function payrollConferencePreviewResult(paymentDate){
       '<h4>Pendências</h4><div class="help">'+(problems||'Sem bloqueios aritméticos; ainda não é folha homologada.')+'</div>'+
       '<h4>Observações</h4><div class="help">'+(warnings||'Sem outras observações.')+'</div>',true);
   });
+}
+
+
+function payrollOccurrenceReviewLabel11(code){
+  return ({PENDENTE:'Pendente',ABONADA:'Abonada — conferir',DESCONTO_A_CONFERIR:'Possível desconto — conferir',
+    EMPRESA_A_CONFERIR:'Afastamento custeado pela empresa — conferir',
+    BENEFICIO_A_CONFERIR:'Benefício previdenciário — conferir',
+    FERIAS_A_CONFERIR:'Férias — conferir',
+    REMUNERADA_A_CONFERIR:'Licença remunerada — conferir',
+    NAO_REMUNERADA_A_CONFERIR:'Licença não remunerada — conferir'})[code]||code;
+}
+async function payrollEnvelopePreviewScreen11(){
+  if(!window.sagasPayrollCompetence){toast('Selecione uma competência.','error');return;}
+  openModal('Envelopes preliminares','Etapa 11 — conferência de faltas, férias, licenças e afastamentos.',
+    '<form id="payrollEnvelopeForm11"><label class="field"><span>Data de pagamento (IRRF)</span>'+
+    '<input type="date" name="payment_date" min="2020-01-01" max="2026-12-31" required></label>'+
+    '<p class="help">Consulta de conferência; os efeitos remuneratórios não são calculados nesta etapa.</p>'+
+    '<div class="form-actions"><button class="btn secondary" type="button" data-close>Cancelar</button>'+
+    '<button class="btn primary" type="submit">Consultar envelopes</button></div></form>');
+  $('[data-close]').onclick=closeModal;
+  $('#payrollEnvelopeForm11').onsubmit=async e=>{
+    e.preventDefault();
+    const form=e.target,submit=form.querySelector('[type=submit]');submit.disabled=true;
+    try{await payrollEnvelopePreviewResult11(form.elements.payment_date.value);}
+    catch(err){toast(err.message,'error');submit.disabled=false;}
+  };
+}
+async function payrollEnvelopePreviewResult11(paymentDate){
+  const id=window.sagasPayrollCompetence;
+  if(!id){toast('Selecione uma competência.','error');return;}
+  const d=await api('/api/payroll/envelope-preview?competence_id='+encodeURIComponent(id)+
+    '&payment_date='+encodeURIComponent(paymentDate));
+  const items=d.items||[];
+  const val=n=>n===null||n===undefined?'Pendente':money(n);
+  const rows=items.map(e=>'<tr><td><b>'+esc(e.employee_name)+'</b></td>'+
+    '<td>'+esc(e.occurrences_count||0)+'</td><td>'+esc(e.distinct_occurrence_days||0)+'</td>'+
+    '<td>'+val(e.base_reference)+'</td><td>'+esc(e.status)+'</td>'+
+    '<td><button class="btn secondary sm" type="button" data-env11-emp="'+esc(e.employee_id)+'">Detalhar</button></td></tr>').join('');
+  openModal('Envelopes preliminares — '+String(d.competence?.competence||''),
+    'Conferência por funcionário. Não é envelope calculado, folha líquida ou valor a pagar.',
+    '<p class="help">Ocorrências: '+esc(d.occurrence_count||0)+' · Sem tratamento: '+esc(d.pending_occurrence_count||0)+
+    ' · Funcionários com sobreposição: '+esc(d.overlapping_employee_count||0)+'</p>'+
+    '<div class="table-wrap"><table class="table"><thead><tr><th>Funcionário</th><th>Ocorrências</th>'+
+    '<th>Dias distintos</th><th>Salário de referência</th><th>Situação</th><th>Ação</th></tr></thead><tbody>'+
+    (rows||empty(6,'Sem funcionários','Nenhum funcionário nesta competência.'))+'</tbody></table></div>'+
+    '<p class="help">Tratamentos são classificações para conferência. O sistema não desconta faltas, não calcula DSR, impostos ou líquido nem registra pagamento e contabilidade.</p>',true);
+  $('[data-env11-emp]',$('#modalBody')).forEach(b=>b.onclick=()=>{
+    const employee=items.find(x=>x.employee_id===b.dataset.env11Emp);
+    if(employee)payrollEnvelopeEmployee11(employee,paymentDate);
+  });
+}
+function payrollEnvelopeEmployee11(e,paymentDate){
+  const val=n=>n===null||n===undefined?'Pendente':money(n);
+  const occurrences=(e.occurrences||[]).map(o=>'<tr><td>'+esc(o.kind)+'</td>'+
+    '<td>'+esc(o.start_date)+' a '+esc(o.end_date)+'</td><td>'+esc(o.days_in_competence)+'</td>'+
+    '<td>'+esc(payrollOccurrenceReviewLabel11(o.treatment))+'</td><td>'+
+    (can('payroll.manage')?'<button type="button" class="btn secondary sm" data-env11-occ="'+esc(o.id)+'">Revisar</button>':'Somente leitura')+
+    '</td></tr>').join('');
+  const events=(e.events||[]).map(x=>'<tr><td>'+esc(x.event_code+' — '+x.event_name)+'</td>'+
+    '<td>'+esc(x.type)+'</td><td>'+val(x.value_preview)+'</td><td>'+esc(x.status)+'</td></tr>').join('');
+  const blockers=(e.pendencias||[]).map(x=>'<p>• '+esc(x)+'</p>').join('');
+  openModal('Envelope preliminar — '+e.employee_name,'Conferência de ocorrências e eventos da competência.',
+    '<p><b>Salário histórico de referência:</b> '+val(e.base_reference)+' · <b>Dias distintos de ocorrência:</b> '+
+      esc(e.distinct_occurrence_days||0)+'</p>'+
+    '<p class="help">Nenhuma falta ou licença foi descontada automaticamente; valores líquidos e reflexos ainda não foram apurados.</p>'+
+    '<h4>Ocorrências e tratamento</h4><div class="table-wrap"><table class="table"><thead><tr>'+
+    '<th>Tipo</th><th>Período</th><th>Dias no mês</th><th>Tratamento</th><th>Ação</th></tr></thead><tbody>'+
+    (occurrences||empty(5,'Sem ocorrências','Nenhuma ocorrência registrada.'))+'</tbody></table></div>'+
+    '<h4>Eventos lançados</h4><div class="table-wrap"><table class="table"><thead><tr>'+
+    '<th>Evento</th><th>Tipo</th><th>Prévia</th><th>Situação</th></tr></thead><tbody>'+
+    (events||empty(4,'Sem eventos','Nenhum evento lançado.'))+'</tbody></table></div>'+
+    '<h4>Pendências</h4><div class="help">'+(blockers||'Sem pendência aritmética; cálculo final ainda não habilitado.')+'</div>'+
+    '<div class="form-actions"><button type="button" class="btn secondary" id="env11Back">Voltar</button></div>',true);
+  $('#env11Back').onclick=()=>payrollEnvelopePreviewResult11(paymentDate).catch(err=>toast(err.message,'error'));
+  $('[data-env11-occ]',$('#modalBody')).forEach(b=>b.onclick=()=>{
+    const o=(e.occurrences||[]).find(x=>x.id===b.dataset.env11Occ);
+    if(o)payrollOccurrenceReviewForm11(e,o,paymentDate);
+  });
+}
+function payrollOccurrenceReviewForm11(employee,o,paymentDate){
+  if(!can('payroll.manage')){toast('Sem permissão para revisar ocorrências.','error');return;}
+  const options=(o.treatment_options||['PENDENTE']).map(x=>
+    '<option value="'+esc(x)+'" '+(o.treatment===x?'selected':'')+'>'+esc(payrollOccurrenceReviewLabel11(x))+'</option>').join('');
+  openModal('Revisar ocorrência — '+employee.employee_name,
+    o.kind+' · '+o.start_date+' a '+o.end_date+' · '+o.days_in_competence+' dia(s) nesta competência.',
+    '<form id="payrollOccurrenceReviewForm11"><label class="field"><span>Classificação para conferência</span>'+
+    '<select name="treatment" required>'+options+'</select></label>'+
+    '<label class="field"><span>Observações</span><textarea name="notes" maxlength="500" rows="3">'+
+    esc(o.review_notes||'')+'</textarea></label>'+
+    '<p class="help">A classificação não executa desconto, pagamento, cálculo de DSR, FGTS, INSS ou IRRF.</p>'+
+    '<div class="form-actions"><button type="button" class="btn secondary" id="env11Return">Voltar</button>'+
+    '<button type="submit" class="btn primary">Salvar classificação</button></div></form>');
+  $('#env11Return').onclick=()=>payrollEnvelopePreviewResult11(paymentDate).catch(err=>toast(err.message,'error'));
+  const form=$('#payrollOccurrenceReviewForm11');
+  form.onsubmit=async event=>{
+    event.preventDefault();
+    const button=form.querySelector('[type=submit]');button.disabled=true;
+    try{
+      await api('/api/payroll/occurrence-review/'+encodeURIComponent(o.id),{
+        method:'PUT',body:{treatment:form.elements.treatment.value,notes:form.elements.notes.value}});
+      toast('Classificação registrada para conferência.');
+      await payrollEnvelopePreviewResult11(paymentDate);
+    }catch(err){toast(err.message,'error');button.disabled=false;}
+  };
 }
 
 // ===== Folha de Pagamento: cadastros, sem cálculo =====
