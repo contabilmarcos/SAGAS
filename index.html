@@ -380,11 +380,12 @@ async function renderPayrollMovements(){
   const manage=can('payroll.manage')&&current.status==='OPEN';
   const rows=(data.items||[]).map(m=>`<tr><td>${esc(m.employee_name)}</td><td>${esc(m.event_code)} — ${esc(m.event_name)}</td><td>${esc(m.unit==='VALOR'?money(m.value):String(m.value).replace('.',',')+' '+payrollUnitName(m.unit))}</td><td>${dateBR(m.created_at)}</td><td>${manage?`<button class="btn danger sm" data-pmv-delete="${esc(m.id)}">Excluir</button>`:''}</td></tr>`).join('');
   $('#content').innerHTML=`<div class="toolbar"><select id="pmvPeriod" class="search" style="max-width:220px">${periods.map(p=>`<option value="${esc(p.id)}" ${p.id===selected?'selected':''}>${esc(p.competence.slice(5)+'/ '+p.competence.slice(0,4))} ${p.status==='OPEN'?'':'(bloqueada)'}</option>`).join('')}</select>
-    ${manage?'<button id="pmvNew" class="btn primary">+ Novo lançamento</button>':''}</div>
+    ${manage?'<button id="pmvNew" class="btn primary">+ Novo lançamento</button>':''}<button id="pmvPreview" class="btn secondary">Conferir lançamentos</button></div>
     <p class="muted" style="font-size:12px;margin-bottom:12px">Lançamentos registrados para processamento futuro. Esta tela não calcula salários, impostos ou valores líquidos.</p>
     <div class="table-wrap"><table class="table"><thead><tr><th>Funcionário</th><th>Evento</th><th>Valor / Referência</th><th>Registrado</th><th>Ação</th></tr></thead><tbody>${rows||empty(5,'Nenhum lançamento','Use Novo lançamento para começar.')}</tbody></table></div>`;
   $('#pmvPeriod').onchange=e=>{window.sagasPayrollCompetence=e.target.value;renderPayrollMovements().catch(err=>toast(err.message,'error'))};
   if($('#pmvNew'))$('#pmvNew').onclick=()=>payrollMovementForm(selected);
+  if($('#pmvPreview'))$('#pmvPreview').onclick=()=>payrollMovementsPreview().catch(err=>toast(err.message,'error'));
   $$('[data-pmv-delete]').forEach(b=>b.onclick=()=>payrollMovementDelete(b.dataset.pmvDelete));
 }
 async function payrollMovementForm(competenceId){
@@ -423,6 +424,25 @@ function payrollMovementDelete(id){
     try{await api('/api/payroll/movements/'+encodeURIComponent(id),{method:'DELETE'});closeModal();toast('Lançamento excluído.');await renderPayrollMovements()}
     catch(err){toast(err.message,'error')}
   };
+}
+
+// ===== Folha SAGAS Etapa 02: conferência de lançamentos, SEM folha calculada =====
+async function payrollMovementsPreview(){
+  const periods=(await api('/api/payroll/competences')).items||[],period=periods.find(p=>p.id===window.sagasPayrollCompetence);
+  if(!period){toast('Selecione uma competência.','error');return;}
+  const data=await api('/api/payroll/movements-preview?competence_id='+encodeURIComponent(period.id));
+  const columns=['Funcionário','Proventos lançados (R$)','Descontos lançados (R$)','Eventos sem valor','Ações'];
+  const rows=(data.employees||[]).map(e=>
+     '<tr><td>'+esc(e.employee_name)+'</td><td>'+money(e.event_proventos)+'</td><td>'+money(e.event_descontos)+'</td><td>'+e.pending_quantities.length+'</td><td><button class="btn secondary sm" data-preview-employee="'+esc(e.employee_id)+'">Detalhar</button></td></tr>'
+  ).join('');
+  openModal('Conferência dos lançamentos', 'Somente movimentos informados. Não calcula folha, impostos nem salário líquido.',
+    '<p class="help">Esta prévia NÃO é envelope de pagamento. O salário cadastrado aparece somente como referência no detalhe.</p><div class="table-wrap"><table class="table"><thead><tr>'+columns.map(c=>'<th>'+esc(c)+'</th>').join('')+'</tr></thead><tbody>'+ (rows||empty(5,'Sem movimentos','Não há lançamentos para conferir.'))+'</tbody></table></div>',true);
+  $('[data-preview-employee]', $('#modalBody')).forEach(b=>b.onclick=()=>{
+    const e=(data.employees||[]).find(x=>x.employee_id===b.dataset.previewEmployee);
+    const items=(e.events||[]).map(ev=>'<tr><td>'+esc(ev.event_code+' — '+ev.event_name)+'</td><td>'+esc(ev.type)+'</td><td>'+esc(ev.amount===null?ev.quantity+' '+ev.unit:money(ev.amount))+'</td></tr>').join('');
+    openModal('Lançamentos — '+e.employee_name,'Prévia de eventos, não é demonstrativo líquido.',
+      '<p>Salário cadastrado (referência): <b>'+money(e.salary_registered)+'</b></p><div class="table-wrap"><table class="table"><thead><tr><th>Evento</th><th>Tipo</th><th>Valor / quantidade</th></tr></thead><tbody>'+items+'</tbody></table></div><p class="help">'+(e.warnings||[]).map(esc).join(' • ')+'</p>',true);
+  });
 }
 
 // ===== Folha de Pagamento: cadastros, sem cálculo =====
