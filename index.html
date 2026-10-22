@@ -505,14 +505,30 @@ async function payrollEventCalculationScreen(){
 async function payrollTaxScenarioScreen(){
   const id=window.sagasPayrollCompetence;
   if(!id){toast('Selecione uma competência.','error');return;}
-  const d=await api('/api/payroll/tax-preview?competence_id='+encodeURIComponent(id));
+  openModal('Cenário tributário histórico','Informe a data de pagamento para selecionar a tabela correta do IRRF.',
+    '<form id="payrollTaxDateForm"><label class="field"><span>Data do pagamento (IRRF)</span><input type="date" name="payment_date" min="2020-01-01" max="2026-12-31" required></label>'+
+    '<p class="help">O INSS seguirá a competência selecionada. O IRRF seguirá a data de pagamento informada, mesmo que seja em outro mês ou ano. Não serão gerados lançamentos ou pagamentos.</p>'+
+    '<div class="form-actions"><button type="button" class="btn secondary" data-close>Cancelar</button><button type="submit" class="btn primary">Simular tributos</button></div></form>');
+  $('[data-close]').onclick=closeModal;
+  const form=$('#payrollTaxDateForm');
+  form.onsubmit=async e=>{
+    e.preventDefault();
+    const date=form.elements.payment_date.value;
+    const submit=form.querySelector('[type="submit"]');submit.disabled=true;
+    try{await payrollTaxScenarioResult(date)}catch(err){toast(err.message,'error');submit.disabled=false}
+  };
+}
+async function payrollTaxScenarioResult(paymentDate){
+  const id=window.sagasPayrollCompetence;
+  if(!id){toast('Selecione uma competência.','error');return;}
+  const d=await api('/api/payroll/tax-preview?competence_id='+encodeURIComponent(id)+'&payment_date='+encodeURIComponent(paymentDate));
   const items=d.items||[];
   const value=(n)=>n===null||n===undefined?'Pendente':money(n);
   const columns=['Funcionário','Base INSS','INSS estimado','Base IRRF','IRRF estimado','FGTS estimado','Ações'];
   const rows=items.map(e=>'<tr><td><b>'+esc(e.employee_name)+'</b></td><td>'+value(e.base_inss)+'</td><td>'+value(e.inss_estimate)+'</td><td>'+value(e.base_irrf_gross)+'</td><td>'+value(e.irrf_estimate)+'</td><td>'+value(e.fgts_estimate)+'</td><td><button class="btn secondary sm" data-tax-detail="'+esc(e.employee_id)+'">Detalhar</button></td></tr>').join('');
-  openModal('Cenário tributário 2026','Simulação apenas para conferência. Não é folha calculada nem líquido a pagar.',
-    '<p class="help"><b>Premissas:</b> vínculo CLT mensal padrão, sem dependentes, pensão, outros vínculos, afastamentos, férias ou 13º. IRRF pressupõe pagamento em 2026. FGTS geral de 8%, não descontado do trabalhador.</p>'+
-    '<p class="help"><b>Somente 2026.</b> As incidências não confirmadas e os eventos não calculáveis bloqueiam a estimativa.</p>'+
+  openModal('Cenário tributário 2020–2026','Simulação histórica apenas para conferência. Não é folha calculada nem líquido a pagar.',
+    '<p class="help"><b>Premissas:</b> vínculo CLT mensal padrão, sem dependentes, pensão, outros vínculos, afastamentos, férias ou 13º. IRRF segue a data do pagamento informada. FGTS geral de 8%, não descontado do trabalhador.</p>'+
+    '<p class="help"><b>Competência:</b> '+esc(d.competence?.competence||'')+' · <b>Pagamento IRRF:</b> '+esc(d.payment_date||paymentDate)+' · <b>Tabela INSS:</b> '+esc(d.tables?.inss_from||'')+' ('+esc(d.tables?.inss_mode==='FLAT'?'não progressiva':'progressiva')+') · <b>Tabela IRRF:</b> '+esc(d.tables?.irrf_from||'')+'.</p>'+ '<p class="help">As incidências não confirmadas e os eventos não calculáveis bloqueiam a estimativa. Para folhas antigas, confira também o salário histórico do funcionário.</p>'+
     '<div class="table-wrap"><table class="table"><thead><tr>'+columns.map(c=>'<th>'+esc(c)+'</th>').join('')+'</tr></thead><tbody>'+
     (rows||empty(7,'Sem funcionários','Não há dados para a competência.'))+'</tbody></table></div>'+
     '<p class="help">Estimativas disponíveis: '+esc(d.estimated_employee_count)+' · Pendentes: '+esc(d.blocked_employee_count)+'</p>',true);
