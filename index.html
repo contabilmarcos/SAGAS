@@ -380,12 +380,13 @@ async function renderPayrollMovements(){
   const manage=can('payroll.manage')&&current.status==='OPEN';
   const rows=(data.items||[]).map(m=>`<tr><td>${esc(m.employee_name)}</td><td>${esc(m.event_code)} — ${esc(m.event_name)}</td><td>${esc(m.unit==='VALOR'?money(m.value):String(m.value).replace('.',',')+' '+payrollUnitName(m.unit))}</td><td>${dateBR(m.created_at)}</td><td>${manage?`<button class="btn danger sm" data-pmv-delete="${esc(m.id)}">Excluir</button>`:''}</td></tr>`).join('');
   $('#content').innerHTML=`<div class="toolbar"><select id="pmvPeriod" class="search" style="max-width:220px">${periods.map(p=>`<option value="${esc(p.id)}" ${p.id===selected?'selected':''}>${esc(p.competence.slice(5)+'/ '+p.competence.slice(0,4))} ${p.status==='OPEN'?'':'(bloqueada)'}</option>`).join('')}</select>
-    ${manage?'<button id="pmvNew" class="btn primary">+ Novo lançamento</button>':''}<button id="pmvPreview" class="btn secondary">Conferir lançamentos</button></div>
+    ${manage?'<button id="pmvNew" class="btn primary">+ Novo lançamento</button>':''}<button id="pmvPreview" class="btn secondary">Conferir lançamentos</button><button id="pmvSalaryPreview" class="btn secondary">Prévia do salário</button></div>
     <p class="muted" style="font-size:12px;margin-bottom:12px">Lançamentos registrados para processamento futuro. Esta tela não calcula salários, impostos ou valores líquidos.</p>
     <div class="table-wrap"><table class="table"><thead><tr><th>Funcionário</th><th>Evento</th><th>Valor / Referência</th><th>Registrado</th><th>Ação</th></tr></thead><tbody>${rows||empty(5,'Nenhum lançamento','Use Novo lançamento para começar.')}</tbody></table></div>`;
   $('#pmvPeriod').onchange=e=>{window.sagasPayrollCompetence=e.target.value;renderPayrollMovements().catch(err=>toast(err.message,'error'))};
   if($('#pmvNew'))$('#pmvNew').onclick=()=>payrollMovementForm(selected);
   if($('#pmvPreview'))$('#pmvPreview').onclick=()=>payrollMovementsPreview().catch(err=>toast(err.message,'error'));
+  if($('#pmvSalaryPreview'))$('#pmvSalaryPreview').onclick=()=>payrollSalaryPreviewScreen().catch(err=>toast(err.message,'error'));
   $$('[data-pmv-delete]').forEach(b=>b.onclick=()=>payrollMovementDelete(b.dataset.pmvDelete));
 }
 async function payrollMovementForm(competenceId){
@@ -442,6 +443,31 @@ async function payrollMovementsPreview(){
     const items=(e.events||[]).map(ev=>'<tr><td>'+esc(ev.event_code+' — '+ev.event_name)+'</td><td>'+esc(ev.type)+'</td><td>'+esc(ev.amount===null?ev.quantity+' '+ev.unit:money(ev.amount))+'</td></tr>').join('');
     openModal('Lançamentos — '+e.employee_name,'Prévia de eventos, não é demonstrativo líquido.',
       '<p>Salário cadastrado (referência): <b>'+money(e.salary_registered)+'</b></p><div class="table-wrap"><table class="table"><thead><tr><th>Evento</th><th>Tipo</th><th>Valor / quantidade</th></tr></thead><tbody>'+items+'</tbody></table></div><p class="help">'+(e.warnings||[]).map(esc).join(' • ')+'</p>',true);
+  });
+}
+
+// ===== SAGAS Folha Etapa 03: prévia informativa do salário cadastrado =====
+async function payrollSalaryPreviewScreen(){
+  const id=window.sagasPayrollCompetence;
+  if(!id){toast('Selecione uma competência.','error');return;}
+  const d=await api('/api/payroll/salary-preview?competence_id='+encodeURIComponent(id));
+  const items=d.items||[];
+  const columns=['Funcionário','Salário de referência','Proventos informados','Descontos informados','Subtotal aritmético','Ações'];
+  const cells=items.map(e=>'<tr><td><b>'+esc(e.employee_name)+'</b></td><td>'+money(e.salary_registered)+'</td><td>'+money(e.additional_proventos)+'</td><td>'+money(e.informed_discounts)+'</td><td>'+(e.subtotal_informative===null?'Pendente':money(e.subtotal_informative))+'</td><td><button class="btn secondary sm" data-salary-detail="'+esc(e.employee_id)+'">Detalhar</button></td></tr>').join('');
+  openModal('Prévia do salário','Consulta dos cadastros e eventos lançados, sem processamento tributário.',
+    '<p class="help"><b>Não é envelope de pagamento nem salário líquido.</b> Valores integrais são apenas referências; admissão no mês e eventos sem fórmula ficam pendentes.</p>'+
+    '<div class="table-wrap"><table class="table"><thead><tr>'+columns.map(c=>'<th>'+esc(c)+'</th>').join('')+'</tr></thead><tbody>'+(cells||empty(6,'Nenhum funcionário','Não há funcionários ativos nesta competência.'))+'</tbody></table></div>'+
+    '<p class="help">'+(d.warnings||[]).map(esc).join(' • ')+'</p>',true);
+  $$('[data-salary-detail]', $('#modalBody')).forEach(b=>b.onclick=()=>{
+    const e=items.find(x=>x.employee_id===b.dataset.salaryDetail);
+    if(!e)return;
+    const events=(e.events||[]).map(ev=>'<tr><td>'+esc(ev.event_code+' — '+ev.event_name)+'</td><td>'+esc(ev.type)+'</td><td>'+esc(ev.amount===null?String(ev.quantity)+' '+esc(ev.unit):money(ev.amount))+'</td></tr>').join('');
+    openModal('Prévia — '+e.employee_name,'Informações para conferência, sem líquido calculado.',
+      '<p>Salário cadastrado: <b>'+money(e.salary_registered)+'</b></p>'+
+      '<p>Salário-base de referência: <b>'+(e.salary_base_preview===null?'Pendente':money(e.salary_base_preview))+'</b></p>'+
+      '<p>Subtotal aritmético: <b>'+(e.subtotal_informative===null?'Pendente':money(e.subtotal_informative))+'</b> (não é salário líquido)</p>'+
+      '<div class="table-wrap"><table class="table"><thead><tr><th>Evento</th><th>Tipo</th><th>Valor / Referência</th></tr></thead><tbody>'+(events||empty(3,'Sem eventos lançados','O cadastro de salário é apenas referência.'))+'</tbody></table></div>'+
+      '<p class="help">'+(e.warnings||[]).map(esc).join(' • ')+'</p>',true);
   });
 }
 
