@@ -504,7 +504,7 @@ async function renderPayroll(page){
     rows=a.map(x=>`<tr><td><b>${esc(x.name)}</b></td><td>${money(x.salary)}</td><td>${x.active?'<span class="badge green">Ativo</span>':'<span class="badge gray">Inativo</span>'}</td><td>${actions(x)}</td></tr>`).join('');
   }else if(cfg.kind==='events'){
     cols=['Código','Evento','Tipo','Referência','Situação','Ações'];
-    rows=a.map(x=>`<tr><td class="code">${esc(x.code)}</td><td><b>${esc(x.name)}</b></td><td>${esc(payrollTypeName(x.event_type))}</td><td>${esc(payrollUnitName(x.reference_unit))}</td><td>${x.active?'<span class="badge green">Ativo</span>':'<span class="badge gray">Inativo</span>'}</td><td>${actions(x)}</td></tr>`).join('');
+    rows=a.map(x=>`<tr><td class="code">${esc(x.code)}</td><td><b>${esc(x.name)}</b></td><td>${esc(payrollTypeName(x.event_type))}</td><td>${esc(payrollUnitName(x.reference_unit))}</td><td>${x.active?'<span class="badge green">Ativo</span>':'<span class="badge gray">Inativo</span>'}</td><td><button class="btn secondary sm" data-payroll-event-rules="${esc(x.id)}">Parâmetros</button> ${actions(x)}</td></tr>`).join('');
   }else{
     cols=['Descrição','Situação','Ações'];
     rows=a.map(x=>`<tr><td><b>${esc(x.name)}</b></td><td>${x.active?'<span class="badge green">Ativo</span>':'<span class="badge gray">Inativo</span>'}</td><td>${actions(x)}</td></tr>`).join('');
@@ -512,6 +512,55 @@ async function renderPayroll(page){
   tablePage({newLabel:manage?'Novo '+cfg.title:null,onNew:manage?()=>payrollForm(page):null,cols,rows:rows||null,emptyTitle:'Nenhum cadastro encontrado',emptyText:'Cadastre os dados em '+cfg.plural+'.',placeholder:'Pesquisar '+cfg.plural.toLowerCase()+'...'});
   $$('[data-payroll-edit]').forEach(b=>b.onclick=()=>payrollForm(page,a.find(x=>x.id===b.dataset.payrollEdit)));
   $$('[data-payroll-delete]').forEach(b=>b.onclick=()=>payrollDeleteForm(page,a.find(x=>x.id===b.dataset.payrollDelete)));
+  $$('[data-payroll-event-rules]').forEach(b=>b.onclick=()=>payrollEventRulesForm(a.find(x=>x.id===b.dataset.payrollEventRules)).catch(err=>toast(err.message,'error')));
+}
+
+
+ // ===== Folha: parametrização por competência e histórico — nenhuma fórmula é executada =====
+async function payrollEventRulesForm(event){
+  if(!event)return;
+  const today=new Date(),period=String(today.getFullYear())+'-'+String(today.getMonth()+1).padStart(2,'0');
+  const d=await api('/api/payroll/event-rules?event_id='+encodeURIComponent(event.id)+'&competence='+period);
+  const rule=d.applicable||{effective_from:period,priority:0,calculation_code:0,formula_text:'',
+    inss:'PENDENTE',irrf:'PENDENTE',fgts:'PENDENTE'};
+  const field=(name,value,label)=>'<label class="field"><span>'+label+'</span><input name="'+name+'" value="'+esc(value)+'" required></label>';
+  const incidence=(name,value,label)=>{
+    const opts=[['PENDENTE','Pendente'],['SIM','Sim'],['NAO','Não']];
+    return '<label class="field"><span>'+label+'</span><select name="'+name+'">'+opts.map(([v,t])=>'<option value="'+v+'" '+(value===v?'selected':'')+'>'+t+'</option>').join('')+'</select></label>';
+  };
+  const history=(d.versions||[]).map(v=>'<tr><td>'+esc(v.effective_from.slice(5)+'/'+v.effective_from.slice(0,4))+'</td><td>'+esc(v.revision)+'</td><td>'+esc(v.priority)+'</td><td>'+esc(v.calculation_code)+'</td><td>'+esc(v.inss+'/'+v.irrf+'/'+v.fgts)+'</td></tr>').join('');
+  const canEdit=can('payroll.manage')&&!!event.active;
+  const edit=canEdit?
+    '<form id="payrollRuleForm"><div class="grid">'+
+    '<label class="field"><span>Vigente a partir de</span><input name="effective_from" type="month" required value="'+esc(period)+'"></label>'+
+    '<label class="field"><span>Prioridade (0 a 99)</span><input name="priority" type="number" min="0" max="99" step="1" required value="'+esc(rule.priority)+'"></label>'+
+    '<label class="field"><span>Código de cálculo</span><input name="calculation_code" type="number" min="0" max="999" step="1" required value="'+esc(rule.calculation_code)+'"></label>'+
+    incidence('inss',rule.inss,'Incidência de INSS')+incidence('irrf',rule.irrf,'Incidência de IRRF')+incidence('fgts',rule.fgts,'Incidência de FGTS')+
+    '<label class="field full"><span>Fórmula (somente registro, ainda sem execução)</span><textarea name="formula_text" maxlength="1500" rows="3">'+esc(rule.formula_text||'')+'</textarea></label>'+
+    '</div><div class="form-actions"><button type="button" class="btn secondary" data-close>Cancelar</button><button type="submit" class="btn primary">Salvar parâmetros</button></div></form>':
+    '<p class="help">Você possui acesso apenas para consultar os parâmetros.</p>';
+  openModal('Parâmetros — '+event.code+' · '+event.name,
+    'Versões por competência. Não calcula INSS, IRRF, FGTS nem executa fórmulas.',
+    '<p class="help"><b>Importante:</b> Incidências começam como Pendente e só devem ser definidas após conferência das regras aplicáveis.</p>'+
+    edit+'<h4>Histórico de configurações</h4><div class="table-wrap"><table class="table"><thead><tr><th>A partir de</th><th>Revisão</th><th>Prioridade</th><th>Cód. cálculo</th><th>INSS/IRRF/FGTS</th></tr></thead><tbody>'+
+    (history||'<tr><td colspan="5">Nenhuma configuração registrada.</td></tr>')+'</tbody></table></div>',true);
+  if($('[data-close]'))$('[data-close]').onclick=closeModal;
+  const form=$('#payrollRuleForm');
+  if(!form)return;
+  const requestKey=crypto.randomUUID();
+  form.onsubmit=async e=>{
+    e.preventDefault();
+    const b=Object.fromEntries(new FormData(form));
+    b.event_id=event.id;b.request_key=requestKey;
+    b.priority=Number(b.priority);b.calculation_code=Number(b.calculation_code);
+    const submit=form.querySelector('button[type="submit"]');
+    submit.disabled=true;
+    try{
+      await api('/api/payroll/event-rules',{method:'POST',body:b});
+      closeModal();toast('Parâmetros registrados. O cálculo automático continua desativado.');
+      await payrollEventRulesForm(event);
+    }catch(err){toast(err.message,'error');submit.disabled=false;}
+  };
 }
 
 async function payrollForm(page,item=null){
