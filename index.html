@@ -437,7 +437,7 @@ async function payrollMovementsPreview(){
   ).join('');
   openModal('Conferência dos lançamentos', 'Somente movimentos informados. Não calcula folha, impostos nem salário líquido.',
     '<p class="help">Esta prévia NÃO é envelope de pagamento. O salário cadastrado aparece somente como referência no detalhe.</p><div class="table-wrap"><table class="table"><thead><tr>'+columns.map(c=>'<th>'+esc(c)+'</th>').join('')+'</tr></thead><tbody>'+ (rows||empty(5,'Sem movimentos','Não há lançamentos para conferir.'))+'</tbody></table></div>',true);
-  $('[data-preview-employee]', $('#modalBody')).forEach(b=>b.onclick=()=>{
+  $$('[data-preview-employee]', $('#modalBody')).forEach(b=>b.onclick=()=>{
     const e=(data.employees||[]).find(x=>x.employee_id===b.dataset.previewEmployee);
     const items=(e.events||[]).map(ev=>'<tr><td>'+esc(ev.event_code+' — '+ev.event_name)+'</td><td>'+esc(ev.type)+'</td><td>'+esc(ev.amount===null?ev.quantity+' '+ev.unit:money(ev.amount))+'</td></tr>').join('');
     openModal('Lançamentos — '+e.employee_name,'Prévia de eventos, não é demonstrativo líquido.',
