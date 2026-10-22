@@ -380,7 +380,7 @@ async function renderPayrollMovements(){
   const manage=can('payroll.manage')&&current.status==='OPEN';
   const rows=(data.items||[]).map(m=>`<tr><td>${esc(m.employee_name)}</td><td>${esc(m.event_code)} — ${esc(m.event_name)}</td><td>${esc(m.unit==='VALOR'?money(m.value):String(m.value).replace('.',',')+' '+payrollUnitName(m.unit))}</td><td>${dateBR(m.created_at)}</td><td>${manage?`<button class="btn danger sm" data-pmv-delete="${esc(m.id)}">Excluir</button>`:''}</td></tr>`).join('');
   $('#content').innerHTML=`<div class="toolbar"><select id="pmvPeriod" class="search" style="max-width:220px">${periods.map(p=>`<option value="${esc(p.id)}" ${p.id===selected?'selected':''}>${esc(p.competence.slice(5)+'/ '+p.competence.slice(0,4))} ${p.status==='OPEN'?'':'(bloqueada)'}</option>`).join('')}</select>
-    ${manage?'<button id="pmvNew" class="btn primary">+ Novo lançamento</button>':''}<button id="pmvPreview" class="btn secondary">Conferir lançamentos</button><button id="pmvSalaryPreview" class="btn secondary">Prévia do salário</button><button id="pmvFormulaPreview" class="btn secondary">Simular eventos</button><button id="pmvTaxScenario" class="btn secondary">Cenário tributário</button><button id="pmvLaborPreview" class="btn secondary">Conferir proporcionalidade</button><button id="pmvConference" class="btn secondary">Demonstrativo preliminar</button><button id="pmvEnvelope11" class="btn secondary">Envelopes preliminares</button><button id="pmvComposition14" class="btn secondary">Conferência da folha</button><button id="pmvIncidences15" class="btn secondary">Incidências INSS/IRRF/FGTS</button><button id="pmvTaxes16" class="btn secondary">Simulação de tributos</button><button id="pmvEnvelope17" class="btn secondary">Consolidar envelopes</button><button id="pmvValidate18" class="btn secondary">Validar envelopes</button><button id="pmvRemediation19" class="btn secondary">Corrigir pendências</button><button id="pmvMemory20" class="btn secondary">Memória de cálculo</button><button id="pmvBalance21" class="btn secondary">Projeção aritmética</button><button id="pmvAbsence22" class="btn secondary">Conferência faltas/DSR</button><button id="pmvBases23" class="btn secondary">Recompor bases (prévia)</button></div>
+    ${manage?'<button id="pmvNew" class="btn primary">+ Novo lançamento</button>':''}<button id="pmvPreview" class="btn secondary">Conferir lançamentos</button><button id="pmvSalaryPreview" class="btn secondary">Prévia do salário</button><button id="pmvFormulaPreview" class="btn secondary">Simular eventos</button><button id="pmvTaxScenario" class="btn secondary">Cenário tributário</button><button id="pmvLaborPreview" class="btn secondary">Conferir proporcionalidade</button><button id="pmvConference" class="btn secondary">Demonstrativo preliminar</button><button id="pmvEnvelope11" class="btn secondary">Envelopes preliminares</button><button id="pmvComposition14" class="btn secondary">Conferência da folha</button><button id="pmvIncidences15" class="btn secondary">Incidências INSS/IRRF/FGTS</button><button id="pmvTaxes16" class="btn secondary">Simulação de tributos</button><button id="pmvEnvelope17" class="btn secondary">Consolidar envelopes</button><button id="pmvValidate18" class="btn secondary">Validar envelopes</button><button id="pmvRemediation19" class="btn secondary">Corrigir pendências</button><button id="pmvMemory20" class="btn secondary">Memória de cálculo</button><button id="pmvBalance21" class="btn secondary">Projeção aritmética</button><button id="pmvAbsence22" class="btn secondary">Conferência faltas/DSR</button><button id="pmvBases23" class="btn secondary">Recompor bases (prévia)</button><button id="pmvCharges24" class="btn secondary">Tributos recompostos</button></div>
     <p class="muted" style="font-size:12px;margin-bottom:12px">Lançamentos registrados para processamento futuro. Esta tela não calcula salários, impostos ou valores líquidos.</p>
     <div class="table-wrap"><table class="table"><thead><tr><th>Funcionário</th><th>Evento</th><th>Valor / Referência</th><th>Registrado</th><th>Ação</th></tr></thead><tbody>${rows||empty(5,'Nenhum lançamento','Use Novo lançamento para começar.')}</tbody></table></div>`;
   $('#pmvPeriod').onchange=e=>{window.sagasPayrollCompetence=e.target.value;renderPayrollMovements().catch(err=>toast(err.message,'error'))};
@@ -402,6 +402,7 @@ async function renderPayrollMovements(){
   if($('#pmvBalance21'))$('#pmvBalance21').onclick=()=>payrollBalanceScreen21().catch(err=>toast(err.message,'error'));
   if($('#pmvAbsence22'))$('#pmvAbsence22').onclick=()=>payrollAbsenceScreen22().catch(err=>toast(err.message,'error'));
   if($('#pmvBases23'))$('#pmvBases23').onclick=()=>payrollTaxBasesScreen23().catch(err=>toast(err.message,'error'));
+  if($('#pmvCharges24'))$('#pmvCharges24').onclick=()=>payrollChargesScreen24().catch(err=>toast(err.message,'error'));
   $$('[data-pmv-delete]').forEach(b=>b.onclick=()=>payrollMovementDelete(b.dataset.pmvDelete));
 }
 async function payrollMovementForm(competenceId){
@@ -851,6 +852,87 @@ function payrollDsrReviewForm13(employee,week,paymentDate){
       await payrollEnvelopePreviewResult11(paymentDate);
     }catch(err){toast(err.message,'error');btn.disabled=false;}
   };
+}
+
+// ===== SAGAS Folha Etapa 24: tributos ilustrativos das bases recompostas =====
+async function payrollChargesScreen24(){
+  if(!window.sagasPayrollCompetence){toast('Selecione uma competência.','error');return;}
+  openModal('Tributos recompostos — prévia','Simulação INSS, IRRF e FGTS sobre bases hipotéticas da Etapa 23.',
+    '<form id="chargesForm24"><label class="field"><span>Data de pagamento (IRRF)</span>'+
+    '<input type="date" name="payment_date" min="2020-01-01" max="2026-12-31" required></label>'+
+    '<p class="help">Sem salário líquido, pagamento, tributos devidos, contabilização ou fechamento. Verifique rubricas, incidências e normas aplicáveis antes de utilizar valores reais.</p>'+
+    '<div class="form-actions"><button class="btn secondary" type="button" id="charges24Cancel">Cancelar</button>'+
+    '<button class="btn primary" type="submit">Simular tributos</button></div></form>');
+  $('#charges24Cancel').onclick=closeModal;
+  const form=$('#chargesForm24');
+  form.onsubmit=async ev=>{
+    ev.preventDefault();
+    const button=form.querySelector('[type=submit]');button.disabled=true;
+    try{await payrollChargesResult24(form.elements.payment_date.value);}
+    catch(err){
+      toast(err.status===404?'Publique o Worker v62 no Cloudflare para habilitar esta simulação.':err.message,'error');
+      button.disabled=false;
+    }
+  };
+}
+async function payrollChargesResult24(paymentDate){
+  const cid=window.sagasPayrollCompetence;
+  if(!cid){toast('Selecione uma competência.','error');return;}
+  const d=await api('/api/payroll/recomposed-tax-simulation?competence_id='+encodeURIComponent(cid)+
+    '&payment_date='+encodeURIComponent(paymentDate));
+  const items=d.items||[];
+  const val=n=>typeof n==='number'&&Number.isFinite(n)?money(n):'Pendente';
+  const rows=items.map(e=>{
+    const t=e.recomposed_tax_simulation||{},r=t.estimates||{};
+    return '<tr><td class="code">'+esc(e.employee_code||'—')+'</td>'+
+      '<td><b>'+esc(e.employee_name)+'</b></td>'+
+      '<td>'+val(r.inss_estimate)+'</td><td>'+val(r.irrf_estimate)+'</td>'+
+      '<td>'+val(r.fgts_employer_estimate)+'</td>'+
+      '<td>'+esc((t.issues||[]).length)+'</td><td>'+esc(t.status||'PENDENTE')+'</td>'+
+      '<td><button class="btn secondary sm" type="button" data-charges24-id="'+esc(e.employee_id)+'">Detalhar</button></td></tr>';
+  }).join('');
+  openModal('Tributos recompostos — '+String(d.competence?.competence||''),
+    'Somente simulação indicativa, sem retenção ou depósito.',
+    '<p class="help">Funcionários: '+esc(d.employee_count||0)+' · Cenários: '+
+    esc(d.scenario_employee_count||0)+' · Pendentes: '+esc(d.pending_employee_count||0)+'</p>'+
+    '<div class="table-wrap"><table class="table"><thead><tr><th>ID</th><th>Funcionário</th>'+
+    '<th>INSS*</th><th>IRRF*</th><th>FGTS patronal*</th><th>Pendências</th>'+
+    '<th>Situação</th><th>Ação</th></tr></thead><tbody>'+
+    (rows||empty(8,'Sem funcionários','Nenhum funcionário na competência.'))+'</tbody></table></div>'+
+    '<p class="help">*Valores hipotéticos calculados sobre as bases da Etapa 23. O FGTS não é desconto do empregado. Não há tributo devido, salário líquido ou contabilização.</p>',true);
+  $$('[data-charges24-id]',$('#modalBody')).forEach(button=>button.onclick=()=>{
+    const employee=items.find(x=>x.employee_id===button.dataset.charges24Id);
+    if(employee)payrollChargesEmployee24(employee,paymentDate);
+  });
+}
+function payrollChargesEmployee24(e,paymentDate){
+  const t=e.recomposed_tax_simulation||{},b=t.bases_recomposed||{},v=t.estimates||{};
+  const val=n=>typeof n==='number'&&Number.isFinite(n)?money(n):'Pendente';
+  const components=[
+    ['Base recomposta INSS',b.inss],['INSS estimado (não descontado)',v.inss_estimate],
+    ['Base bruta recomposta IRRF',b.irrf],['Dedução IRRF usada (cenário)',v.irrf_deduction],
+    ['Base IRRF após dedução (cenário)',v.irrf_base_estimate],
+    ['IRRF progressivo antes da redução',v.irrf_before_reduction],
+    ['Redução IRRF estimada',v.irrf_reduction],['IRRF estimado (não retido)',v.irrf_estimate],
+    ['Soma hipotética INSS + IRRF',v.sum_employee_tax_simulations],
+    ['Base recomposta FGTS',b.fgts],['FGTS patronal estimado (não descontar)',v.fgts_employer_estimate]
+  ].map(([label,n])=>'<tr><td>'+esc(label)+'</td><td>'+val(n)+'</td></tr>').join('');
+  const issues=(t.issues||[]).map(x=>'<p><b>'+esc(x.code)+':</b> '+esc(x.detail)+'</p>').join('');
+  const notes=(t.warnings||[]).map(x=>'<p>• '+esc(x)+'</p>').join('');
+  openModal('Tributos recompostos — '+e.employee_name,
+    'ID '+(e.employee_code||'—')+' · apenas conferência matemática.',
+    '<p><b>Situação:</b> '+esc(t.status||'PENDENTE')+
+    ' · <b>Dependentes:</b> '+esc(t.dependents_considered??'Pendente')+'</p>'+
+    '<div class="table-wrap"><table class="table"><thead><tr><th>Componente</th><th>Valor</th></tr></thead><tbody>'+
+    components+'</tbody></table></div>'+
+    '<p class="help"><b>Tabela INSS:</b> '+esc(v.inss_table_from||'Pendente')+
+    ' · <b>Tabela IRRF:</b> '+esc(v.irrf_table_from||'Pendente')+
+    ' · <b>Dedução IRRF:</b> '+esc(v.irrf_deduction_type||'Pendente')+'</p>'+
+    '<h4>Impedimentos</h4><div class="help">'+(issues||'Sem impedimentos técnicos nesta hipótese. Ainda requer conferência legal.')+'</div>'+
+    '<h4>Ressalvas</h4><div class="help">'+notes+'</div>'+
+    '<p class="help"><b>Estes valores não são salário líquido, retenção ou recolhimento homologado. Nenhuma alteração financeira/contábil foi realizada.</b></p>'+
+    '<div class="form-actions"><button class="btn secondary" type="button" id="charges24Back">Voltar</button></div>',true);
+  $('#charges24Back').onclick=()=>payrollChargesResult24(paymentDate).catch(err=>toast(err.message,'error'));
 }
 
 // ===== SAGAS Folha Etapa 23: recomposicao indicativa das bases =====
