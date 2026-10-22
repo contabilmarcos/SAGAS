@@ -707,7 +707,7 @@ async function payrollEnvelopePreviewResult11(paymentDate){
     '<th>Dias distintos</th><th>Salário de referência</th><th>Situação</th><th>Ação</th></tr></thead><tbody>'+
     (rows||empty(6,'Sem funcionários','Nenhum funcionário nesta competência.'))+'</tbody></table></div>'+
     '<p class="help">Tratamentos são classificações para conferência. O sistema não desconta faltas, não calcula DSR, impostos ou líquido nem registra pagamento e contabilidade.</p>',true);
-  $('[data-env11-emp]',$('#modalBody')).forEach(b=>b.onclick=()=>{
+  $$('[data-env11-emp]',$('#modalBody')).forEach(b=>b.onclick=()=>{
     const employee=items.find(x=>x.employee_id===b.dataset.env11Emp);
     if(employee)payrollEnvelopeEmployee11(employee,paymentDate);
   });
@@ -735,7 +735,7 @@ function payrollEnvelopeEmployee11(e,paymentDate){
     '<h4>Pendências</h4><div class="help">'+(blockers||'Sem pendência aritmética; cálculo final ainda não habilitado.')+'</div>'+
     '<div class="form-actions"><button type="button" class="btn secondary" id="env11Back">Voltar</button></div>',true);
   $('#env11Back').onclick=()=>payrollEnvelopePreviewResult11(paymentDate).catch(err=>toast(err.message,'error'));
-  $('[data-env11-occ]',$('#modalBody')).forEach(b=>b.onclick=()=>{
+  $$('[data-env11-occ]',$('#modalBody')).forEach(b=>b.onclick=()=>{
     const o=(e.occurrences||[]).find(x=>x.id===b.dataset.env11Occ);
     if(o)payrollOccurrenceReviewForm11(e,o,paymentDate);
   });
