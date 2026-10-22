@@ -694,11 +694,14 @@ async function payrollEnvelopePreviewResult11(paymentDate){
   const query='?competence_id='+encodeURIComponent(id)+'&payment_date='+encodeURIComponent(paymentDate);
   let d;
   try{
-    d=await api('/api/payroll/remuneration-preview'+query);
+    d=await api('/api/payroll/dsr-preview'+query);
   }catch(err){
     if(err.status!==404)throw err;
-    // Compatibilidade temporária com Worker v49, até a publicação do v50.
-    d=await api('/api/payroll/envelope-preview'+query);
+    try{d=await api('/api/payroll/remuneration-preview'+query);}
+    catch(oldErr){
+      if(oldErr.status!==404)throw oldErr;
+      d=await api('/api/payroll/envelope-preview'+query);
+    }
   }
   const items=d.items||[];
   const val=n=>n===null||n===undefined?'Pendente':money(n);
@@ -706,6 +709,7 @@ async function payrollEnvelopePreviewResult11(paymentDate){
     '<td>'+esc(e.occurrences_count||0)+'</td><td>'+esc(e.distinct_occurrence_days||0)+'</td>'+
     '<td>'+val(e.base_reference)+'</td>'+
     '<td>'+(e.remuneration_preview?val(e.remuneration_preview.absence_discount_estimate):'—')+'</td>'+
+    '<td>'+(e.dsr_review?val(e.dsr_review.estimated_discount):'—')+'</td>'+
     '<td>'+esc(e.status)+'</td>'+
     '<td><button class="btn secondary sm" type="button" data-env11-emp="'+esc(e.employee_id)+'">Detalhar</button></td></tr>').join('');
   openModal('Envelopes preliminares — '+String(d.competence?.competence||''),
@@ -713,11 +717,13 @@ async function payrollEnvelopePreviewResult11(paymentDate){
     '<p class="help">Ocorrências: '+esc(d.occurrence_count||0)+' · Sem tratamento: '+esc(d.pending_occurrence_count||0)+
     ' · Funcionários com sobreposição: '+esc(d.overlapping_employee_count||0)+'</p>'+
     '<div class="table-wrap"><table class="table"><thead><tr><th>Funcionário</th><th>Ocorrências</th>'+
-    '<th>Dias distintos</th><th>Salário de referência</th><th>Faltas (prévia)</th><th>Situação</th><th>Ação</th></tr></thead><tbody>'+
-    (rows||empty(7,'Sem funcionários','Nenhum funcionário nesta competência.'))+'</tbody></table></div>'+
-    '<p class="help">'+(d.kind==='REMUNERACAO_PRELIMINAR_ETAPA_12'?
-    'Etapa 12: desconto indicativo das faltas classificadas (mensalista, divisor 30). Não inclui DSR, tributos, líquido ou folha homologada.':
-    'Worker v49: publique o v50 para ver a estimativa de faltas. Nenhum desconto ou pagamento será realizado.')+'</p>',true);
+    '<th>Dias distintos</th><th>Salário de referência</th><th>Faltas (prévia)</th><th>DSR (prévia)</th><th>Situação</th><th>Ação</th></tr></thead><tbody>'+
+    (rows||empty(8,'Sem funcionários','Nenhum funcionário nesta competência.'))+'</tbody></table></div>'+
+    '<p class="help">'+(d.kind==='REMUNERACAO_DSR_CONFERENCIA_ETAPA_13'?
+    'Etapa 13: DSR por semana com conferência registrada. Feriados, escala e convenção coletiva continuam pendentes; não há desconto efetivo, líquido ou pagamento.':
+    d.kind==='REMUNERACAO_PRELIMINAR_ETAPA_12'?
+    'Worker v50: publique o v51 para revisar DSR por semana. A prévia atual não calcula o DSR.':
+    'Worker antigo: publique o v51 para conferir DSR e faltas. Nenhum pagamento foi realizado.')+'</p>',true);
   $$('[data-env11-emp]',$('#modalBody')).forEach(b=>b.onclick=()=>{
     const employee=items.find(x=>x.employee_id===b.dataset.env11Emp);
     if(employee)payrollEnvelopeEmployee11(employee,paymentDate);
@@ -739,6 +745,19 @@ function payrollEnvelopeEmployee11(e,paymentDate){
   const projectionRows=(projection?.breakdown||[]).map(x=>'<tr><td>'+esc(x.kind)+'</td><td>'+
     esc(x.treatment)+'</td><td>'+esc(x.days)+'</td><td>'+esc(x.company_first15_days??'—')+
     '</td><td>'+esc(x.benefit_after15_days??'—')+'</td></tr>').join('');
+  const dsr=e.dsr_review||null;
+  const dsrRows=(dsr?.weeks||[]).map(w=>'<tr><td>'+esc(w.week_start)+'</td><td>'+
+    esc(w.days_in_week)+'</td><td>'+esc(w.rest_date||'Não informado')+'</td><td>'+
+    esc(({PENDENTE:'Pendente',MANTER_REMUNERACAO:'Manter remuneração',
+      DESCONTO_A_CONFERIR:'Desconto a conferir'})[w.treatment]||w.treatment)+'</td>'+
+    '<td>'+val(w.estimated_discount)+'</td><td>'+
+    (can('payroll.manage')?'<button class="btn secondary sm" type="button" data-dsr13-week="'+esc(w.week_start)+'">Revisar</button>':'Somente leitura')+
+    '</td></tr>').join('');
+  const dsrWarnings=(dsr?.issues||[]).concat(dsr?.warnings||[]).map(x=>'<p>• '+esc(x)+'</p>').join('');
+  const leaveRows=(e.leave_review?.items||[]).map(x=>'<tr><td>'+esc(x.start_date)+
+    ' a '+esc(x.end_date)+'</td><td>'+esc(x.days_first15_in_competence??'—')+
+    '</td><td>'+esc(x.days_after15_in_competence??'—')+'</td><td>'+
+    (x.potential_related_return?'Possível retorno em até 60 dias — conferir':'Conferir espécie')+'</td></tr>').join('');
   openModal('Envelope preliminar — '+e.employee_name,'Conferência de ocorrências e eventos da competência.',
     '<p><b>Salário histórico de referência:</b> '+val(e.base_reference)+' · <b>Dias distintos de ocorrência:</b> '+
       esc(e.distinct_occurrence_days||0)+'</p>'+
@@ -755,6 +774,22 @@ function payrollEnvelopeEmployee11(e,paymentDate){
       '<div class="help">'+(projectionIssues||'Sem pendências adicionais de ocorrências.')+
       (projectionWarnings?'<h4>Observações</h4>'+projectionWarnings:'')+'</div>':
       '<p class="help">Publique o Worker v50 para habilitar a prévia remuneratória.</p>')+
+    '<h4>DSR por semana — Etapa 13</h4>'+
+    (dsr?'<p><b>DSR indicativo:</b> '+val(dsr.estimated_discount)+
+      ' · <b>Semanas afetadas:</b> '+esc(dsr.weeks_count)+
+      ' · <b>Situação:</b> '+esc(dsr.status)+'</p>'+
+      '<p class="help">Cada semana exige conferência do repouso efetivo, escala, justificativa e norma coletiva. Não são consideradas repercussões de feriados.</p>'+
+      '<div class="table-wrap"><table class="table"><thead><tr><th>Semana (segunda)</th>'+
+      '<th>Faltas</th><th>Data repouso</th><th>Decisão</th><th>Valor indicativo</th><th>Ação</th></tr></thead><tbody>'+
+      (dsrRows||empty(6,'Sem semanas a conferir','Registre e classifique as faltas quando existirem.'))+'</tbody></table></div>'+
+      '<div class="help">'+dsrWarnings+'</div>':
+      '<p class="help">Para conferir o DSR, publique o Worker v51 no Cloudflare.</p>')+
+    (e.leave_review?.items?.length?
+      '<h4>Afastamentos — conferência previdenciária</h4>'+
+      '<div class="table-wrap"><table class="table"><thead><tr><th>Período</th>'+
+      '<th>Dias 1–15*</th><th>Dias após 15*</th><th>Avaliação</th></tr></thead><tbody>'+
+      leaveRows+'</tbody></table></div>'+
+      '<p class="help">*Contagem cronológica, não confirmação de benefício ou obrigação de pagamento. Verificar reingresso e mesma causa.</p>':'')+
     '<h4>Ocorrências e tratamento</h4><div class="table-wrap"><table class="table"><thead><tr>'+
     '<th>Tipo</th><th>Período</th><th>Dias no mês</th><th>Tratamento</th><th>Ação</th></tr></thead><tbody>'+
     (occurrences||empty(5,'Sem ocorrências','Nenhuma ocorrência registrada.'))+'</tbody></table></div>'+
@@ -768,6 +803,44 @@ function payrollEnvelopeEmployee11(e,paymentDate){
     const o=(e.occurrences||[]).find(x=>x.id===b.dataset.env11Occ);
     if(o)payrollOccurrenceReviewForm11(e,o,paymentDate);
   });
+  $$('[data-dsr13-week]',$('#modalBody')).forEach(b=>{
+    b.onclick=()=>{
+      const w=(e.dsr_review?.weeks||[]).find(x=>x.week_start===b.dataset.dsr13Week);
+      if(w)payrollDsrReviewForm13(e,w,paymentDate);
+    };
+  });
+}
+function payrollDsrReviewForm13(employee,week,paymentDate){
+  if(!can('payroll.manage')){toast('Sem permissão para revisar DSR.','error');return;}
+  const options=[['PENDENTE','Pendente'],['MANTER_REMUNERACAO','Manter remuneração'],
+    ['DESCONTO_A_CONFERIR','Desconto a conferir']].map(([v,label])=>
+    '<option value="'+v+'" '+(week.treatment===v?'selected':'')+'>'+label+'</option>').join('');
+  openModal('Revisar DSR — '+employee.employee_name,
+    'Semana de '+week.week_start+' · '+week.days_in_week+' ausência(s) registrada(s).',
+    '<form id="payrollDsrForm13"><div class="grid">'+
+    '<label class="field"><span>Tratamento do DSR</span><select name="treatment" required>'+options+'</select></label>'+
+    '<label class="field"><span>Data efetiva do repouso</span>'+
+    '<input type="date" name="rest_date" value="'+esc(week.rest_date||'')+'"></label>'+
+    '<label class="field full"><span>Justificativa da conferência</span>'+
+    '<textarea name="notes" rows="3" maxlength="500">'+esc(week.notes||'')+'</textarea></label></div>'+
+    '<p class="help">Para estimar desconto, informe a data do repouso e uma justificativa. O repouso não é cancelado; apenas sua remuneração pode ser afetada, conforme a legislação e as regras aplicáveis.</p>'+
+    '<div class="form-actions"><button type="button" class="btn secondary" id="dsr13Return">Voltar</button>'+
+    '<button type="submit" class="btn primary">Salvar conferência</button></div></form>');
+  $('#dsr13Return').onclick=()=>payrollEnvelopePreviewResult11(paymentDate).catch(err=>toast(err.message,'error'));
+  const form=$('#payrollDsrForm13');
+  form.onsubmit=async event=>{
+    event.preventDefault();
+    const btn=form.querySelector('[type=submit]');btn.disabled=true;
+    const data=Object.fromEntries(new FormData(form));
+    try{
+      await api('/api/payroll/dsr-review',{method:'PUT',body:{
+        competence_id:window.sagasPayrollCompetence,employee_id:employee.employee_id,
+        week_start:week.week_start,treatment:data.treatment,rest_date:data.rest_date,
+        notes:data.notes}});
+      toast('Conferência de DSR registrada.');
+      await payrollEnvelopePreviewResult11(paymentDate);
+    }catch(err){toast(err.message,'error');btn.disabled=false;}
+  };
 }
 function payrollOccurrenceReviewForm11(employee,o,paymentDate){
   if(!can('payroll.manage')){toast('Sem permissão para revisar ocorrências.','error');return;}
