@@ -380,7 +380,7 @@ async function renderPayrollMovements(){
   const manage=can('payroll.manage')&&current.status==='OPEN';
   const rows=(data.items||[]).map(m=>`<tr><td>${esc(m.employee_name)}</td><td>${esc(m.event_code)} — ${esc(m.event_name)}</td><td>${esc(m.unit==='VALOR'?money(m.value):String(m.value).replace('.',',')+' '+payrollUnitName(m.unit))}</td><td>${dateBR(m.created_at)}</td><td>${manage?`<button class="btn danger sm" data-pmv-delete="${esc(m.id)}">Excluir</button>`:''}</td></tr>`).join('');
   $('#content').innerHTML=`<div class="toolbar"><select id="pmvPeriod" class="search" style="max-width:220px">${periods.map(p=>`<option value="${esc(p.id)}" ${p.id===selected?'selected':''}>${esc(p.competence.slice(5)+'/ '+p.competence.slice(0,4))} ${p.status==='OPEN'?'':'(bloqueada)'}</option>`).join('')}</select>
-    ${manage?'<button id="pmvNew" class="btn primary">+ Novo lançamento</button>':''}<button id="pmvPreview" class="btn secondary">Conferir lançamentos</button><button id="pmvSalaryPreview" class="btn secondary">Prévia do salário</button><button id="pmvFormulaPreview" class="btn secondary">Simular eventos</button><button id="pmvTaxScenario" class="btn secondary">Cenário tributário</button><button id="pmvLaborPreview" class="btn secondary">Conferir proporcionalidade</button><button id="pmvConference" class="btn secondary">Demonstrativo preliminar</button><button id="pmvEnvelope11" class="btn secondary">Envelopes preliminares</button><button id="pmvComposition14" class="btn secondary">Conferência da folha</button><button id="pmvIncidences15" class="btn secondary">Incidências INSS/IRRF/FGTS</button></div>
+    ${manage?'<button id="pmvNew" class="btn primary">+ Novo lançamento</button>':''}<button id="pmvPreview" class="btn secondary">Conferir lançamentos</button><button id="pmvSalaryPreview" class="btn secondary">Prévia do salário</button><button id="pmvFormulaPreview" class="btn secondary">Simular eventos</button><button id="pmvTaxScenario" class="btn secondary">Cenário tributário</button><button id="pmvLaborPreview" class="btn secondary">Conferir proporcionalidade</button><button id="pmvConference" class="btn secondary">Demonstrativo preliminar</button><button id="pmvEnvelope11" class="btn secondary">Envelopes preliminares</button><button id="pmvComposition14" class="btn secondary">Conferência da folha</button><button id="pmvIncidences15" class="btn secondary">Incidências INSS/IRRF/FGTS</button><button id="pmvTaxes16" class="btn secondary">Simulação de tributos</button></div>
     <p class="muted" style="font-size:12px;margin-bottom:12px">Lançamentos registrados para processamento futuro. Esta tela não calcula salários, impostos ou valores líquidos.</p>
     <div class="table-wrap"><table class="table"><thead><tr><th>Funcionário</th><th>Evento</th><th>Valor / Referência</th><th>Registrado</th><th>Ação</th></tr></thead><tbody>${rows||empty(5,'Nenhum lançamento','Use Novo lançamento para começar.')}</tbody></table></div>`;
   $('#pmvPeriod').onchange=e=>{window.sagasPayrollCompetence=e.target.value;renderPayrollMovements().catch(err=>toast(err.message,'error'))};
@@ -394,6 +394,7 @@ async function renderPayrollMovements(){
   if($('#pmvEnvelope11'))$('#pmvEnvelope11').onclick=()=>payrollEnvelopePreviewScreen11().catch(err=>toast(err.message,'error'));
   if($('#pmvComposition14'))$('#pmvComposition14').onclick=()=>payrollCompositionScreen14().catch(err=>toast(err.message,'error'));
   if($('#pmvIncidences15'))$('#pmvIncidences15').onclick=()=>payrollIncidenceScreen15().catch(err=>toast(err.message,'error'));
+  if($('#pmvTaxes16'))$('#pmvTaxes16').onclick=()=>payrollTaxesScreen16().catch(err=>toast(err.message,'error'));
   $$('[data-pmv-delete]').forEach(b=>b.onclick=()=>payrollMovementDelete(b.dataset.pmvDelete));
 }
 async function payrollMovementForm(competenceId){
@@ -843,6 +844,83 @@ function payrollDsrReviewForm13(employee,week,paymentDate){
       await payrollEnvelopePreviewResult11(paymentDate);
     }catch(err){toast(err.message,'error');btn.disabled=false;}
   };
+}
+
+// ===== SAGAS Folha Etapa 16: somente simulação monetária tributária =====
+async function payrollTaxesScreen16(){
+  if(!window.sagasPayrollCompetence){toast('Selecione uma competência.','error');return;}
+  openModal('Simulação INSS / IRRF / FGTS','Etapa 16 — consulta indicativa das tabelas de 2020 a 2026.',
+    '<form id="taxesForm16"><label class="field"><span>Data efetiva de pagamento (IRRF)</span>'+
+    '<input type="date" name="payment_date" min="2020-01-01" max="2026-12-31" required></label>'+
+    '<p class="help">Somente cenários de conferência. A incidência de cada rubrica, férias, afastamentos, vínculos e convenções exigem validação antes do fechamento.</p>'+
+    '<div class="form-actions"><button type="button" class="btn secondary" id="taxesCancel16">Cancelar</button>'+
+    '<button type="submit" class="btn primary">Simular</button></div></form>');
+  $('#taxesCancel16').onclick=closeModal;
+  const form=$('#taxesForm16');
+  form.onsubmit=async ev=>{
+    ev.preventDefault();
+    const btn=form.querySelector('[type=submit]');btn.disabled=true;
+    try{await payrollTaxesResult16(form.elements.payment_date.value);}
+    catch(err){toast(err.status===404?'Publique o Worker v54 no Cloudflare para habilitar esta simulação.':err.message,'error');btn.disabled=false;}
+  };
+}
+async function payrollTaxesResult16(paymentDate){
+  const id=window.sagasPayrollCompetence;
+  if(!id){toast('Selecione uma competência.','error');return;}
+  const d=await api('/api/payroll/tax-simulation?competence_id='+encodeURIComponent(id)+
+    '&payment_date='+encodeURIComponent(paymentDate));
+  const items=d.items||[];
+  const val=n=>typeof n==='number'&&Number.isFinite(n)?money(n):'Pendente';
+  const rows=items.map(e=>{
+    const t=e.tax_simulation||{},v=t.estimated_values||{};
+    return '<tr><td><b>'+esc(e.employee_name)+'</b></td>'+
+      '<td>'+val(v.inss_estimate)+'</td><td>'+val(v.irrf_estimate)+'</td>'+
+      '<td>'+val(v.fgts_estimate)+'</td><td>'+esc(t.status||'BLOQUEADO')+'</td>'+
+      '<td><button type="button" class="btn secondary sm" data-tax16-id="'+esc(e.employee_id)+'">Detalhar</button></td></tr>';
+  }).join('');
+  openModal('Simulação tributária — '+String(d.competence?.competence||''),
+    'Valores ilustrativos por funcionário. FGTS não é desconto do empregado.',
+    '<p class="help">Funcionários: '+esc(d.employee_count||0)+' · Com cenário: '+
+    esc(d.simulated_employee_count||0)+' · Pendentes: '+esc(d.blocked_employee_count||0)+'</p>'+
+    '<div class="table-wrap"><table class="table"><thead><tr><th>Funcionário</th>'+
+    '<th>INSS (prévia)</th><th>IRRF (prévia)</th><th>FGTS (prévia)</th>'+
+    '<th>Situação</th><th>Ação</th></tr></thead><tbody>'+
+    (rows||empty(6,'Sem funcionários','Nenhum funcionário disponível.'))+
+    '</tbody></table></div>'+
+    '<p class="help">Sem cálculo homologado de salário líquido, recolhimento, lançamento contábil ou pagamento. Bases potencialmente incompletas são bloqueadas.</p>',true);
+  $$('[data-tax16-id]',$('#modalBody')).forEach(b=>b.onclick=()=>{
+    const e=items.find(x=>x.employee_id===b.dataset.tax16Id);
+    if(e)payrollTaxesEmployee16(e,paymentDate);
+  });
+}
+function payrollTaxesEmployee16(e,paymentDate){
+  const t=e.tax_simulation||{},v=t.estimated_values||{},b=t.potential_bases||{};
+  const val=n=>typeof n==='number'&&Number.isFinite(n)?money(n):'Pendente';
+  const rows=[
+    ['Base INSS (indicativa)',b.inss],['INSS calculado (prévia)',v.inss_estimate],
+    ['Base IRRF bruta (indicativa)',b.irrf],['Base IRRF após dedução (prévia)',v.irrf_base_estimate],
+    ['IRRF antes da redução (prévia)',v.irrf_before_reduction],
+    ['Redução de IRRF (prévia)',v.irrf_reduction],
+    ['IRRF após redução (prévia)',v.irrf_estimate],
+    ['Base FGTS (indicativa)',b.fgts],['FGTS empresarial estimado (não descontar)',v.fgts_estimate]
+  ].map(([title,value])=>'<tr><td>'+esc(title)+'</td><td>'+val(value)+'</td></tr>').join('');
+  const issues=(t.issues||[]).map(x=>'<p>• '+esc(x)+'</p>').join('');
+  const warnings=(t.warnings||[]).map(x=>'<p>• '+esc(x)+'</p>').join('');
+  openModal('Simulação tributária — '+e.employee_name,
+    'Conferência dos valores e da origem das tabelas, sem efeito na folha.',
+    '<p><b>Status:</b> '+esc(t.status||'BLOQUEADO')+
+    ' · <b>Dependentes usados:</b> '+esc(t.dependents_considered??'Pendente')+'</p>'+
+    '<p class="help">INSS pela competência; IRRF conforme data do pagamento. FGTS usa 8% gerais apenas como referência.</p>'+
+    '<div class="table-wrap"><table class="table"><thead><tr><th>Componente</th><th>Valor</th></tr></thead><tbody>'+
+    rows+'</tbody></table></div>'+
+    '<p class="help">Tabela INSS: '+esc(v.inss_table_from||'Indisponível')+
+    ' · Tabela IRRF: '+esc(v.irrf_table_from||'Indisponível')+
+    ' · Dedução IRRF: '+esc(v.irrf_deduction_type||'Indisponível')+'</p>'+
+    '<h4>Impedimentos</h4><div class="help">'+(issues||'Sem impedimentos técnicos para o cenário; ainda sujeito à validação legal.')+'</div>'+
+    '<h4>Conferências necessárias</h4><div class="help">'+warnings+'</div>'+
+    '<p class="help"><b>Este demonstrativo não autoriza pagamento, fechamento, recolhimentos ou contabilização.</b></p>'+
+    '<div class="form-actions"><button class="btn secondary" type="button" id="tax16Back">Voltar</button></div>',true);
+  $('#tax16Back').onclick=()=>payrollTaxesResult16(paymentDate).catch(err=>toast(err.message,'error'));
 }
 
 // ===== SAGAS Folha Etapa 15: incidências por evento e bases ilustrativas =====
