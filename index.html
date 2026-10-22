@@ -380,7 +380,7 @@ async function renderPayrollMovements(){
   const manage=can('payroll.manage')&&current.status==='OPEN';
   const rows=(data.items||[]).map(m=>`<tr><td>${esc(m.employee_name)}</td><td>${esc(m.event_code)} — ${esc(m.event_name)}</td><td>${esc(m.unit==='VALOR'?money(m.value):String(m.value).replace('.',',')+' '+payrollUnitName(m.unit))}</td><td>${dateBR(m.created_at)}</td><td>${manage?`<button class="btn danger sm" data-pmv-delete="${esc(m.id)}">Excluir</button>`:''}</td></tr>`).join('');
   $('#content').innerHTML=`<div class="toolbar"><select id="pmvPeriod" class="search" style="max-width:220px">${periods.map(p=>`<option value="${esc(p.id)}" ${p.id===selected?'selected':''}>${esc(p.competence.slice(5)+'/ '+p.competence.slice(0,4))} ${p.status==='OPEN'?'':'(bloqueada)'}</option>`).join('')}</select>
-    ${manage?'<button id="pmvNew" class="btn primary">+ Novo lançamento</button>':''}<button id="pmvPreview" class="btn secondary">Conferir lançamentos</button><button id="pmvSalaryPreview" class="btn secondary">Prévia do salário</button><button id="pmvFormulaPreview" class="btn secondary">Simular eventos</button><button id="pmvTaxScenario" class="btn secondary">Cenário tributário</button><button id="pmvLaborPreview" class="btn secondary">Conferir proporcionalidade</button></div>
+    ${manage?'<button id="pmvNew" class="btn primary">+ Novo lançamento</button>':''}<button id="pmvPreview" class="btn secondary">Conferir lançamentos</button><button id="pmvSalaryPreview" class="btn secondary">Prévia do salário</button><button id="pmvFormulaPreview" class="btn secondary">Simular eventos</button><button id="pmvTaxScenario" class="btn secondary">Cenário tributário</button><button id="pmvLaborPreview" class="btn secondary">Conferir proporcionalidade</button><button id="pmvConference" class="btn secondary">Demonstrativo preliminar</button></div>
     <p class="muted" style="font-size:12px;margin-bottom:12px">Lançamentos registrados para processamento futuro. Esta tela não calcula salários, impostos ou valores líquidos.</p>
     <div class="table-wrap"><table class="table"><thead><tr><th>Funcionário</th><th>Evento</th><th>Valor / Referência</th><th>Registrado</th><th>Ação</th></tr></thead><tbody>${rows||empty(5,'Nenhum lançamento','Use Novo lançamento para começar.')}</tbody></table></div>`;
   $('#pmvPeriod').onchange=e=>{window.sagasPayrollCompetence=e.target.value;renderPayrollMovements().catch(err=>toast(err.message,'error'))};
@@ -390,6 +390,7 @@ async function renderPayrollMovements(){
   if($('#pmvFormulaPreview'))$('#pmvFormulaPreview').onclick=()=>payrollEventCalculationScreen().catch(err=>toast(err.message,'error'));
   if($('#pmvTaxScenario'))$('#pmvTaxScenario').onclick=()=>payrollTaxScenarioScreen().catch(err=>toast(err.message,'error'));
   if($('#pmvLaborPreview'))$('#pmvLaborPreview').onclick=()=>payrollLaborPreviewScreen().catch(err=>toast(err.message,'error'));
+  if($('#pmvConference'))$('#pmvConference').onclick=()=>payrollConferencePreviewScreen().catch(err=>toast(err.message,'error'));
   $$('[data-pmv-delete]').forEach(b=>b.onclick=()=>payrollMovementDelete(b.dataset.pmvDelete));
 }
 async function payrollMovementForm(competenceId){
@@ -579,6 +580,85 @@ async function payrollLaborPreviewScreen(){
       (segments||empty(4,'Sem histórico','Informe as vigências salariais.'))+'</tbody></table></div>'+
       '<h4>Ocorrências</h4><div class="help">'+(occ||'Nenhuma ocorrência registrada.')+'</div>'+
       '<h4>Conferências pendentes</h4><div class="help">'+(warnings||'Sem ressalvas cadastradas para esta prévia.')+'</div>',true);
+  });
+}
+
+// ===== SAGAS Folha Etapa 10: demonstrativo preliminar por funcionário; somente leitura =====
+async function payrollConferencePreviewScreen(){
+  if(!window.sagasPayrollCompetence){toast('Selecione uma competência.','error');return;}
+  openModal('Demonstrativo preliminar','Informe a data de pagamento usada na simulação tributária.',
+    '<form id="payrollConferenceForm"><label class="field"><span>Data de pagamento (IRRF)</span>'+
+    '<input type="date" name="payment_date" min="2020-01-01" max="2026-12-31" required></label>'+
+    '<p class="help">O INSS seguirá a competência da folha. Nenhum pagamento, contabilização ou envelope definitivo será gerado.</p>'+
+    '<div class="form-actions"><button type="button" class="btn secondary" data-close>Cancelar</button>'+
+    '<button type="submit" class="btn primary">Conferir demonstrativo</button></div></form>');
+  $('[data-close]').onclick=closeModal;
+  const form=$('#payrollConferenceForm');
+  form.onsubmit=async e=>{
+    e.preventDefault();
+    const btn=form.querySelector('[type="submit"]');btn.disabled=true;
+    try{await payrollConferencePreviewResult(form.elements.payment_date.value);}
+    catch(err){toast(err.message,'error');btn.disabled=false;}
+  };
+}
+async function payrollConferencePreviewResult(paymentDate){
+  const id=window.sagasPayrollCompetence;
+  if(!id){toast('Selecione uma competência.','error');return;}
+  const d=await api('/api/payroll/conference-preview?competence_id='+encodeURIComponent(id)+
+    '&payment_date='+encodeURIComponent(paymentDate));
+  const items=d.items||[],val=n=>n===null||n===undefined?'Pendente':money(n);
+  const headings=['Funcionário','Salário proporcional','Proventos','Descontos','Subtotal informativo','Situação','Ações'];
+  const rows=items.map(e=>'<tr><td><b>'+esc(e.employee_name)+'</b></td>'+
+    '<td>'+val(e.salary_proportional_preview)+'</td><td>'+val(e.proventos_eventos)+'</td>'+
+    '<td>'+val(e.descontos_eventos)+'</td><td>'+val(e.subtotal_aritmetico)+'</td>'+
+    '<td>'+esc(e.status==='PENDENTE'?'Pendente':'Conferência')+'</td>'+
+    '<td><button type="button" class="btn secondary sm" data-conference-detail="'+esc(e.employee_id)+'">Detalhar</button></td></tr>').join('');
+  openModal('Demonstrativo preliminar — '+String(d.competence?.competence||''),
+    'Consulta da folha: valores aritméticos e pendências. Não é contracheque nem salário líquido.',
+    '<p class="help"><b>Somente conferência.</b> INSS e IRRF são cenários separados e o FGTS não é desconto. Nenhuma liquidação, fechamento ou contabilização foi realizada.</p>'+
+    '<p class="help"><b>Pagamento IRRF:</b> '+esc(d.payment_date||paymentDate)+
+    ' · <b>INSS vigente:</b> '+esc(d.tables?.inss_from||'—')+
+    ' · <b>IRRF vigente:</b> '+esc(d.tables?.irrf_from||'—')+'</p>'+
+    '<div class="table-wrap"><table class="table"><thead><tr>'+headings.map(x=>'<th>'+esc(x)+'</th>').join('')+
+    '</tr></thead><tbody>'+(rows||empty(7,'Sem funcionários','Não há funcionários elegíveis nesta competência.'))+
+    '</tbody></table></div><p class="help">Funcionários: '+esc(d.employee_count||0)+
+    ' · Pendências: '+esc(d.pending_employee_count||0)+
+    ' · Subtotais disponíveis: '+esc(d.arithmetic_subtotal_count||0)+
+    ' · Cenários tributários: '+esc(d.tax_scenario_count||0)+'</p>',true);
+  $$('[data-conference-detail]', $('#modalBody')).forEach(b=>b.onclick=()=>{
+    const e=items.find(x=>x.employee_id===b.dataset.conferenceDetail);
+    if(!e)return;
+    const segments=(e.segments||[]).map(x=>'<tr><td>'+esc(x.start_date)+' a '+esc(x.end_date)+'</td>'+
+      '<td>'+esc(x.days)+'</td><td>'+val(x.salary_monthly)+'</td><td>'+val(x.reference_amount)+'</td></tr>').join('');
+    const events=(e.events||[]).map(x=>'<tr><td>'+esc(x.event_code+' — '+x.event_name)+'</td>'+
+      '<td>'+esc(payrollTypeName(x.type))+'</td><td>'+esc(x.reference)+' '+esc(x.unit)+'</td>'+
+      '<td>'+val(x.value_preview)+'</td><td>'+esc(x.status)+'</td></tr>').join('');
+    const t=e.tax_scenario;
+    const taxRows=t?'<tr><td>'+val(t.base_inss)+'</td><td>'+val(t.inss_estimate)+'</td>'+
+      '<td>'+val(t.irrf_base)+'</td><td>'+val(t.irrf_estimate)+'</td><td>'+
+      val(t.base_fgts)+'</td><td>'+val(t.fgts_estimate)+'</td></tr>':
+      '<tr><td colspan="6">Estimativa tributária pendente: conferir incidências, eventos e histórico.</td></tr>';
+    const problems=(e.pendencias||[]).map(x=>'<p>'+esc(x)+'</p>').join('');
+    const warnings=(e.observacoes||[]).map(x=>'<p>'+esc(x)+'</p>').join('');
+    const occurrences=(e.occurrences||[]).map(x=>'<p>'+esc(x.kind)+': '+
+      esc(x.start_date)+' a '+esc(x.end_date)+'</p>').join('');
+    openModal('Demonstrativo — '+e.employee_name,'Registro apenas para conferência; líquido não calculado.',
+      '<p><b>Salário de referência:</b> '+val(e.salary_reference)+
+      ' · <b>Dias de vínculo:</b> '+esc(e.days_employed)+'/'+esc(e.day_count)+
+      ' · <b>Subtotal aritmético:</b> '+val(e.subtotal_aritmetico)+'</p>'+
+      '<p class="help"><b>O subtotal não é salário líquido.</b> Não deduz INSS, IRRF ou ocorrências e não gera valores a pagar.</p>'+
+      '<h4>Histórico salarial</h4><div class="table-wrap"><table class="table"><thead><tr>'+
+      '<th>Período</th><th>Dias</th><th>Salário vigente</th><th>Parcela civil</th></tr></thead><tbody>'+
+      (segments||empty(4,'Histórico pendente','Registre a vigência salarial.'))+'</tbody></table></div>'+
+      '<h4>Eventos</h4><div class="table-wrap"><table class="table"><thead><tr><th>Evento</th>'+
+      '<th>Tipo</th><th>Referência</th><th>Valor em prévia</th><th>Situação</th></tr></thead><tbody>'+
+      (events||empty(5,'Sem eventos','Nenhum movimento informado.'))+'</tbody></table></div>'+
+      '<h4>Cenário tributário (não homologado)</h4><div class="table-wrap"><table class="table"><thead><tr>'+
+      '<th>Base INSS</th><th>INSS estimado</th><th>Base IRRF</th><th>IRRF estimado</th>'+
+      '<th>Base FGTS</th><th>FGTS estimado</th></tr></thead><tbody>'+taxRows+'</tbody></table></div>'+
+      '<h4>Ocorrências</h4><div class="help">'+(occurrences||'Nenhuma ocorrência registrada.')+'</div>'+
+      '<h4>Pendências</h4><div class="help">'+(problems||'Sem bloqueios aritméticos; ainda não é folha homologada.')+'</div>'+
+      '<h4>Observações</h4><div class="help">'+(warnings||'Sem outras observações.')+'</div>',true);
   });
 }
 
