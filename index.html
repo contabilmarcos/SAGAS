@@ -380,7 +380,7 @@ async function renderPayrollMovements(){
   const manage=can('payroll.manage')&&current.status==='OPEN';
   const rows=(data.items||[]).map(m=>`<tr><td>${esc(m.employee_name)}</td><td>${esc(m.event_code)} — ${esc(m.event_name)}</td><td>${esc(m.unit==='VALOR'?money(m.value):String(m.value).replace('.',',')+' '+payrollUnitName(m.unit))}</td><td>${dateBR(m.created_at)}</td><td>${manage?`<button class="btn danger sm" data-pmv-delete="${esc(m.id)}">Excluir</button>`:''}</td></tr>`).join('');
   $('#content').innerHTML=`<div class="toolbar"><select id="pmvPeriod" class="search" style="max-width:220px">${periods.map(p=>`<option value="${esc(p.id)}" ${p.id===selected?'selected':''}>${esc(p.competence.slice(5)+'/ '+p.competence.slice(0,4))} ${p.status==='OPEN'?'':'(bloqueada)'}</option>`).join('')}</select>
-    ${manage?'<button id="pmvNew" class="btn primary">+ Novo lançamento</button>':''}<button id="pmvPreview" class="btn secondary">Conferir lançamentos</button><button id="pmvSalaryPreview" class="btn secondary">Prévia do salário</button><button id="pmvFormulaPreview" class="btn secondary">Simular eventos</button><button id="pmvTaxScenario" class="btn secondary">Cenário tributário</button><button id="pmvLaborPreview" class="btn secondary">Conferir proporcionalidade</button><button id="pmvConference" class="btn secondary">Demonstrativo preliminar</button><button id="pmvEnvelope11" class="btn secondary">Envelopes preliminares</button></div>
+    ${manage?'<button id="pmvNew" class="btn primary">+ Novo lançamento</button>':''}<button id="pmvPreview" class="btn secondary">Conferir lançamentos</button><button id="pmvSalaryPreview" class="btn secondary">Prévia do salário</button><button id="pmvFormulaPreview" class="btn secondary">Simular eventos</button><button id="pmvTaxScenario" class="btn secondary">Cenário tributário</button><button id="pmvLaborPreview" class="btn secondary">Conferir proporcionalidade</button><button id="pmvConference" class="btn secondary">Demonstrativo preliminar</button><button id="pmvEnvelope11" class="btn secondary">Envelopes preliminares</button><button id="pmvComposition14" class="btn secondary">Conferência da folha</button></div>
     <p class="muted" style="font-size:12px;margin-bottom:12px">Lançamentos registrados para processamento futuro. Esta tela não calcula salários, impostos ou valores líquidos.</p>
     <div class="table-wrap"><table class="table"><thead><tr><th>Funcionário</th><th>Evento</th><th>Valor / Referência</th><th>Registrado</th><th>Ação</th></tr></thead><tbody>${rows||empty(5,'Nenhum lançamento','Use Novo lançamento para começar.')}</tbody></table></div>`;
   $('#pmvPeriod').onchange=e=>{window.sagasPayrollCompetence=e.target.value;renderPayrollMovements().catch(err=>toast(err.message,'error'))};
@@ -392,6 +392,7 @@ async function renderPayrollMovements(){
   if($('#pmvLaborPreview'))$('#pmvLaborPreview').onclick=()=>payrollLaborPreviewScreen().catch(err=>toast(err.message,'error'));
   if($('#pmvConference'))$('#pmvConference').onclick=()=>payrollConferencePreviewScreen().catch(err=>toast(err.message,'error'));
   if($('#pmvEnvelope11'))$('#pmvEnvelope11').onclick=()=>payrollEnvelopePreviewScreen11().catch(err=>toast(err.message,'error'));
+  if($('#pmvComposition14'))$('#pmvComposition14').onclick=()=>payrollCompositionScreen14().catch(err=>toast(err.message,'error'));
   $$('[data-pmv-delete]').forEach(b=>b.onclick=()=>payrollMovementDelete(b.dataset.pmvDelete));
 }
 async function payrollMovementForm(competenceId){
@@ -842,6 +843,87 @@ function payrollDsrReviewForm13(employee,week,paymentDate){
     }catch(err){toast(err.message,'error');btn.disabled=false;}
   };
 }
+
+// ===== SAGAS Folha Etapa 14: mapa de composição (somente conferência) =====
+async function payrollCompositionScreen14(){
+  if(!window.sagasPayrollCompetence){toast('Selecione uma competência.','error');return;}
+  openModal('Conferência da folha','Mapa de componentes por funcionário — Etapa 14.',
+    '<form id="payrollCompositionForm14"><label class="field"><span>Data de pagamento (IRRF)</span>'+
+    '<input type="date" name="payment_date" min="2020-01-01" max="2026-12-31" required></label>'+
+    '<p class="help">Sem salário líquido, fechamento, integração financeira ou contabilização. Cada componente é apresentado separadamente.</p>'+
+    '<div class="form-actions"><button type="button" class="btn secondary" data-close>Cancelar</button>'+
+    '<button class="btn primary" type="submit">Consultar conferência</button></div></form>');
+  $('[data-close]').onclick=closeModal;
+  const form=$('#payrollCompositionForm14');
+  form.onsubmit=async ev=>{
+    ev.preventDefault();
+    const button=form.querySelector('[type=submit]');button.disabled=true;
+    try{await payrollCompositionResult14(form.elements.payment_date.value);}
+    catch(err){
+      if(err.status===404)toast('Publique o Worker v52 no Cloudflare para habilitar a Etapa 14.','error');
+      else toast(err.message,'error');
+      button.disabled=false;
+    }
+  };
+}
+async function payrollCompositionResult14(paymentDate){
+  const id=window.sagasPayrollCompetence;
+  if(!id){toast('Selecione uma competência.','error');return;}
+  const d=await api('/api/payroll/composition-preview?competence_id='+encodeURIComponent(id)+
+    '&payment_date='+encodeURIComponent(paymentDate));
+  const items=d.items||[];
+  const val=x=>typeof x==='number'&&Number.isFinite(x)?money(x):'Pendente';
+  const rows=items.map(e=>'<tr><td><b>'+esc(e.employee_name)+'</b></td>'+
+    '<td>'+val(e.composition?.salary_proportional_preview)+'</td>'+
+    '<td>'+val(e.composition?.event_earnings)+'</td>'+
+    '<td>'+val(e.composition?.event_deductions)+'</td>'+
+    '<td>'+esc(e.composition?.issues?.length||0)+'</td>'+
+    '<td>'+esc(e.composition?.status||'PENDENTE')+'</td>'+
+    '<td><button type="button" class="btn secondary sm" data-comp14-emp="'+esc(e.employee_id)+'">Detalhar</button></td></tr>').join('');
+  openModal('Conferência da folha — '+String(d.competence?.competence||''),
+    'Etapa 14: conciliação preliminar de componentes, não é contracheque nem folha líquida.',
+    '<p class="help">Funcionários: '+esc(d.employee_count||0)+' · Com pendências: '+
+    esc(d.composition_pending_count||0)+' · Subtotais conciliados: '+esc(d.reconciled_event_subtotal_count||0)+'</p>'+
+    '<div class="table-wrap"><table class="table"><thead><tr><th>Funcionário</th>'+
+    '<th>Salário proporcional</th><th>Proventos eventos</th><th>Descontos eventos</th>'+
+    '<th>Pendências</th><th>Status</th><th>Ação</th></tr></thead><tbody>'+
+    (rows||empty(7,'Sem funcionários','Não há funcionários nesta competência.'))+'</tbody></table></div>'+
+    '<p class="help"><b>Não somar automaticamente:</b> faltas, DSR e cenários de INSS/IRRF/FGTS não estão homologados. Nenhum pagamento ou lançamento foi realizado.</p>',true);
+  $$('[data-comp14-emp]',$('#modalBody')).forEach(b=>b.onclick=()=>{
+    const found=items.find(x=>x.employee_id===b.dataset.comp14Emp);
+    if(found)payrollCompositionEmployee14(found,paymentDate);
+  });
+}
+function payrollCompositionEmployee14(e,paymentDate){
+  const c=e.composition||{};
+  const val=x=>typeof x==='number'&&Number.isFinite(x)?money(x):'Pendente';
+  const amounts=[
+    ['Referência salarial histórica',c.salary_reference],
+    ['Salário proporcional (prévia)',c.salary_proportional_preview],
+    ['Proventos de eventos',c.event_earnings],
+    ['Descontos de eventos',c.event_deductions],
+    ['Faltas a conferir — NÃO aplicadas',c.absence_discount_estimate],
+    ['DSR a conferir — NÃO aplicado',c.dsr_discount_estimate],
+    ['Subtotal de eventos conciliado (quando possível)',c.reconciled_event_subtotal]
+  ].map(([name,amount])=>'<tr><td>'+esc(name)+'</td><td>'+val(amount)+'</td></tr>').join('');
+  const checks=(c.checks||[]).map(x=>'<tr><td>'+esc(x.area)+'</td><td>'+
+    esc(x.status)+'</td><td>'+esc(x.detail)+'</td></tr>').join('');
+  const issues=(c.issues||[]).map(x=>'<p>• '+esc(x)+'</p>').join('');
+  const notes=(c.warnings||[]).map(x=>'<p>• '+esc(x)+'</p>').join('');
+  openModal('Conferência — '+e.employee_name,
+    'Valores indicativos e verificações por componente, sem salário líquido apurado.',
+    '<h4>Componentes</h4><div class="table-wrap"><table class="table"><thead><tr>'+
+    '<th>Referência</th><th>Valor</th></tr></thead><tbody>'+amounts+'</tbody></table></div>'+
+    '<p class="help">Faltas e DSR são exibidos separadamente e <b>não foram abatidos</b> do subtotal. Tributos e encargos não são somados.</p>'+
+    '<h4>Verificações</h4><div class="table-wrap"><table class="table"><thead><tr>'+
+    '<th>Área</th><th>Situação</th><th>Conferência necessária</th></tr></thead><tbody>'+
+    (checks||empty(3,'Sem verificações',''))+'</tbody></table></div>'+
+    '<h4>Pendências</h4><div class="help">'+(issues||'Sem novas pendências de composição; folha definitiva ainda bloqueada.')+'</div>'+
+    (notes?'<h4>Observações</h4><div class="help">'+notes+'</div>':'')+
+    '<div class="form-actions"><button type="button" class="btn secondary" id="comp14Back">Voltar</button></div>',true);
+  $('#comp14Back').onclick=()=>payrollCompositionResult14(paymentDate).catch(err=>toast(err.message,'error'));
+}
+
 function payrollOccurrenceReviewForm11(employee,o,paymentDate){
   if(!can('payroll.manage')){toast('Sem permissão para revisar ocorrências.','error');return;}
   const options=(o.treatment_options||['PENDENTE']).map(x=>
