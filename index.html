@@ -678,15 +678,15 @@ async function payrollEmployeeRecordsModal(employee,kind='salary'){
   $$('[data-emp-record-delete]', $('#modalBody')).forEach(b=>b.onclick=()=>payrollEmployeeRecordDeletePrompt(employee,kind,items.find(x=>x.id===b.dataset.empRecordDelete)));
 }
 async function payrollEmployeeRecordForm(employee,kind,item=null){
-  const from=item?.effective_from||employee.admission_date;
+  const from=item?.effective_from||'';
   let fields='';
   if(kind==='salary'){
     fields=payrollRecordField('effective_from','Vigente a partir de','date',from)+
-      payrollRecordField('salary','Salário (R$)','number',item?.salary??employee.salary,true,'min="0" step="0.01"');
+      payrollRecordField('salary','Salário (R$)','number',item?.salary??'',true,'min="0" step="0.01"');
   }else if(kind==='schedule'){
     fields=payrollRecordField('effective_from','Vigente a partir de','date',from)+
-      payrollRecordField('weekly_hours','Horas semanais','number',item?.weekly_hours??44,true,'min="0.001" max="60" step="0.001"')+
-      payrollRecordField('monthly_hours','Horas mensais','number',item?.monthly_hours??220,true,'min="0.001" max="300" step="0.001"');
+      payrollRecordField('weekly_hours','Horas semanais','number',item?.weekly_hours??'',true,'min="0.001" max="60" step="0.001"')+
+      payrollRecordField('monthly_hours','Horas mensais','number',item?.monthly_hours??'',true,'min="0.001" max="300" step="0.001"');
   }else if(kind==='dependents'){
     fields=payrollRecordField('name','Nome do dependente','text',item?.name||'',true,'maxlength="160"')+
       payrollRecordSelect('relationship','Parentesco',[['FILHO','Filho(a)'],['CONJUGE','Cônjuge'],['OUTRO','Outro']],item?.relationship||'FILHO')+
@@ -696,8 +696,8 @@ async function payrollEmployeeRecordForm(employee,kind,item=null){
       payrollRecordSelect('irrf_eligible','Dependente para IRRF (conferir documentação)',[['0','Não'],['1','Sim']],String(item?.irrf_eligible??0));
   }else if(kind==='occurrences'){
     fields=payrollRecordSelect('kind','Tipo',[['FALTA','Falta'],['AFASTAMENTO','Afastamento'],['FERIAS','Férias'],['LICENCA','Licença']],item?.kind||'FALTA')+
-      payrollRecordField('start_date','Início','date',item?.start_date||employee.admission_date)+
-      payrollRecordField('end_date','Fim','date',item?.end_date||employee.admission_date);
+      payrollRecordField('start_date','Início','date',item?.start_date||'')+
+      payrollRecordField('end_date','Fim','date',item?.end_date||'');
   }else if(kind==='functional'){
     const positions=await payrollData('positions',true);
     fields=payrollRecordField('effective_from','Vigente a partir de','date',from)+
