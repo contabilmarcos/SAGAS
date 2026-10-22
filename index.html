@@ -691,22 +691,33 @@ async function payrollEnvelopePreviewScreen11(){
 async function payrollEnvelopePreviewResult11(paymentDate){
   const id=window.sagasPayrollCompetence;
   if(!id){toast('Selecione uma competência.','error');return;}
-  const d=await api('/api/payroll/envelope-preview?competence_id='+encodeURIComponent(id)+
-    '&payment_date='+encodeURIComponent(paymentDate));
+  const query='?competence_id='+encodeURIComponent(id)+'&payment_date='+encodeURIComponent(paymentDate);
+  let d;
+  try{
+    d=await api('/api/payroll/remuneration-preview'+query);
+  }catch(err){
+    if(err.status!==404)throw err;
+    // Compatibilidade temporária com Worker v49, até a publicação do v50.
+    d=await api('/api/payroll/envelope-preview'+query);
+  }
   const items=d.items||[];
   const val=n=>n===null||n===undefined?'Pendente':money(n);
   const rows=items.map(e=>'<tr><td><b>'+esc(e.employee_name)+'</b></td>'+
     '<td>'+esc(e.occurrences_count||0)+'</td><td>'+esc(e.distinct_occurrence_days||0)+'</td>'+
-    '<td>'+val(e.base_reference)+'</td><td>'+esc(e.status)+'</td>'+
+    '<td>'+val(e.base_reference)+'</td>'+
+    '<td>'+(e.remuneration_preview?val(e.remuneration_preview.absence_discount_estimate):'—')+'</td>'+
+    '<td>'+esc(e.status)+'</td>'+
     '<td><button class="btn secondary sm" type="button" data-env11-emp="'+esc(e.employee_id)+'">Detalhar</button></td></tr>').join('');
   openModal('Envelopes preliminares — '+String(d.competence?.competence||''),
     'Conferência por funcionário. Não é envelope calculado, folha líquida ou valor a pagar.',
     '<p class="help">Ocorrências: '+esc(d.occurrence_count||0)+' · Sem tratamento: '+esc(d.pending_occurrence_count||0)+
     ' · Funcionários com sobreposição: '+esc(d.overlapping_employee_count||0)+'</p>'+
     '<div class="table-wrap"><table class="table"><thead><tr><th>Funcionário</th><th>Ocorrências</th>'+
-    '<th>Dias distintos</th><th>Salário de referência</th><th>Situação</th><th>Ação</th></tr></thead><tbody>'+
-    (rows||empty(6,'Sem funcionários','Nenhum funcionário nesta competência.'))+'</tbody></table></div>'+
-    '<p class="help">Tratamentos são classificações para conferência. O sistema não desconta faltas, não calcula DSR, impostos ou líquido nem registra pagamento e contabilidade.</p>',true);
+    '<th>Dias distintos</th><th>Salário de referência</th><th>Faltas (prévia)</th><th>Situação</th><th>Ação</th></tr></thead><tbody>'+
+    (rows||empty(7,'Sem funcionários','Nenhum funcionário nesta competência.'))+'</tbody></table></div>'+
+    '<p class="help">'+(d.kind==='REMUNERACAO_PRELIMINAR_ETAPA_12'?
+    'Etapa 12: desconto indicativo das faltas classificadas (mensalista, divisor 30). Não inclui DSR, tributos, líquido ou folha homologada.':
+    'Worker v49: publique o v50 para ver a estimativa de faltas. Nenhum desconto ou pagamento será realizado.')+'</p>',true);
   $$('[data-env11-emp]',$('#modalBody')).forEach(b=>b.onclick=()=>{
     const employee=items.find(x=>x.employee_id===b.dataset.env11Emp);
     if(employee)payrollEnvelopeEmployee11(employee,paymentDate);
@@ -722,10 +733,28 @@ function payrollEnvelopeEmployee11(e,paymentDate){
   const events=(e.events||[]).map(x=>'<tr><td>'+esc(x.event_code+' — '+x.event_name)+'</td>'+
     '<td>'+esc(x.type)+'</td><td>'+val(x.value_preview)+'</td><td>'+esc(x.status)+'</td></tr>').join('');
   const blockers=(e.pendencias||[]).map(x=>'<p>• '+esc(x)+'</p>').join('');
+  const projection=e.remuneration_preview||null;
+  const projectionIssues=(projection?.issues||[]).map(x=>'<p>• '+esc(x)+'</p>').join('');
+  const projectionWarnings=(projection?.warnings||[]).map(x=>'<p>• '+esc(x)+'</p>').join('');
+  const projectionRows=(projection?.breakdown||[]).map(x=>'<tr><td>'+esc(x.kind)+'</td><td>'+
+    esc(x.treatment)+'</td><td>'+esc(x.days)+'</td><td>'+esc(x.company_first15_days??'—')+
+    '</td><td>'+esc(x.benefit_after15_days??'—')+'</td></tr>').join('');
   openModal('Envelope preliminar — '+e.employee_name,'Conferência de ocorrências e eventos da competência.',
     '<p><b>Salário histórico de referência:</b> '+val(e.base_reference)+' · <b>Dias distintos de ocorrência:</b> '+
       esc(e.distinct_occurrence_days||0)+'</p>'+
     '<p class="help">Nenhuma falta ou licença foi descontada automaticamente; valores líquidos e reflexos ainda não foram apurados.</p>'+
+    '<h4>Prévia remuneratória — Etapa 12</h4>'+
+    (projection?'<p><b>Dias de falta a conferir:</b> '+esc(projection.deduction_days)+
+      ' · <b>Desconto indicativo de faltas:</b> '+val(projection.absence_discount_estimate)+
+      ' · <b>Semanas com DSR a conferir:</b> '+esc((projection.dsr_weeks_to_review||[]).length)+'</p>'+
+      '<p class="help">Referência para mensalista: soma dos salários diários históricos / 30. O DSR, as incidências e o valor líquido permanecem pendentes.</p>'+
+      '<div class="table-wrap"><table class="table"><thead><tr><th>Tipo</th><th>Tratamento</th><th>Dias</th>'+
+      '<th>Primeiros 15 dias*</th><th>Após 15 dias*</th></tr></thead><tbody>'+
+      (projectionRows||empty(5,'Sem ocorrências','Nenhuma ocorrência nesta competência.'))+'</tbody></table></div>'+
+      '<p class="help">*Dias de afastamento apenas para referência cronológica; não são valores a pagar nem benefício concedido.</p>'+
+      '<div class="help">'+(projectionIssues||'Sem pendências adicionais de ocorrências.')+
+      (projectionWarnings?'<h4>Observações</h4>'+projectionWarnings:'')+'</div>':
+      '<p class="help">Publique o Worker v50 para habilitar a prévia remuneratória.</p>')+
     '<h4>Ocorrências e tratamento</h4><div class="table-wrap"><table class="table"><thead><tr>'+
     '<th>Tipo</th><th>Período</th><th>Dias no mês</th><th>Tratamento</th><th>Ação</th></tr></thead><tbody>'+
     (occurrences||empty(5,'Sem ocorrências','Nenhuma ocorrência registrada.'))+'</tbody></table></div>'+
