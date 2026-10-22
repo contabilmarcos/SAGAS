@@ -578,7 +578,7 @@ async function renderPayroll(page){
   const actions=x=>manage?`<div class="actions"><button class="btn secondary sm" data-payroll-edit="${esc(x.id)}">Editar</button><button class="btn danger sm" data-payroll-delete="${esc(x.id)}">Excluir</button></div>`:'';
   if(cfg.kind==='employees'){
     cols=['Nome','Categoria','Departamento','Cargo','Salário','Admissão','Situação','Ações'];
-    rows=a.map(x=>`<tr><td><b>${esc(x.name)}</b></td><td>${esc(x.category_name||'—')}</td><td>${esc(x.department_name||'—')}</td><td>${esc(x.position_name||'—')}</td><td>${money(x.salary)}</td><td>${dateBR(x.admission_date)}</td><td>${x.active?'<span class="badge green">Ativo</span>':'<span class="badge gray">Inativo</span>'}</td><td>${actions(x)}</td></tr>`).join('');
+    rows=a.map(x=>`<tr><td><b>${esc(x.name)}</b></td><td>${esc(x.category_name||'—')}</td><td>${esc(x.department_name||'—')}</td><td>${esc(x.position_name||'—')}</td><td>${money(x.salary)}</td><td>${dateBR(x.admission_date)}</td><td>${x.active?'<span class="badge green">Ativo</span>':'<span class="badge gray">Inativo</span>'}</td><td><button class="btn secondary sm" data-emp-history="${esc(x.id)}">Histórico</button> ${actions(x)}</td></tr>`).join('');
   }else if(cfg.kind==='positions'){
     cols=['Nome do Cargo','Salário','Situação','Ações'];
     rows=a.map(x=>`<tr><td><b>${esc(x.name)}</b></td><td>${money(x.salary)}</td><td>${x.active?'<span class="badge green">Ativo</span>':'<span class="badge gray">Inativo</span>'}</td><td>${actions(x)}</td></tr>`).join('');
@@ -593,6 +593,7 @@ async function renderPayroll(page){
   $$('[data-payroll-edit]').forEach(b=>b.onclick=()=>payrollForm(page,a.find(x=>x.id===b.dataset.payrollEdit)));
   $$('[data-payroll-delete]').forEach(b=>b.onclick=()=>payrollDeleteForm(page,a.find(x=>x.id===b.dataset.payrollDelete)));
   $$('[data-payroll-event-rules]').forEach(b=>b.onclick=()=>payrollEventRulesForm(a.find(x=>x.id===b.dataset.payrollEventRules)).catch(err=>toast(err.message,'error')));
+  $$('[data-emp-history]').forEach(b=>b.onclick=()=>payrollEmployeeRecordsModal(a.find(x=>x.id===b.dataset.empHistory)).catch(err=>toast(err.message,'error')));
 }
 
 
@@ -640,6 +641,95 @@ async function payrollEventRulesForm(event){
       closeModal();toast('Parâmetros registrados. A simulação aritmética é somente leitura.');
       await payrollEventRulesForm(event);
     }catch(err){toast(err.message,'error');submit.disabled=false;}
+  };
+}
+
+// ===== SAGAS Folha Etapa 08: histórico de vínculos por competência, todo em modais =====
+const PAYROLL_RECORD_SECTIONS={salary:'Salários',schedule:'Jornadas',dependents:'Dependentes',occurrences:'Ocorrências',functional:'Histórico funcional'};
+function payrollRecordField(name,label,type,value,required=true,extras=''){
+  return '<label class="field"><span>'+esc(label)+'</span><input name="'+esc(name)+'" type="'+type+'" value="'+esc(value??'')+'" '+(required?'required':'')+' '+extras+'></label>';
+}
+function payrollRecordSelect(name,label,options,selected){
+  return '<label class="field"><span>'+esc(label)+'</span><select name="'+name+'" required>'+options.map(([v,t])=>'<option value="'+esc(v)+'" '+(String(v)===String(selected)?'selected':'')+'>'+esc(t)+'</option>').join('')+'</select></label>';
+}
+function payrollRecordSummary(kind,x){
+  if(kind==='salary')return money(x.salary)+' · '+esc(x.effective_from);
+  if(kind==='schedule')return esc(x.weekly_hours)+'h semanais · '+esc(x.monthly_hours)+'h mensais · '+esc(x.effective_from);
+  if(kind==='dependents')return esc(x.name)+' · '+esc(x.relationship)+' · IRRF: '+(x.irrf_eligible?'Sim':'Não');
+  if(kind==='occurrences')return esc(x.kind)+' · '+esc(x.start_date)+' a '+esc(x.end_date);
+  return esc(x.situation)+' · '+esc(x.effective_from);
+}
+async function payrollEmployeeRecordsModal(employee,kind='salary'){
+  if(!employee)return;
+  const r=await api('/api/payroll/employee-records/'+encodeURIComponent(employee.id)+'/'+kind);
+  const items=r.items||[],manage=can('payroll.manage');
+  const tabs='<div class="toolbar" style="flex-wrap:wrap">'+Object.entries(PAYROLL_RECORD_SECTIONS).map(([k,title])=>
+    '<button type="button" class="btn '+(k===kind?'primary':'secondary')+' sm" data-emp-section="'+esc(k)+'">'+esc(title)+'</button>').join('')+'</div>';
+  const rows=items.map(x=>'<tr><td>'+payrollRecordSummary(kind,x)+'</td><td>'+esc(x.notes||'—')+'</td><td>'+
+    (manage?'<button class="btn secondary sm" data-emp-record-edit="'+esc(x.id)+'">Editar</button> <button class="btn danger sm" data-emp-record-delete="'+esc(x.id)+'">Excluir</button>':'')+'</td></tr>').join('');
+  openModal('Histórico — '+employee.name,'Registros por vigência usados nas prévias da folha.',
+    '<p class="help">Salários antigos não são presumidos a partir do cadastro atual. Alterações durante o mês continuam exigindo cálculo proporcional próprio.</p>'+tabs+
+    (manage?'<div class="toolbar"><button id="empRecordNew" class="btn primary sm">+ Novo registro</button></div>':'')+
+    '<div class="table-wrap"><table class="table"><thead><tr><th>Registro</th><th>Observações</th><th>Ações</th></tr></thead><tbody>'+
+    (rows||empty(3,'Sem registros','Registre os dados históricos conhecidos.'))+'</tbody></table></div>',true);
+  $$('[data-emp-section]', $('#modalBody')).forEach(b=>b.onclick=()=>payrollEmployeeRecordsModal(employee,b.dataset.empSection).catch(err=>toast(err.message,'error')));
+  if($('#empRecordNew'))$('#empRecordNew').onclick=()=>payrollEmployeeRecordForm(employee,kind);
+  $$('[data-emp-record-edit]', $('#modalBody')).forEach(b=>b.onclick=()=>payrollEmployeeRecordForm(employee,kind,items.find(x=>x.id===b.dataset.empRecordEdit)));
+  $$('[data-emp-record-delete]', $('#modalBody')).forEach(b=>b.onclick=()=>payrollEmployeeRecordDeletePrompt(employee,kind,items.find(x=>x.id===b.dataset.empRecordDelete)));
+}
+async function payrollEmployeeRecordForm(employee,kind,item=null){
+  const from=item?.effective_from||employee.admission_date;
+  let fields='';
+  if(kind==='salary'){
+    fields=payrollRecordField('effective_from','Vigente a partir de','date',from)+
+      payrollRecordField('salary','Salário (R$)','number',item?.salary??employee.salary,true,'min="0" step="0.01"');
+  }else if(kind==='schedule'){
+    fields=payrollRecordField('effective_from','Vigente a partir de','date',from)+
+      payrollRecordField('weekly_hours','Horas semanais','number',item?.weekly_hours??44,true,'min="0.001" max="60" step="0.001"')+
+      payrollRecordField('monthly_hours','Horas mensais','number',item?.monthly_hours??220,true,'min="0.001" max="300" step="0.001"');
+  }else if(kind==='dependents'){
+    fields=payrollRecordField('name','Nome do dependente','text',item?.name||'',true,'maxlength="160"')+
+      payrollRecordSelect('relationship','Parentesco',[['FILHO','Filho(a)'],['CONJUGE','Cônjuge'],['OUTRO','Outro']],item?.relationship||'FILHO')+
+      payrollRecordField('birth_date','Nascimento','date',item?.birth_date||'')+
+      payrollRecordField('effective_from','Vigente a partir de','date',from)+
+      payrollRecordField('effective_to','Vigente até (opcional)','date',item?.effective_to||'',false)+
+      payrollRecordSelect('irrf_eligible','Dependente para IRRF (conferir documentação)',[['0','Não'],['1','Sim']],String(item?.irrf_eligible??0));
+  }else if(kind==='occurrences'){
+    fields=payrollRecordSelect('kind','Tipo',[['FALTA','Falta'],['AFASTAMENTO','Afastamento'],['FERIAS','Férias'],['LICENCA','Licença']],item?.kind||'FALTA')+
+      payrollRecordField('start_date','Início','date',item?.start_date||employee.admission_date)+
+      payrollRecordField('end_date','Fim','date',item?.end_date||employee.admission_date);
+  }else if(kind==='functional'){
+    const positions=await payrollData('positions',true);
+    fields=payrollRecordField('effective_from','Vigente a partir de','date',from)+
+      payrollRecordSelect('position_id','Cargo',positions.map(p=>[p.id,p.name]),item?.position_id||employee.position_id)+
+      payrollRecordSelect('situation','Situação',[['ATIVO','Ativo'],['AFASTADO','Afastado'],['DESLIGADO','Desligado']],item?.situation||'ATIVO');
+  }
+  fields+='<label class="field full"><span>Observações</span><textarea name="notes" maxlength="500" rows="2">'+esc(item?.notes||'')+'</textarea></label>';
+  openModal((item?'Editar registro — ':'Novo registro — ')+PAYROLL_RECORD_SECTIONS[kind],
+    employee.name+' · As alterações ficam auditadas.',
+    '<form id="payrollEmployeeRecordForm"><div class="grid">'+fields+'</div><div class="form-actions"><button type="button" class="btn secondary" data-close>Cancelar</button><button type="submit" class="btn primary">Salvar</button></div></form>',true);
+  $('[data-close]').onclick=()=>payrollEmployeeRecordsModal(employee,kind).catch(err=>toast(err.message,'error'));
+  const form=$('#payrollEmployeeRecordForm');
+  form.onsubmit=async e=>{
+    e.preventDefault();const body=Object.fromEntries(new FormData(form));
+    const btn=form.querySelector('[type=submit]');btn.disabled=true;
+    try{
+      await api('/api/payroll/employee-records/'+encodeURIComponent(employee.id)+'/'+kind+(item?'/'+encodeURIComponent(item.id):''),
+        {method:item?'PATCH':'POST',body});
+      toast('Histórico salvo.');await payrollEmployeeRecordsModal(employee,kind);
+    }catch(err){toast(err.message,'error');btn.disabled=false;}
+  };
+}
+function payrollEmployeeRecordDeletePrompt(employee,kind,item){
+  if(!item)return;
+  openModal('Excluir registro histórico','A exclusão ficará no histórico de auditoria.',
+    '<p>Confirma excluir <b>'+payrollRecordSummary(kind,item)+'</b>?</p><div class="form-actions"><button class="btn secondary" data-close>Cancelar</button><button class="btn danger" id="empRecordDeleteConfirm">Excluir</button></div>');
+  $('[data-close]').onclick=()=>payrollEmployeeRecordsModal(employee,kind).catch(err=>toast(err.message,'error'));
+  $('#empRecordDeleteConfirm').onclick=async()=>{
+    try{
+      await api('/api/payroll/employee-records/'+encodeURIComponent(employee.id)+'/'+kind+'/'+encodeURIComponent(item.id),{method:'DELETE'});
+      toast('Registro histórico excluído.');await payrollEmployeeRecordsModal(employee,kind);
+    }catch(err){toast(err.message,'error')}
   };
 }
 
