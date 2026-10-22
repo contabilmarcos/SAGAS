@@ -380,13 +380,14 @@ async function renderPayrollMovements(){
   const manage=can('payroll.manage')&&current.status==='OPEN';
   const rows=(data.items||[]).map(m=>`<tr><td>${esc(m.employee_name)}</td><td>${esc(m.event_code)} — ${esc(m.event_name)}</td><td>${esc(m.unit==='VALOR'?money(m.value):String(m.value).replace('.',',')+' '+payrollUnitName(m.unit))}</td><td>${dateBR(m.created_at)}</td><td>${manage?`<button class="btn danger sm" data-pmv-delete="${esc(m.id)}">Excluir</button>`:''}</td></tr>`).join('');
   $('#content').innerHTML=`<div class="toolbar"><select id="pmvPeriod" class="search" style="max-width:220px">${periods.map(p=>`<option value="${esc(p.id)}" ${p.id===selected?'selected':''}>${esc(p.competence.slice(5)+'/ '+p.competence.slice(0,4))} ${p.status==='OPEN'?'':'(bloqueada)'}</option>`).join('')}</select>
-    ${manage?'<button id="pmvNew" class="btn primary">+ Novo lançamento</button>':''}<button id="pmvPreview" class="btn secondary">Conferir lançamentos</button><button id="pmvSalaryPreview" class="btn secondary">Prévia do salário</button></div>
+    ${manage?'<button id="pmvNew" class="btn primary">+ Novo lançamento</button>':''}<button id="pmvPreview" class="btn secondary">Conferir lançamentos</button><button id="pmvSalaryPreview" class="btn secondary">Prévia do salário</button><button id="pmvFormulaPreview" class="btn secondary">Simular eventos</button></div>
     <p class="muted" style="font-size:12px;margin-bottom:12px">Lançamentos registrados para processamento futuro. Esta tela não calcula salários, impostos ou valores líquidos.</p>
     <div class="table-wrap"><table class="table"><thead><tr><th>Funcionário</th><th>Evento</th><th>Valor / Referência</th><th>Registrado</th><th>Ação</th></tr></thead><tbody>${rows||empty(5,'Nenhum lançamento','Use Novo lançamento para começar.')}</tbody></table></div>`;
   $('#pmvPeriod').onchange=e=>{window.sagasPayrollCompetence=e.target.value;renderPayrollMovements().catch(err=>toast(err.message,'error'))};
   if($('#pmvNew'))$('#pmvNew').onclick=()=>payrollMovementForm(selected);
   if($('#pmvPreview'))$('#pmvPreview').onclick=()=>payrollMovementsPreview().catch(err=>toast(err.message,'error'));
   if($('#pmvSalaryPreview'))$('#pmvSalaryPreview').onclick=()=>payrollSalaryPreviewScreen().catch(err=>toast(err.message,'error'));
+  if($('#pmvFormulaPreview'))$('#pmvFormulaPreview').onclick=()=>payrollEventCalculationScreen().catch(err=>toast(err.message,'error'));
   $$('[data-pmv-delete]').forEach(b=>b.onclick=()=>payrollMovementDelete(b.dataset.pmvDelete));
 }
 async function payrollMovementForm(competenceId){
@@ -471,6 +472,34 @@ async function payrollSalaryPreviewScreen(){
   });
 }
 
+// ===== SAGAS Folha Etapa 05: simulação ARITMÉTICA, sem imposto, envelope ou pagamento =====
+async function payrollEventCalculationScreen(){
+  const id=window.sagasPayrollCompetence;
+  if(!id){toast('Selecione uma competência.','error');return;}
+  const d=await api('/api/payroll/events-preview?competence_id='+encodeURIComponent(id));
+  const items=d.items||[];
+  const columns=['Funcionário','Salário de referência','Proventos dos eventos','Descontos dos eventos','Subtotal aritmético','Pendências','Ações'];
+  const rows=items.map(e=>'<tr><td><b>'+esc(e.employee_name)+'</b></td><td>'+(e.salary_base_reference===null?'Pendente':money(e.salary_base_reference))+'</td><td>'+money(e.proventos_eventos)+'</td><td>'+money(e.descontos_eventos)+'</td><td>'+(e.subtotal_aritmetico===null?'Pendente':money(e.subtotal_aritmetico))+'</td><td>'+esc(e.pending_count)+'</td><td><button class="btn secondary sm" data-formula-detail="'+esc(e.employee_id)+'">Detalhar</button></td></tr>').join('');
+  openModal('Simulação de eventos','Consulta de fórmulas aritméticas e valores lançados. Não calcula tributos.',
+    '<p class="help"><b>Não é folha calculada e NÃO é salário líquido.</b> As fórmulas têm sintaxe reduzida do SAGAS; eventos com regras incompletas ficam pendentes.</p>'+
+    '<div class="table-wrap"><table class="table"><thead><tr>'+columns.map(c=>'<th>'+esc(c)+'</th>').join('')+'</tr></thead><tbody>'+
+    (rows||empty(7,'Nenhum funcionário','Não há funcionários elegíveis nesta competência.'))+'</tbody></table></div>'+
+    '<p class="help">Eventos calculados apenas para conferência: '+esc(d.formula_calculated_count||0)+'. Pendências: '+esc(d.unresolved_event_count||0)+'.</p>',true);
+  $$('[data-formula-detail]', $('#modalBody')).forEach(b=>b.onclick=()=>{
+    const e=items.find(x=>x.employee_id===b.dataset.formulaDetail);
+    if(!e)return;
+    const details=(e.events||[]).map(ev=>'<tr><td>'+esc(ev.event_code+' — '+ev.event_name)+'</td><td>'+esc(ev.priority??'—')+'</td><td>'+esc(ev.reference)+' '+esc(ev.unit)+'</td><td>'+(ev.value_preview===null?'Pendente':money(ev.value_preview))+'</td><td>'+esc(ev.status)+'</td></tr>').join('');
+    const explain=(e.events||[]).map(ev=>'<p><b>'+esc(ev.event_code)+'</b>: '+esc(ev.note)+' (regra '+esc(ev.rule_version||'não configurada')+')</p>').join('');
+    openModal('Simulação — '+e.employee_name,'Memória resumida, não é envelope de pagamento.',
+      '<p><b>Salário de referência:</b> '+(e.salary_base_reference===null?'Pendente':money(e.salary_base_reference))+
+      ' | <b>Subtotal aritmético:</b> '+(e.subtotal_aritmetico===null?'Pendente':money(e.subtotal_aritmetico))+'</p>'+
+      '<div class="table-wrap"><table class="table"><thead><tr><th>Evento</th><th>Prioridade</th><th>Referência</th><th>Valor em prévia</th><th>Situação</th></tr></thead><tbody>'+
+      (details||empty(5,'Sem eventos','Nenhuma verba lançada para este funcionário.'))+'</tbody></table></div>'+
+      '<div class="help">'+explain+'</div>'+
+      '<p class="help">'+(e.warnings||[]).map(esc).join(' • ')+'</p>',true);
+  });
+}
+
 // ===== Folha de Pagamento: cadastros, sem cálculo =====
 const PAYROLL_UI={
   'payroll-categories':{kind:'categories',title:'Categoria',plural:'Categorias'},
@@ -536,11 +565,11 @@ async function payrollEventRulesForm(event){
     '<label class="field"><span>Prioridade (0 a 99)</span><input name="priority" type="number" min="0" max="99" step="1" required value="'+esc(rule.priority)+'"></label>'+
     '<label class="field"><span>Código de cálculo</span><input name="calculation_code" type="number" min="0" max="999" step="1" required value="'+esc(rule.calculation_code)+'"></label>'+
     incidence('inss',rule.inss,'Incidência de INSS')+incidence('irrf',rule.irrf,'Incidência de IRRF')+incidence('fgts',rule.fgts,'Incidência de FGTS')+
-    '<label class="field full"><span>Fórmula (somente registro, ainda sem execução)</span><textarea name="formula_text" maxlength="1500" rows="3">'+esc(rule.formula_text||'')+'</textarea></label>'+
+    '<label class="field full"><span>Fórmula aritmética SAGAS (simulada, não gera folha)</span><textarea name="formula_text" maxlength="1500" rows="3">'+esc(rule.formula_text||'')+'</textarea></label>'+
     '</div><div class="form-actions"><button type="button" class="btn secondary" data-close>Cancelar</button><button type="submit" class="btn primary">Salvar parâmetros</button></div></form>':
     '<p class="help">Você possui acesso apenas para consultar os parâmetros.</p>';
   openModal('Parâmetros — '+event.code+' · '+event.name,
-    'Versões por competência. Não calcula INSS, IRRF, FGTS nem executa fórmulas.',
+    'Versões por competência. Apenas fórmulas aritméticas simples são simuladas; tributos não são calculados.',
     '<p class="help"><b>Importante:</b> Incidências começam como Pendente e só devem ser definidas após conferência das regras aplicáveis.</p>'+
     edit+'<h4>Histórico de configurações</h4><div class="table-wrap"><table class="table"><thead><tr><th>A partir de</th><th>Revisão</th><th>Prioridade</th><th>Cód. cálculo</th><th>INSS/IRRF/FGTS</th></tr></thead><tbody>'+
     (history||'<tr><td colspan="5">Nenhuma configuração registrada.</td></tr>')+'</tbody></table></div>',true);
@@ -557,7 +586,7 @@ async function payrollEventRulesForm(event){
     submit.disabled=true;
     try{
       await api('/api/payroll/event-rules',{method:'POST',body:b});
-      closeModal();toast('Parâmetros registrados. O cálculo automático continua desativado.');
+      closeModal();toast('Parâmetros registrados. A simulação aritmética é somente leitura.');
       await payrollEventRulesForm(event);
     }catch(err){toast(err.message,'error');submit.disabled=false;}
   };
