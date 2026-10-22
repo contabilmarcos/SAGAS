@@ -380,7 +380,7 @@ async function renderPayrollMovements(){
   const manage=can('payroll.manage')&&current.status==='OPEN';
   const rows=(data.items||[]).map(m=>`<tr><td>${esc(m.employee_name)}</td><td>${esc(m.event_code)} — ${esc(m.event_name)}</td><td>${esc(m.unit==='VALOR'?money(m.value):String(m.value).replace('.',',')+' '+payrollUnitName(m.unit))}</td><td>${dateBR(m.created_at)}</td><td>${manage?`<button class="btn danger sm" data-pmv-delete="${esc(m.id)}">Excluir</button>`:''}</td></tr>`).join('');
   $('#content').innerHTML=`<div class="toolbar"><select id="pmvPeriod" class="search" style="max-width:220px">${periods.map(p=>`<option value="${esc(p.id)}" ${p.id===selected?'selected':''}>${esc(p.competence.slice(5)+'/ '+p.competence.slice(0,4))} ${p.status==='OPEN'?'':'(bloqueada)'}</option>`).join('')}</select>
-    ${manage?'<button id="pmvNew" class="btn primary">+ Novo lançamento</button>':''}<button id="pmvPreview" class="btn secondary">Conferir lançamentos</button><button id="pmvSalaryPreview" class="btn secondary">Prévia do salário</button><button id="pmvFormulaPreview" class="btn secondary">Simular eventos</button><button id="pmvTaxScenario" class="btn secondary">Cenário tributário</button><button id="pmvLaborPreview" class="btn secondary">Conferir proporcionalidade</button><button id="pmvConference" class="btn secondary">Demonstrativo preliminar</button><button id="pmvEnvelope11" class="btn secondary">Envelopes preliminares</button><button id="pmvComposition14" class="btn secondary">Conferência da folha</button><button id="pmvIncidences15" class="btn secondary">Incidências INSS/IRRF/FGTS</button><button id="pmvTaxes16" class="btn secondary">Simulação de tributos</button><button id="pmvEnvelope17" class="btn secondary">Consolidar envelopes</button><button id="pmvValidate18" class="btn secondary">Validar envelopes</button><button id="pmvRemediation19" class="btn secondary">Corrigir pendências</button><button id="pmvMemory20" class="btn secondary">Memória de cálculo</button><button id="pmvBalance21" class="btn secondary">Projeção aritmética</button><button id="pmvAbsence22" class="btn secondary">Conferência faltas/DSR</button></div>
+    ${manage?'<button id="pmvNew" class="btn primary">+ Novo lançamento</button>':''}<button id="pmvPreview" class="btn secondary">Conferir lançamentos</button><button id="pmvSalaryPreview" class="btn secondary">Prévia do salário</button><button id="pmvFormulaPreview" class="btn secondary">Simular eventos</button><button id="pmvTaxScenario" class="btn secondary">Cenário tributário</button><button id="pmvLaborPreview" class="btn secondary">Conferir proporcionalidade</button><button id="pmvConference" class="btn secondary">Demonstrativo preliminar</button><button id="pmvEnvelope11" class="btn secondary">Envelopes preliminares</button><button id="pmvComposition14" class="btn secondary">Conferência da folha</button><button id="pmvIncidences15" class="btn secondary">Incidências INSS/IRRF/FGTS</button><button id="pmvTaxes16" class="btn secondary">Simulação de tributos</button><button id="pmvEnvelope17" class="btn secondary">Consolidar envelopes</button><button id="pmvValidate18" class="btn secondary">Validar envelopes</button><button id="pmvRemediation19" class="btn secondary">Corrigir pendências</button><button id="pmvMemory20" class="btn secondary">Memória de cálculo</button><button id="pmvBalance21" class="btn secondary">Projeção aritmética</button><button id="pmvAbsence22" class="btn secondary">Conferência faltas/DSR</button><button id="pmvBases23" class="btn secondary">Recompor bases (prévia)</button></div>
     <p class="muted" style="font-size:12px;margin-bottom:12px">Lançamentos registrados para processamento futuro. Esta tela não calcula salários, impostos ou valores líquidos.</p>
     <div class="table-wrap"><table class="table"><thead><tr><th>Funcionário</th><th>Evento</th><th>Valor / Referência</th><th>Registrado</th><th>Ação</th></tr></thead><tbody>${rows||empty(5,'Nenhum lançamento','Use Novo lançamento para começar.')}</tbody></table></div>`;
   $('#pmvPeriod').onchange=e=>{window.sagasPayrollCompetence=e.target.value;renderPayrollMovements().catch(err=>toast(err.message,'error'))};
@@ -401,6 +401,7 @@ async function renderPayrollMovements(){
   if($('#pmvMemory20'))$('#pmvMemory20').onclick=()=>payrollCalculationMemoryScreen20().catch(err=>toast(err.message,'error'));
   if($('#pmvBalance21'))$('#pmvBalance21').onclick=()=>payrollBalanceScreen21().catch(err=>toast(err.message,'error'));
   if($('#pmvAbsence22'))$('#pmvAbsence22').onclick=()=>payrollAbsenceScreen22().catch(err=>toast(err.message,'error'));
+  if($('#pmvBases23'))$('#pmvBases23').onclick=()=>payrollTaxBasesScreen23().catch(err=>toast(err.message,'error'));
   $$('[data-pmv-delete]').forEach(b=>b.onclick=()=>payrollMovementDelete(b.dataset.pmvDelete));
 }
 async function payrollMovementForm(competenceId){
@@ -850,6 +851,91 @@ function payrollDsrReviewForm13(employee,week,paymentDate){
       await payrollEnvelopePreviewResult11(paymentDate);
     }catch(err){toast(err.message,'error');btn.disabled=false;}
   };
+}
+
+// ===== SAGAS Folha Etapa 23: recomposicao indicativa das bases =====
+async function payrollTaxBasesScreen23(){
+  if(!window.sagasPayrollCompetence){toast('Selecione uma competência.','error');return;}
+  openModal('Recomposição de bases — prévia','Etapa 23: conferência de faltas, DSR e incidências de eventos.',
+    '<form id="taxBasesForm23"><label class="field"><span>Data prevista de pagamento (IRRF)</span>'+
+    '<input type="date" name="payment_date" min="2020-01-01" max="2026-12-31" required></label>'+
+    '<p class="help">Nenhuma base fiscal é homologada. O cálculo é uma hipótese de referência e não gera INSS, IRRF, FGTS a recolher ou salário líquido.</p>'+
+    '<div class="form-actions"><button type="button" class="btn secondary" id="bases23Cancel">Cancelar</button>'+
+    '<button type="submit" class="btn primary">Consultar bases</button></div></form>');
+  $('#bases23Cancel').onclick=closeModal;
+  const form=$('#taxBasesForm23');
+  form.onsubmit=async ev=>{
+    ev.preventDefault();
+    const btn=form.querySelector('[type=submit]');btn.disabled=true;
+    try{await payrollTaxBasesResult23(form.elements.payment_date.value);}
+    catch(err){
+      toast(err.status===404?'Publique o Worker v61 no Cloudflare para consultar a Etapa 23.':err.message,'error');
+      btn.disabled=false;
+    }
+  };
+}
+async function payrollTaxBasesResult23(paymentDate){
+  const competenceId=window.sagasPayrollCompetence;
+  if(!competenceId){toast('Selecione uma competência.','error');return;}
+  const d=await api('/api/payroll/tax-base-recomposition?competence_id='+encodeURIComponent(competenceId)+
+    '&payment_date='+encodeURIComponent(paymentDate));
+  const items=d.items||[];
+  const currency=x=>typeof x==='number'&&Number.isFinite(x)?money(x):'Pendente';
+  const rows=items.map(e=>{
+    const r=e.tax_base_recomposition||{},b=r.scenario_after_absence||{};
+    return '<tr><td class="code">'+esc(e.employee_code||'—')+'</td>'+
+      '<td><b>'+esc(e.employee_name)+'</b></td>'+
+      '<td>'+currency(r.total_reference)+'</td>'+
+      '<td>'+currency(b.inss)+'</td><td>'+currency(b.irrf)+'</td><td>'+currency(b.fgts)+'</td>'+
+      '<td>'+esc((r.issues||[]).length)+'</td><td>'+esc(r.status||'PENDENTE')+'</td>'+
+      '<td><button type="button" class="btn secondary sm" data-bases23-emp="'+esc(e.employee_id)+'">Detalhar</button></td></tr>';
+  }).join('');
+  openModal('Recomposição de bases — '+String(d.competence?.competence||''),
+    'Valores apenas hipotéticos: faltas e DSR não foram descontados nem incidências homologadas.',
+    '<p class="help">Funcionários: '+esc(d.employee_count||0)+' · Hipóteses disponíveis: '+
+    esc(d.preview_employee_count||0)+' · Pendentes: '+esc(d.pending_employee_count||0)+'</p>'+
+    '<div class="table-wrap"><table class="table"><thead><tr><th>ID</th><th>Funcionário</th>'+
+    '<th>Faltas + DSR*</th><th>Base INSS*</th><th>Base bruta IRRF*</th><th>Base FGTS*</th>'+
+    '<th>Pendências</th><th>Situação</th><th>Ação</th></tr></thead><tbody>'+
+    (rows||empty(9,'Sem funcionários','Nenhum funcionário nesta competência.'))+'</tbody></table></div>'+
+    '<p class="help">*Referências de conferência. A base bruta do IRRF não inclui deduções legais ou redução do imposto. As faltas e o DSR ainda dependem de conferência jurídica e contratual.</p>',true);
+  $$('[data-bases23-emp]',$('#modalBody')).forEach(b=>b.onclick=()=>{
+    const emp=items.find(x=>x.employee_id===b.dataset.bases23Emp);
+    if(emp)payrollTaxBasesEmployee23(emp,paymentDate);
+  });
+}
+function payrollTaxBasesEmployee23(e,paymentDate){
+  const r=e.tax_base_recomposition||{},b=r.bases_before_absence||{},
+    adjusted=r.scenario_after_absence||{},contrib=r.event_contributions||{};
+  const value=x=>typeof x==='number'&&Number.isFinite(x)?money(x):'Pendente';
+  const sources=[
+    ['Referência salarial histórica',r.salary_reference],
+    ['Faltas a conferir',r.absence_reference],
+    ['DSR a conferir',r.dsr_reference],
+    ['Total de abatimentos hipotéticos',r.total_reference]
+  ].map(([name,n])=>'<tr><td>'+esc(name)+'</td><td>'+value(n)+'</td></tr>').join('');
+  const kinds=[['inss','INSS'],['irrf','IRRF (base bruta)'],['fgts','FGTS']];
+  const rows=kinds.map(([k,label])=>
+    '<tr><td>'+esc(label)+'</td><td>'+value(contrib[k])+'</td><td>'+
+    value(b[k])+'</td><td>'+value(adjusted[k])+'</td><td>'+
+    esc(r.statuses?.[k]||'PENDENTE')+'</td></tr>').join('');
+  const issues=(r.issues||[]).map(x=>'<p><b>'+esc(x.code)+':</b> '+esc(x.detail)+'</p>').join('');
+  const warnings=(r.warnings||[]).map(x=>'<p>• '+esc(x)+'</p>').join('');
+  openModal('Bases tributárias — '+e.employee_name,
+    'Funcionário '+(e.employee_code||'—')+' · cenário hipotético e rastreável.',
+    '<p><b>Situação:</b> '+esc(r.status||'PENDENTE')+'</p>'+
+    '<h4>Referências trabalhistas</h4><div class="table-wrap"><table class="table"><thead><tr>'+
+    '<th>Componente</th><th>Valor</th></tr></thead><tbody>'+sources+'</tbody></table></div>'+
+    '<h4>Composição indicativa por tributo</h4>'+
+    '<div class="table-wrap"><table class="table"><thead><tr>'+
+    '<th>Base</th><th>Proventos incidentes</th><th>Antes do abatimento</th>'+
+    '<th>Após abatimento hipotético</th><th>Estado</th></tr></thead><tbody>'+rows+'</tbody></table></div>'+
+    '<h4>Impedimentos</h4><div class="help">'+
+    (issues||'Sem impedimentos técnicos neste cenário. As incidências continuam sujeitas à validação legal.')+'</div>'+
+    '<h4>Observações</h4><div class="help">'+warnings+'</div>'+
+    '<p class="help"><b>Nenhum valor foi descontado, nenhum tributo foi apurado e nenhum pagamento ou lançamento contábil foi gerado.</b></p>'+
+    '<div class="form-actions"><button class="btn secondary" type="button" id="bases23Back">Voltar</button></div>',true);
+  $('#bases23Back').onclick=()=>payrollTaxBasesResult23(paymentDate).catch(err=>toast(err.message,'error'));
 }
 
 // ===== SAGAS Folha Etapa 22: conferencia dos valores de faltas e DSR =====
