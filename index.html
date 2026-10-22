@@ -380,7 +380,7 @@ async function renderPayrollMovements(){
   const manage=can('payroll.manage')&&current.status==='OPEN';
   const rows=(data.items||[]).map(m=>`<tr><td>${esc(m.employee_name)}</td><td>${esc(m.event_code)} — ${esc(m.event_name)}</td><td>${esc(m.unit==='VALOR'?money(m.value):String(m.value).replace('.',',')+' '+payrollUnitName(m.unit))}</td><td>${dateBR(m.created_at)}</td><td>${manage?`<button class="btn danger sm" data-pmv-delete="${esc(m.id)}">Excluir</button>`:''}</td></tr>`).join('');
   $('#content').innerHTML=`<div class="toolbar"><select id="pmvPeriod" class="search" style="max-width:220px">${periods.map(p=>`<option value="${esc(p.id)}" ${p.id===selected?'selected':''}>${esc(p.competence.slice(5)+'/ '+p.competence.slice(0,4))} ${p.status==='OPEN'?'':'(bloqueada)'}</option>`).join('')}</select>
-    ${manage?'<button id="pmvNew" class="btn primary">+ Novo lançamento</button>':''}<button id="pmvPreview" class="btn secondary">Conferir lançamentos</button><button id="pmvSalaryPreview" class="btn secondary">Prévia do salário</button><button id="pmvFormulaPreview" class="btn secondary">Simular eventos</button><button id="pmvTaxScenario" class="btn secondary">Cenário tributário</button><button id="pmvLaborPreview" class="btn secondary">Conferir proporcionalidade</button><button id="pmvConference" class="btn secondary">Demonstrativo preliminar</button><button id="pmvEnvelope11" class="btn secondary">Envelopes preliminares</button><button id="pmvComposition14" class="btn secondary">Conferência da folha</button><button id="pmvIncidences15" class="btn secondary">Incidências INSS/IRRF/FGTS</button><button id="pmvTaxes16" class="btn secondary">Simulação de tributos</button></div>
+    ${manage?'<button id="pmvNew" class="btn primary">+ Novo lançamento</button>':''}<button id="pmvPreview" class="btn secondary">Conferir lançamentos</button><button id="pmvSalaryPreview" class="btn secondary">Prévia do salário</button><button id="pmvFormulaPreview" class="btn secondary">Simular eventos</button><button id="pmvTaxScenario" class="btn secondary">Cenário tributário</button><button id="pmvLaborPreview" class="btn secondary">Conferir proporcionalidade</button><button id="pmvConference" class="btn secondary">Demonstrativo preliminar</button><button id="pmvEnvelope11" class="btn secondary">Envelopes preliminares</button><button id="pmvComposition14" class="btn secondary">Conferência da folha</button><button id="pmvIncidences15" class="btn secondary">Incidências INSS/IRRF/FGTS</button><button id="pmvTaxes16" class="btn secondary">Simulação de tributos</button><button id="pmvEnvelope17" class="btn secondary">Consolidar envelopes</button></div>
     <p class="muted" style="font-size:12px;margin-bottom:12px">Lançamentos registrados para processamento futuro. Esta tela não calcula salários, impostos ou valores líquidos.</p>
     <div class="table-wrap"><table class="table"><thead><tr><th>Funcionário</th><th>Evento</th><th>Valor / Referência</th><th>Registrado</th><th>Ação</th></tr></thead><tbody>${rows||empty(5,'Nenhum lançamento','Use Novo lançamento para começar.')}</tbody></table></div>`;
   $('#pmvPeriod').onchange=e=>{window.sagasPayrollCompetence=e.target.value;renderPayrollMovements().catch(err=>toast(err.message,'error'))};
@@ -395,6 +395,7 @@ async function renderPayrollMovements(){
   if($('#pmvComposition14'))$('#pmvComposition14').onclick=()=>payrollCompositionScreen14().catch(err=>toast(err.message,'error'));
   if($('#pmvIncidences15'))$('#pmvIncidences15').onclick=()=>payrollIncidenceScreen15().catch(err=>toast(err.message,'error'));
   if($('#pmvTaxes16'))$('#pmvTaxes16').onclick=()=>payrollTaxesScreen16().catch(err=>toast(err.message,'error'));
+  if($('#pmvEnvelope17'))$('#pmvEnvelope17').onclick=()=>payrollEnvelopeConsolidationScreen17().catch(err=>toast(err.message,'error'));
   $$('[data-pmv-delete]').forEach(b=>b.onclick=()=>payrollMovementDelete(b.dataset.pmvDelete));
 }
 async function payrollMovementForm(competenceId){
@@ -844,6 +845,104 @@ function payrollDsrReviewForm13(employee,week,paymentDate){
       await payrollEnvelopePreviewResult11(paymentDate);
     }catch(err){toast(err.message,'error');btn.disabled=false;}
   };
+}
+
+// ===== SAGAS Folha Etapa 17: envelope consolidado somente para conferencia =====
+async function payrollEnvelopeConsolidationScreen17(){
+  if(!window.sagasPayrollCompetence){toast('Selecione uma competência.','error');return;}
+  openModal('Consolidação dos envelopes','Etapa 17 — composição e rastreabilidade por funcionário.',
+    '<form id="payrollEnvelopeForm17"><label class="field"><span>Data efetiva do pagamento (para simular IRRF)</span>'+
+    '<input type="date" name="payment_date" min="2020-01-01" max="2026-12-31" required></label>'+
+    '<p class="help">Somente conferência: não existe folha líquida, fechamento, pagamento, retenção efetiva ou contabilização nesta etapa.</p>'+
+    '<div class="form-actions"><button type="button" class="btn secondary" id="env17Cancel">Cancelar</button>'+
+    '<button type="submit" class="btn primary">Consultar envelopes</button></div></form>');
+  $('#env17Cancel').onclick=closeModal;
+  const form=$('#payrollEnvelopeForm17');
+  form.onsubmit=async ev=>{
+    ev.preventDefault();
+    const btn=form.querySelector('[type=submit]');btn.disabled=true;
+    try{await payrollEnvelopeConsolidationResult17(form.elements.payment_date.value);}
+    catch(err){
+      toast(err.status===404?'Publique o Worker v55 para abrir a consolidação da folha.':err.message,'error');
+      btn.disabled=false;
+    }
+  };
+}
+async function payrollEnvelopeConsolidationResult17(paymentDate){
+  const id=window.sagasPayrollCompetence;
+  if(!id){toast('Selecione uma competência.','error');return;}
+  const d=await api('/api/payroll/envelope-consolidation?competence_id='+encodeURIComponent(id)+
+    '&payment_date='+encodeURIComponent(paymentDate));
+  const items=d.items||[];
+  const amount=x=>typeof x==='number'&&Number.isFinite(x)?money(x):'Pendente';
+  const rows=items.map(e=>{
+    const c=e.consolidation||{},r=c.remuneration||{};
+    return '<tr><td class="code">'+esc(e.employee_code||'—')+'</td>'+
+      '<td><b>'+esc(e.employee_name)+'</b></td>'+
+      '<td>'+amount(r.salary_proportional)+'</td>'+
+      '<td>'+amount(r.event_earnings)+'</td>'+
+      '<td>'+amount(r.event_deductions)+'</td>'+
+      '<td>'+amount(r.event_subtotal_reconciled)+'</td>'+
+      '<td>'+esc((c.blockers||[]).length)+'</td>'+
+      '<td>'+esc(c.status||'PENDENTE')+'</td>'+
+      '<td><button type="button" class="btn secondary sm" data-env17-emp="'+esc(e.employee_id)+'">Detalhar</button></td></tr>';
+  }).join('');
+  openModal('Consolidação — '+String(d.competence?.competence||''),
+    'Etapa 17: envelope de conferência, sem aprovação de cálculo ou salário líquido.',
+    '<p class="help">Funcionários: '+esc(d.employee_count||0)+
+      ' · Com pendências: '+esc(d.blocked_employee_count||0)+
+      ' · Para conferência: '+esc(d.conference_employee_count||0)+
+      ' · Linhas de eventos: '+esc(d.total_event_lines||0)+'</p>'+
+    '<div class="table-wrap"><table class="table"><thead><tr><th>ID</th><th>Funcionário</th>'+
+    '<th>Salário*</th><th>Proventos*</th><th>Descontos*</th><th>Subtotal*</th>'+
+    '<th>Pendências</th><th>Status</th><th>Ação</th></tr></thead><tbody>'+
+    (rows||empty(9,'Sem funcionários','Nenhum funcionário encontrado na competência.'))+
+    '</tbody></table></div>'+
+    '<p class="help">*Componentes e subtotal apenas aritméticos, disponíveis quando conciliados. Não incluem descontos de faltas, DSR ou impostos. Não são valores para pagamento.</p>',true);
+  $$('[data-env17-emp]',$('#modalBody')).forEach(btn=>btn.onclick=()=>{
+    const e=items.find(x=>x.employee_id===btn.dataset.env17Emp);
+    if(e)payrollEnvelopeConsolidationEmployee17(e,paymentDate);
+  });
+}
+function payrollEnvelopeConsolidationEmployee17(e,paymentDate){
+  const c=e.consolidation||{},r=c.remuneration||{},o=c.occurrence_review||{},t=c.taxes||{};
+  const val=x=>typeof x==='number'&&Number.isFinite(x)?money(x):'Pendente';
+  const rows=[
+    ['Referência salarial histórica',r.salary_reference],
+    ['Salário proporcional (prévia)',r.salary_proportional],
+    ['Proventos de eventos',r.event_earnings],
+    ['Descontos de eventos',r.event_deductions],
+    ['Total bruto aritmético antes de faltas e tributos',r.gross_event_reference],
+    ['Subtotal aritmético conciliado (sem descontos adicionais)',r.event_subtotal_reconciled],
+    ['Faltas não aplicadas — referência',o.absence_discount_estimate],
+    ['DSR não aplicado — referência',o.dsr_discount_estimate],
+    ['INSS simulado (não homologado)',t.inss_estimate],
+    ['IRRF simulado (não homologado)',t.irrf_estimate],
+    ['FGTS patronal simulado (não é desconto do funcionário)',t.fgts_employer_estimate]
+  ].map(([label,v])=>'<tr><td>'+esc(label)+'</td><td>'+val(v)+'</td></tr>').join('');
+  const events=(c.event_lines||[]).map(x=>'<tr><td>'+esc(x.code||'—')+'</td><td>'+
+    esc(x.name||'—')+'</td><td>'+esc(x.type||'—')+'</td><td>'+val(x.value_preview)+
+    '</td><td>'+esc(x.status||'—')+'</td><td>'+esc(x.rule_version||'—')+
+    '</td><td>'+esc(x.fiscal_rule_version||'—')+'</td></tr>').join('');
+  const gates=(c.gates||[]).map(x=>'<tr><td>'+esc(x.code)+'</td><td>'+esc(x.status)+'</td></tr>').join('');
+  const blockers=(c.blockers||[]).map(x=>'<p>• '+esc(x.detail)+'</p>').join('');
+  const notes=(c.notes||[]).map(x=>'<p>• '+esc(x.detail)+'</p>').join('');
+  openModal('Envelope de conferência — '+e.employee_name,
+    'Consolidação preliminar de eventos, incidências e pendências da competência.',
+    '<p><b>ID:</b> '+esc(e.employee_code||'—')+' · <b>Situação:</b> '+esc(c.status||'PENDENTE')+'</p>'+
+    '<h4>Composição demonstrativa</h4><div class="table-wrap"><table class="table"><thead><tr>'+
+    '<th>Componente</th><th>Valor</th></tr></thead><tbody>'+rows+'</tbody></table></div>'+
+    '<h4>Eventos e versões das regras</h4><div class="table-wrap"><table class="table"><thead><tr>'+
+    '<th>Código</th><th>Evento</th><th>Tipo</th><th>Prévia</th><th>Situação</th><th>Fórmula</th><th>Incidência</th></tr></thead><tbody>'+
+    (events||empty(7,'Nenhum evento','Não há eventos registrados.'))+'</tbody></table></div>'+
+    '<h4>Portas de validação</h4><div class="table-wrap"><table class="table"><thead><tr>'+
+    '<th>Etapa</th><th>Resultado</th></tr></thead><tbody>'+gates+'</tbody></table></div>'+
+    '<h4>Pendências</h4><div class="help">'+
+    (blockers||'Sem pendências aritméticas adicionais. A folha ainda não está homologada.')+'</div>'+
+    '<h4>Observações</h4><div class="help">'+notes+'</div>'+
+    '<p class="help"><b>Nenhum valor líquido foi calculado. Nenhuma operação financeira ou contábil foi realizada.</b></p>'+
+    '<div class="form-actions"><button type="button" class="btn secondary" id="env17Back">Voltar</button></div>',true);
+  $('#env17Back').onclick=()=>payrollEnvelopeConsolidationResult17(paymentDate).catch(err=>toast(err.message,'error'));
 }
 
 // ===== SAGAS Folha Etapa 16: somente simulação monetária tributária =====
