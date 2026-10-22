@@ -793,8 +793,8 @@ async function renderPayroll(page){
   let cols,rows;
   const actions=x=>manage?`<div class="actions"><button class="btn secondary sm" data-payroll-edit="${esc(x.id)}">Editar</button><button class="btn danger sm" data-payroll-delete="${esc(x.id)}">Excluir</button></div>`:'';
   if(cfg.kind==='employees'){
-    cols=['Nome','Categoria','Departamento','Cargo','Salário','Admissão','Situação','Ações'];
-    rows=a.map(x=>`<tr><td><b>${esc(x.name)}</b></td><td>${esc(x.category_name||'—')}</td><td>${esc(x.department_name||'—')}</td><td>${esc(x.position_name||'—')}</td><td>${money(x.salary)}</td><td>${dateBR(x.admission_date)}</td><td>${x.active?'<span class="badge green">Ativo</span>':'<span class="badge gray">Inativo</span>'}</td><td><button class="btn secondary sm" data-emp-history="${esc(x.id)}">Histórico</button> ${actions(x)}</td></tr>`).join('');
+    cols=['ID único','Nome','Categoria','Departamento','Cargo','Salário','Admissão','Situação','Ações'];
+    rows=a.map(x=>`<tr><td class="code" style="font-size:11px;white-space:nowrap" title="ID único do funcionário">${esc(x.id)}</td><td><b>${esc(x.name)}</b></td><td>${esc(x.category_name||'—')}</td><td>${esc(x.department_name||'—')}</td><td>${esc(x.position_name||'—')}</td><td>${money(x.salary)}</td><td>${dateBR(x.admission_date)}</td><td>${x.active?'<span class="badge green">Ativo</span>':'<span class="badge gray">Inativo</span>'}</td><td><button class="btn secondary sm" data-emp-history="${esc(x.id)}">Histórico</button> ${actions(x)}</td></tr>`).join('');
   }else if(cfg.kind==='positions'){
     cols=['Nome do Cargo','Salário','Situação','Ações'];
     rows=a.map(x=>`<tr><td><b>${esc(x.name)}</b></td><td>${money(x.salary)}</td><td>${x.active?'<span class="badge green">Ativo</span>':'<span class="badge gray">Inativo</span>'}</td><td>${actions(x)}</td></tr>`).join('');
@@ -959,6 +959,7 @@ async function payrollForm(page,item=null){
   let fields=`<label class="field full"><span>${kind==='positions'?'Nome do Cargo':kind==='events'?'Descrição do Evento':kind==='employees'?'Nome do Funcionário':'Nome / Descrição'}</span>${input('name',item?.name,true)}</label>`;
   if(kind==='positions')fields+=`<label class="field"><span>Salário do Cargo (R$)</span><input name="salary" inputmode="decimal" required value="${esc(item?Number(item.salary).toFixed(2).replace('.',','):'0,00')}"></label>`;
   if(kind==='employees'){
+    fields+=item?`<label class="field full"><span>ID único do funcionário (automático e permanente)</span><input type="text" readonly value="${esc(item.id)}" style="background:#f3f6fb;font-family:Consolas,monospace;font-size:12px"></label>`:`<p class="help" style="grid-column:1/-1">O ID único do funcionário será gerado automaticamente ao salvar o cadastro.</p>`;
     const [categories,departments,positions]=data;
     if(!positions.some(x=>x.active||x.id===item?.position_id))return toast('Cadastre um cargo ativo antes de cadastrar funcionários.','error');
     fields+=`<label class="field"><span>Categoria</span>${sel('category_id',categories,item?.category_id)}</label>
