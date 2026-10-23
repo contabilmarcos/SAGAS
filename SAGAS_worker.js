@@ -2,7 +2,8 @@ import { payrollFinance39 } from './sagas-payroll39.js';
 import { payrollEmployer40 } from './sagas-payroll-employer40.js';
 import { payrollProvisions42 } from './sagas-payroll-provisions42.js';
 import { payrollProvisions43 } from './sagas-payroll-provisions43.js';
-// SAGAS Worker v80 - Controle de constituição, abertura e baixa de provisões | cumulativo desde v49
+import { payrollProvisionAccounting44 } from './sagas-payroll-provisions44.js';
+// SAGAS Worker v81 - Naturezas e conferência contábil das provisões | cumulativo desde v49
 // ===== utils.js =====
 function json(data, status = 200, extraHeaders = {}) {
   return new Response(JSON.stringify(data), {
@@ -10530,6 +10531,21 @@ async function route(request, env) {
   p=routeMatch(path,"/api/financial-payables/:id/cancel"); if(p&&method==="POST")return ok({payable:await cancelFinancialPayable(env,request,auth,companyId,p.id)});
   p=routeMatch(path,"/api/financial-payables/:id"); if(p&&method==="GET"){await requirePermission(env,auth.user.id,companyId,"financial.payable.read");const payable=await getFinancialPayable(env,companyId,p.id);if(payable.source_type==="PAYROLL_MONTHLY")await requirePermission(env,auth.user.id,companyId,"payroll.read");return ok({payable});}
 
+  // Etapa 44: naturezas por componente e conferencia contabil read-only.
+  if(path==='/api/payroll/provisions/accounting/settings'||
+     path==='/api/payroll/provisions/accounting/preview'){
+    await ensureSchemaRevision(env,'purchasing',1,async()=>{
+      await ensurePurchasingSchema(env);await ensurePurchaseIntegrationSchema(env);await ensureRmPurchasingSchema(env);
+    });
+    const settings=path.endsWith('/settings');
+    if((settings&&(method==='GET'||method==='POST'))||(!settings&&method==='GET'))
+      return ok(await payrollProvisionAccounting44(settings?(method==='POST'?'save':'settings'):'preview',{
+        env,companyId,auth,request,
+        competence:url.searchParams.get('competence'),
+        body:settings&&method==='POST'?await readJson(request):{},
+        d:{HttpError,requirePermission,ensureSchemaRevision,audit,uuid}
+      }));
+  }
   // Etapa 43 - somente livro operacional de provisoes (sem diario/titulo).
   if(path==='/api/payroll/provisions/ledger'&&method==='GET'){
     await ensureSchemaRevision(env,'payroll-employee-numbers',1,()=>ensurePayrollEmployeeNumbersSchema(env));

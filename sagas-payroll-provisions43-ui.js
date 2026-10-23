@@ -16,6 +16,7 @@ async function payrollProvision43Ledger(period){
   '<div class="toolbar"><label class="field"><span>Até a competência</span><input id="p43period" type="month" value="'+esc(competence)+'"></label>'+
   '<button class="btn secondary" id="p43consult">Consultar</button>'+
   (can('payroll.manage')?'<button class="btn secondary" id="p43opening">Saldo inicial</button><button class="btn secondary" id="p43use">Baixa documentada</button>':'')+
+  '<button class="btn secondary" id="p44settings">Naturezas contábeis</button><button class="btn secondary" id="p44preview">Prévia contábil</button>'+ 
   '</div><p class="help">'+esc(r.note)+'</p>'+
   '<div class="table-wrap"><table class="table"><thead><tr><th>Funcionário</th><th>Provisão</th><th>Centro de custo</th><th>Abertura</th><th>Constituído</th><th>Utilizado</th><th>Saldo</th></tr></thead><tbody>'+
   (rows||'<tr><td colspan="7">Nenhuma movimentação de provisão até esta competência.</td></tr>')+
@@ -24,6 +25,8 @@ async function payrollProvision43Ledger(period){
   '<h4>Competências constituídas</h4><div class="table-wrap"><table class="table"><thead><tr><th>Competência</th><th>Registro</th><th>Valor</th></tr></thead><tbody>'+
   (history||'<tr><td colspan="3">Ainda não existem competências constituídas.</td></tr>')+'</tbody></table></div>',true);
  document.getElementById('p43consult').onclick=()=>payrollProvision43Ledger(document.getElementById('p43period').value).catch(e=>toast(e.message,'error'));
+ document.getElementById('p44settings').onclick=()=>payrollProvision44Settings(competence).catch(e=>toast(e.message,'error'));
+ document.getElementById('p44preview').onclick=()=>payrollProvision44Preview(competence).catch(e=>toast(e.message,'error'));
  if(document.getElementById('p43opening'))document.getElementById('p43opening').onclick=()=>payrollProvision43Movement('OPENING',competence).catch(e=>toast(e.message,'error'));
  if(document.getElementById('p43use'))document.getElementById('p43use').onclick=()=>payrollProvision43Movement('USE',competence).catch(e=>toast(e.message,'error'));
 }
