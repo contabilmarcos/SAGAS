@@ -210,10 +210,14 @@
   function initialize(){
     scan();
     const observer=new MutationObserver(records=>{
+      let hasNewNodes=false;
       for(const entry of records){
-        if(entry.type==='attributes'&&entry.target.matches?.(accountSelectors))syncSelect(entry.target);
+        if(entry.type==='attributes'){
+          if(entry.target.matches?.(accountSelectors))syncSelect(entry.target);
+        }else if(entry.type==='childList')hasNewNodes=true;
       }
-      queueScan();
+      // Evita recursão ao atualizar o atributo disabled nos controles visuais.
+      if(hasNewNodes)queueScan();
     });
     observer.observe(document.body,{childList:true,subtree:true,attributes:true,attributeFilter:['disabled']});
     window.SAGAS_ACCOUNT_LOOKUP={open:openLookup,scan:scan,filter:filterAccounts,close:closeLookup};
