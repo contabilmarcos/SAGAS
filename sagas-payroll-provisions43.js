@@ -125,6 +125,7 @@ async function manual43(c){
  await d.audit(env,{companyId,userId:auth.user.id,action:kind,entity:'payroll_provision_movements43',entityId:id,request,after:{employee_id:emp.id,component,competence:period,amount_cents:amount,document_ref:ref,accounting_posted:false}});
  return {created:true,id,component,movement_kind:kind,amount_cents:amount,competence:period,accounting_posted:false};
 }
+export async function ensureProvisionLedger43(env){await schema43(env);}
 export async function payrollProvisions43(action,c){
  const {env,companyId,auth,d}=c;
  await d.requirePermission(env,auth.user.id,companyId,action==='ledger'?'payroll.read':'payroll.manage');

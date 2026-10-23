@@ -48,6 +48,7 @@ async function payrollProvision44Preview(period){
   (rows||'<tr><td colspan="5">Nenhuma partida pronta para conferência.</td></tr>')+'</tbody></table></div>'+
   '<p class="help"><b>Débitos:</b> '+cur(d.debit_cents)+' · <b>Créditos:</b> '+cur(d.credit_cents)+' · <b>Situação:</b> '+(d.ready_for_preview?'Partidas conciliadas':'Pendências a resolver')+'</p>'+
   (problems||'<p class="help">Sem pendências de mapeamento contábil nesta prévia.</p>')+
-  '<div class="form-actions"><button type="button" class="btn secondary" id="p44return">Voltar às naturezas</button></div>',true);
+  '<div class="form-actions"><button type="button" class="btn secondary" id="p44return">Voltar às naturezas</button><button type="button" class="btn primary" id="p45fromPreview">Abrir contabilização</button></div>',true);
  document.getElementById('p44return').onclick=()=>payrollProvision44Settings(period).catch(err=>toast(err.message,'error'));
+ document.getElementById('p45fromPreview').onclick=()=>payrollProvision45Open(period,'ACCRUAL').catch(err=>toast(err.message,'error'));
 }

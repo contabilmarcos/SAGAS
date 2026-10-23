@@ -1,9 +1,10 @@
 import { payrollFinance39 } from './sagas-payroll39.js';
 import { payrollEmployer40 } from './sagas-payroll-employer40.js';
 import { payrollProvisions42 } from './sagas-payroll-provisions42.js';
-import { payrollProvisions43 } from './sagas-payroll-provisions43.js';
+import { payrollProvisions43, ensureProvisionLedger43 } from './sagas-payroll-provisions43.js';
+import { payrollProvisionAccounting45 } from './sagas-payroll-provisions45.js';
 import { payrollProvisionAccounting44 } from './sagas-payroll-provisions44.js';
-// SAGAS Worker v81 - Naturezas e conferência contábil das provisões | cumulativo desde v49
+// SAGAS Worker v82 - Contabilizar constituição e baixas de provisões com confirmação | cumulativo desde v49
 // ===== utils.js =====
 function json(data, status = 200, extraHeaders = {}) {
   return new Response(JSON.stringify(data), {
@@ -10531,6 +10532,30 @@ async function route(request, env) {
   p=routeMatch(path,"/api/financial-payables/:id/cancel"); if(p&&method==="POST")return ok({payable:await cancelFinancialPayable(env,request,auth,companyId,p.id)});
   p=routeMatch(path,"/api/financial-payables/:id"); if(p&&method==="GET"){await requirePermission(env,auth.user.id,companyId,"financial.payable.read");const payable=await getFinancialPayable(env,companyId,p.id);if(payable.source_type==="PAYROLL_MONTHLY")await requirePermission(env,auth.user.id,companyId,"payroll.read");return ok({payable});}
 
+  // Etapa 45: contabilização explícita da constituição ou baixas; idempotência por movimento.
+  if(path==='/api/payroll/provisions/accounting/use-settings'||
+     path==='/api/payroll/provisions/accounting/posting-preview'||
+     path==='/api/payroll/provisions/accounting/post'){
+    await ensureSchemaRevision(env,'payroll-provision-ledger43',1,()=>ensureProvisionLedger43(env));
+    await ensureSchemaRevision(env,'purchasing',1,async()=>{
+      await ensurePurchasingSchema(env);await ensurePurchaseIntegrationSchema(env);await ensureRmPurchasingSchema(env);
+    });
+    const isUse=path.endsWith('/use-settings');
+    const isPreview=path.endsWith('/posting-preview');
+    const isPost=path.endsWith('/post');
+    const action=isUse?(method==='POST'?'save-use':'use-settings'):isPreview?'preview':'post';
+    if((isUse&&(method==='GET'||method==='POST'))||(isPreview&&method==='GET')||(isPost&&method==='POST')){
+      const body=method==='POST'?await readJson(request):{};
+      const d={HttpError,requirePermission,ensureSchemaRevision,audit,uuid,
+        hash:payrollProcessingSnapshotHash28,centsToMoney,buildEntry:buildInternalPostedEntry,
+        preview44:competence=>payrollProvisionAccounting44('preview',{
+          env,companyId,auth,request,competence,d:{HttpError,requirePermission,ensureSchemaRevision,audit,uuid}
+        })};
+      return ok(await payrollProvisionAccounting45(action,{env,companyId,auth,request,
+        body,kind:method==='POST'?body.kind:url.searchParams.get('kind'),
+        competence:method==='POST'?body.competence:url.searchParams.get('competence'),d}));
+    }
+  }
   // Etapa 44: naturezas por componente e conferencia contabil read-only.
   if(path==='/api/payroll/provisions/accounting/settings'||
      path==='/api/payroll/provisions/accounting/preview'){
