@@ -1,5 +1,5 @@
 import { payrollFinance37 } from './sagas-payroll37.js';
-// SAGAS Worker v74 - Etapa 37: integracao financeira e contabil da folha mensal | cumulativo desde v49
+// SAGAS Worker v74 - Etapa 37: folha mensal, financeiro, contabilidade e permissoes | cumulativo desde v49
 // ===== utils.js =====
 function json(data, status = 200, extraHeaders = {}) {
   return new Response(JSON.stringify(data), {
