@@ -1,5 +1,5 @@
-import { payrollFinance37 } from './sagas-payroll37.js';
-// SAGAS Worker v74 - Etapa 37: folha mensal, financeiro, contabilidade e permissoes | cumulativo desde v49
+import { payrollFinance38 } from './sagas-payroll38.js';
+// SAGAS Worker v75 - Ajuste Etapa 37: contabilizacao por evento e encargos | cumulativo desde v49
 // ===== utils.js =====
 function json(data, status = 200, extraHeaders = {}) {
   return new Response(JSON.stringify(data), {
@@ -5664,6 +5664,8 @@ async function savePayroll(env,request,auth,companyId,kind,id,body){
   const table=payrollKindTable(kind);
   await requirePermission(env,auth.user.id,companyId,'payroll.manage');
   const before=id?await getPayroll(env,companyId,kind,id):null;
+  if(kind==='events'&&before&&['SALARIO_BASE','INSS_EMP','IRRF_EMP','FGTS_PATRONAL'].includes(before.code))
+    throw new HttpError(409,'Evento automático da folha: não é permitido alterar seu cadastro. Configure apenas a contabilização.','AUTO_EVENT_LOCKED');
   const entryId=id||uuid();
   const name=cleanText(required(body.name,'nome'),200);
   if(!name)throw new HttpError(400,'Informe o nome.','VALIDATION_ERROR');
@@ -5685,6 +5687,8 @@ async function savePayroll(env,request,auth,companyId,kind,id,body){
     values.push(position.id,categoryId,departmentId,position.salary_cents,admissionDate);
   }else if(kind==='events'){
     const code=cleanText(required(body.code,'código do evento'),30).toUpperCase();
+    if(['SALARIO_BASE','INSS_EMP','IRRF_EMP','FGTS_PATRONAL'].includes(code))
+      throw new HttpError(409,'Código reservado ao cálculo automático da folha. O evento já aparece no cadastro.','AUTO_EVENT_RESERVED');
     const type=payrollEventType(body.event_type),unit=payrollReferenceUnit(body.reference_unit);
     columns.push('code','event_type','reference_unit');values.push(code,type,unit);
   }
@@ -5731,6 +5735,8 @@ async function deletePayroll(env,request,auth,companyId,kind,id){
   const table=payrollKindTable(kind);
   await requirePermission(env,auth.user.id,companyId,'payroll.manage');
   const before=await getPayroll(env,companyId,kind,id);
+  if(kind==='events'&&['SALARIO_BASE','INSS_EMP','IRRF_EMP','FGTS_PATRONAL'].includes(before.code))
+    throw new HttpError(409,'Evento automático da folha não pode ser excluído.','AUTO_EVENT_LOCKED');
   if(kind==='categories'||kind==='departments'||kind==='positions'){
     const column={categories:'category_id',departments:'department_id',positions:'position_id'}[kind];
     const ref=await env.DB.prepare(`SELECT 1 AS used FROM payroll_employees WHERE company_id=? AND ${column}=? LIMIT 1`).bind(companyId,id).first();
@@ -10108,6 +10114,8 @@ async function payrollMovementCreate(env,request,auth,companyId,body){
   const period=await payrollReadOpenCompetence(env,companyId,required(body.competence_id,'competência'));
   const employee=await payrollReference(env,companyId,'employees',required(body.employee_id,'funcionário'),'Funcionário');
   const event=await payrollReference(env,companyId,'events',required(body.event_id,'evento'),'Evento');
+  if(['SALARIO_BASE','INSS_EMP','IRRF_EMP','FGTS_PATRONAL'].includes(event.code))
+    throw new HttpError(409,'Este evento é calculado automaticamente: não lance manualmente.','AUTO_EVENT_MOVEMENT_BLOCKED');
   const unit=event.reference_unit;
   const requestKey=String(required(body.request_key,'identificador da operação'));
   if(!/^[a-zA-Z0-9_-]{16,100}$/.test(requestKey))throw new HttpError(400,'Identificador da operação inválido.','VALIDATION_ERROR');
@@ -10488,9 +10496,14 @@ async function route(request, env) {
   const payroll37Deps={HttpError,requirePermission,audit,ensureSchemaRevision,
     payrollMonthlyRunDetail35,payrollMonthlyConference36,
     buildInternalPostedEntry,centsToMoney,nextPayableNumber,uuid};
-  const payroll37Call=(action,runId,body)=>payrollFinance37(action,{
-    env,companyId,auth,request,runId,body,d:payroll37Deps
+  const payroll37Call=(action,runId,body,eventId)=>payrollFinance38(action,{
+    env,companyId,auth,request,runId,body,eventId,d:payroll37Deps
   });
+  p=routeMatch(path,'/api/payroll/events/:id/accounting');
+  if(p){
+    if(method==='GET')return ok(await payroll37Call('event-settings',null,null,p.id));
+    if(method==='POST')return ok(await payroll37Call('save-event',null,await readJson(request),p.id));
+  }
   if(path==='/api/payroll/monthly-finance/settings'){
     await ensureSchemaRevision(env,'payroll-calculation-foundation',1,()=>ensurePayrollCalculationFoundation34(env));
     if(method==='GET')return ok(await payroll37Call('settings'));
@@ -10819,6 +10832,7 @@ async function route(request, env) {
     payrollKindTable(p.kind);
     if(method==='GET'){
       await requirePermission(env,auth.user.id,companyId,'payroll.read');
+      if(p.kind==='events')return ok(await payroll37Call('catalog'));
       return ok({items:await listPayroll(env,companyId,p.kind)});
     }
     if(method==='POST')return ok({item:await savePayroll(env,request,auth,companyId,p.kind,null,await readJson(request))},201);
