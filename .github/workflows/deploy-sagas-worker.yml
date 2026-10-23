@@ -9,6 +9,8 @@ on:
       - 'sagas-payroll38.js'
       - 'sagas-payroll39.js'
       - 'sagas-payroll-employer40.js'
+      - 'sagas-payroll-provisions42.js'
+      - 'sagas-payroll-provisions42-ui.js'
       - '.github/workflows/deploy-sagas-worker.yml'
   workflow_dispatch:
     inputs:

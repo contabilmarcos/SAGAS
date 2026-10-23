@@ -1,6 +1,7 @@
 import { payrollFinance39 } from './sagas-payroll39.js';
 import { payrollEmployer40 } from './sagas-payroll-employer40.js';
-// SAGAS Worker v78 - Consulta patronal usa bases do envelope fechado | cumulativo desde v49
+import { payrollProvisions42 } from './sagas-payroll-provisions42.js';
+// SAGAS Worker v79 - Prévia de provisões mensais da folha fechada | cumulativo desde v49
 // ===== utils.js =====
 function json(data, status = 200, extraHeaders = {}) {
   return new Response(JSON.stringify(data), {
@@ -10528,6 +10529,18 @@ async function route(request, env) {
   p=routeMatch(path,"/api/financial-payables/:id/cancel"); if(p&&method==="POST")return ok({payable:await cancelFinancialPayable(env,request,auth,companyId,p.id)});
   p=routeMatch(path,"/api/financial-payables/:id"); if(p&&method==="GET"){await requirePermission(env,auth.user.id,companyId,"financial.payable.read");const payable=await getFinancialPayable(env,companyId,p.id);if(payable.source_type==="PAYROLL_MONTHLY")await requirePermission(env,auth.user.id,companyId,"payroll.read");return ok({payable});}
 
+  // Etapa 42 - provisões da competência fechada: SOMENTE prévia (não contabiliza).
+  p=routeMatch(path,'/api/payroll/monthly-runs/:id/provisions-preview');
+  if(p&&method==='GET'){
+    await ensureSchemaRevision(env,'payroll-calculation-foundation',1,()=>ensurePayrollCalculationFoundation34(env));
+    await ensureSchemaRevision(env,'payroll-monthly-review',1,()=>ensurePayrollMonthlyReviewSchema36(env));
+    const d={HttpError,requirePermission,payrollMonthlyRunDetail35,payrollMonthlyConference36,
+      readEmployerSettings:competence=>payrollEmployer40('read',{
+        env,companyId,auth,request,competence,
+        d:{HttpError,requirePermission,ensureSchemaRevision,audit,uuid}
+      })};
+    return ok(await payrollProvisions42({env,companyId,auth,request,runId:p.id,d}));
+  }
   // Etapas 40/41 - parametros patronais por empresa e previa somente de consulta.
   if(path==='/api/payroll/employer/settings'){
     if(method==='GET'||method==='POST')return ok(await payrollEmployer40(method==='GET'?'read':'save',{
