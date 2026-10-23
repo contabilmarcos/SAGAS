@@ -5380,7 +5380,7 @@ async function budgetNatureForm(id=null){
       <div class="section-title">Defaults contábeis</div>
       <div class="table-wrap"><table class="table"><thead><tr><th>D/C</th><th>Conta Contábil</th><th>%</th><th>Filial</th><th>Centro de Custo</th><th>Histórico</th><th>Complemento</th><th></th></tr></thead><tbody id="natureDefaultBody"></tbody></table></div>
       <div style="margin-top:9px"><button type="button" id="addNatureDefault" class="btn secondary sm">+ Adicionar default</button></div>
-      <div class="help" style="margin-top:10px">Quando houver mais de um default no mesmo lado, os percentuais desse lado devem totalizar 100%.</div>
+      <div class="help" style="margin-top:10px">Os percentuais devem totalizar 100% em cada lado (D/C) para cada centro de custo. Centros diferentes podem ter 100% cada, sem duplicar o lançamento.</div>
       <div class="form-actions"><button type="button" class="btn secondary" data-close>Cancelar</button><button class="btn primary">Salvar</button></div>
     </form>`,true);
   $('[data-close]').onclick=closeModal;
