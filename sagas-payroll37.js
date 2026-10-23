@@ -89,6 +89,7 @@ export async function payrollFinance37(action, c) {
   await d.requirePermission(env,auth.user.id,companyId,'payroll.manage');
   await d.requirePermission(env,auth.user.id,companyId,'accounting.entry.create');
   await d.requirePermission(env,auth.user.id,companyId,'financial.payable.manage');
+  await d.requirePermission(env,auth.user.id,companyId,'accounting.entry.post');
   if(existing)return {...preview,reused:true};
   if(c.body?.confirmation!=='INTEGRAR')fail('Digite INTEGRAR para confirmar.','CONFIRMATION_REQUIRED',400);
   if(problems.length)fail('Integracao bloqueada: '+problems[0].message);
