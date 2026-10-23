@@ -1,7 +1,8 @@
 import { payrollFinance39 } from './sagas-payroll39.js';
 import { payrollEmployer40 } from './sagas-payroll-employer40.js';
 import { payrollProvisions42 } from './sagas-payroll-provisions42.js';
-// SAGAS Worker v79 - Prévia de provisões mensais da folha fechada | cumulativo desde v49
+import { payrollProvisions43 } from './sagas-payroll-provisions43.js';
+// SAGAS Worker v80 - Controle de constituição, abertura e baixa de provisões | cumulativo desde v49
 // ===== utils.js =====
 function json(data, status = 200, extraHeaders = {}) {
   return new Response(JSON.stringify(data), {
@@ -10529,6 +10530,40 @@ async function route(request, env) {
   p=routeMatch(path,"/api/financial-payables/:id/cancel"); if(p&&method==="POST")return ok({payable:await cancelFinancialPayable(env,request,auth,companyId,p.id)});
   p=routeMatch(path,"/api/financial-payables/:id"); if(p&&method==="GET"){await requirePermission(env,auth.user.id,companyId,"financial.payable.read");const payable=await getFinancialPayable(env,companyId,p.id);if(payable.source_type==="PAYROLL_MONTHLY")await requirePermission(env,auth.user.id,companyId,"payroll.read");return ok({payable});}
 
+  // Etapa 43 - somente livro operacional de provisoes (sem diario/titulo).
+  if(path==='/api/payroll/provisions/ledger'&&method==='GET'){
+    await ensureSchemaRevision(env,'payroll-employee-numbers',1,()=>ensurePayrollEmployeeNumbersSchema(env));
+    return ok(await payrollProvisions43('ledger',{
+      env,companyId,auth,request,competence:url.searchParams.get('competence'),
+      d:{HttpError,requirePermission,ensureSchemaRevision,audit,uuid}
+    }));
+  }
+  if(path==='/api/payroll/provisions/movements'&&method==='POST'){
+    await ensureSchemaRevision(env,'payroll-employee-cost-center39',1,()=>ensurePayrollCostCenter39(env));
+    return ok(await payrollProvisions43('movement',{
+      env,companyId,auth,request,body:await readJson(request),
+      d:{HttpError,requirePermission,ensureSchemaRevision,audit,uuid}
+    }));
+  }
+  p=routeMatch(path,'/api/payroll/monthly-runs/:id/provisions-confirm');
+  if(p&&method==='POST'){
+    await ensureSchemaRevision(env,'payroll-calculation-foundation',1,()=>ensurePayrollCalculationFoundation34(env));
+    await ensureSchemaRevision(env,'payroll-monthly-review',1,()=>ensurePayrollMonthlyReviewSchema36(env));
+    return ok(await payrollProvisions43('accrue',{
+      env,companyId,auth,request,runId:p.id,body:await readJson(request),
+      d:{HttpError,requirePermission,ensureSchemaRevision,audit,uuid,
+        detail35:run=>payrollMonthlyRunDetail35(env,companyId,run),
+        preview42:run=>payrollProvisions42({
+          env,companyId,auth,request,runId:run,
+          d:{HttpError,requirePermission,payrollMonthlyRunDetail35,payrollMonthlyConference36,
+            readEmployerSettings:competence=>payrollEmployer40('read',{
+              env,companyId,auth,request,competence,
+              d:{HttpError,requirePermission,ensureSchemaRevision,audit,uuid}
+            })}
+        })
+      }
+    }));
+  }
   // Etapa 42 - provisões da competência fechada: SOMENTE prévia (não contabiliza).
   p=routeMatch(path,'/api/payroll/monthly-runs/:id/provisions-preview');
   if(p&&method==='GET'){
