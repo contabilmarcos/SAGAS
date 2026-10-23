@@ -1,5 +1,5 @@
 import { payrollFinance39 } from './sagas-payroll39.js';
-// SAGAS Worker v76 - Folha: natureza e centro de custo | cumulativo desde v49
+// SAGAS Worker v77 - Corrigir migracao da natureza contábil de eventos | cumulativo desde v49
 // ===== utils.js =====
 function json(data, status = 200, extraHeaders = {}) {
   return new Response(JSON.stringify(data), {
@@ -10548,6 +10548,11 @@ async function route(request, env) {
   });
   p=routeMatch(path,'/api/payroll/events/:id/accounting');
   if(p){
+    // A natureza usa o cadastro de Compras. Garantir que ele exista mesmo
+    // se esta empresa nunca acessou a tela de Naturezas antes.
+    await ensureSchemaRevision(env,'purchasing',1,async()=>{
+      await ensurePurchasingSchema(env);await ensurePurchaseIntegrationSchema(env);await ensureRmPurchasingSchema(env);
+    });
     if(method==='GET')return ok(await payroll37Call('event-settings',null,null,p.id));
     if(method==='POST')return ok(await payroll37Call('save-event',null,await readJson(request),p.id));
   }
