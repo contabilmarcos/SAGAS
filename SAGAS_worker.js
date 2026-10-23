@@ -1,4 +1,4 @@
-// SAGAS Worker v37 - cadastros de folha | base v36 - correção de validação de Natureza no lançamento de Nota Fiscal
+// SAGAS Worker v70 - Etapa 32: comparacao de versoes dos demonstrativos | cumulativo desde v49
 // ===== utils.js =====
 function json(data, status = 200, extraHeaders = {}) {
   return new Response(JSON.stringify(data), {
@@ -5563,6 +5563,26 @@ async function ensurePayrollSchema(env){
     WHERE r.code='ADMIN' AND p.code IN ('payroll.read','payroll.manage')`).run();
 }
 
+// Etapa 11.1 — ID de exibição 00001..99999, sem alterar o UUID interno.
+// Mantém reservas históricas mesmo se o cadastro for excluído: códigos não são reutilizados.
+async function ensurePayrollEmployeeNumbersSchema(env){
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS payroll_employee_numbers (
+    employee_id TEXT PRIMARY KEY,
+    company_id TEXT NOT NULL,
+    number INTEGER NOT NULL CHECK(number BETWEEN 1 AND 99999),
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(company_id,number)
+  )`).run();
+  // Backfill determinístico: criação mais antiga primeiro; ID desempata.
+  // Uma única instrução SQL mantém o preenchimento da migração atômico.
+  await env.DB.prepare(`INSERT INTO payroll_employee_numbers(employee_id,company_id,number)
+    SELECT e.id,e.company_id,
+           ROW_NUMBER() OVER(PARTITION BY e.company_id ORDER BY e.created_at,e.id)
+    FROM payroll_employees e
+    WHERE NOT EXISTS (SELECT 1 FROM payroll_employee_numbers n WHERE n.employee_id=e.id)
+  `).run();
+}
+
 function payrollKindTable(kind){
   if(!Object.prototype.hasOwnProperty.call(PAYROLL_TABLES,kind))
     throw new HttpError(404,'Cadastro da folha não encontrado.','NOT_FOUND');
@@ -5572,13 +5592,17 @@ function payrollKindTable(kind){
 async function listPayroll(env,companyId,kind){
   const table=payrollKindTable(kind);
   let sql;
-  if(kind==='employees')sql=`SELECT e.*,p.name AS position_name,
+  if(kind==='employees'){
+    await ensureSchemaRevision(env,'payroll-employee-numbers',1,()=>ensurePayrollEmployeeNumbersSchema(env));
+    sql=`SELECT e.*,printf('%05d',n.number) AS employee_code,p.name AS position_name,
     d.name AS department_name,c.name AS category_name
     FROM payroll_employees e
+    LEFT JOIN payroll_employee_numbers n ON n.employee_id=e.id AND n.company_id=e.company_id
     LEFT JOIN payroll_positions p ON p.id=e.position_id AND p.company_id=e.company_id
     LEFT JOIN payroll_departments d ON d.id=e.department_id AND d.company_id=e.company_id
     LEFT JOIN payroll_categories c ON c.id=e.category_id AND c.company_id=e.company_id
     WHERE e.company_id=? ORDER BY e.name COLLATE NOCASE`;
+  }
   else sql=`SELECT * FROM ${table} WHERE company_id=? ORDER BY ${kind==='events'?'code':'name'} COLLATE NOCASE`;
   const res=await env.DB.prepare(sql).bind(companyId).all();
   return (res.results||[]).map(x=>({
@@ -5647,13 +5671,34 @@ async function savePayroll(env,request,auth,companyId,kind,id,body){
       await env.DB.prepare(`UPDATE ${table} SET ${columns.map(c=>`${c}=?`).join(',')},updated_at=CURRENT_TIMESTAMP
         WHERE id=? AND company_id=?`).bind(...values,id,companyId).run();
     }else{
-      await env.DB.prepare(`INSERT INTO ${table} (id,company_id,${columns.join(',')})
-        VALUES (${Array(columns.length+2).fill('?').join(',')})`).bind(entryId,companyId,...values).run();
+      const insert=env.DB.prepare(`INSERT INTO ${table} (id,company_id,${columns.join(',')})
+        VALUES (${Array(columns.length+2).fill('?').join(',')})`).bind(entryId,companyId,...values);
+      if(kind==='employees'){
+        // Garante a existência da numeração antes do cadastro.
+        await ensureSchemaRevision(env,'payroll-employee-numbers',1,()=>ensurePayrollEmployeeNumbersSchema(env));
+        // O D1 executa o lote transacionalmente: funcionário e código nascem juntos.
+        await env.DB.batch([insert,env.DB.prepare(`INSERT INTO payroll_employee_numbers(employee_id,company_id,number)
+          SELECT ?,?,COALESCE(MAX(number),0)+1 FROM payroll_employee_numbers WHERE company_id=?`
+        ).bind(entryId,companyId,companyId)]);
+      }else await insert.run();
     }
   }catch(err){
+    if(kind==='employees'&&/CHECK constraint failed|payroll_employee_numbers/i.test(String(err?.message||err)))
+      throw new HttpError(409,'Limite de 99999 códigos de funcionários por empresa atingido ou código indisponível.','EMPLOYEE_CODE_LIMIT');
     if(/UNIQUE constraint failed/i.test(String(err?.message||err)))
       throw new HttpError(409,kind==='events'?'Já existe um evento com esse código.':'Já existe um cadastro com esse nome.','DUPLICATE');
     throw err;
+  }
+  if(kind==='employees'&&!id){
+    await ensureSchemaRevision(env,'payroll-employee-history',1,()=>ensurePayrollEmployeeRecordsSchema(env));
+    const initial=await env.DB.prepare('SELECT salary_cents,admission_date FROM payroll_employees WHERE id=? AND company_id=?').bind(entryId,companyId).first();
+    // Não presume que o salário atual do cargo era igual em admissões retroativas.
+    // Só cria a vigência inicial automaticamente para admissão no mês corrente.
+    const currentMonth=new Date().toISOString().slice(0,7);
+    if(initial.admission_date.slice(0,7)===currentMonth){
+      await env.DB.prepare(`INSERT OR IGNORE INTO payroll_salary_history (id,company_id,employee_id,effective_from,salary_cents,notes,created_by)
+        VALUES (?,?,?,?,?,'Salário inicial do cargo na admissão do mês corrente',?)`).bind(uuid(),companyId,entryId,initial.admission_date,initial.salary_cents,auth.user.id).run();
+    }
   }
   const after=await getPayroll(env,companyId,kind,entryId);
   await audit(env,{companyId,userId:auth.user.id,action:id?'UPDATE':'CREATE',entity:table,entityId:entryId,before,after,request});
@@ -5669,8 +5714,3847 @@ async function deletePayroll(env,request,auth,companyId,kind,id){
     const ref=await env.DB.prepare(`SELECT 1 AS used FROM payroll_employees WHERE company_id=? AND ${column}=? LIMIT 1`).bind(companyId,id).first();
     if(ref)throw new HttpError(409,'Cadastro utilizado por funcionário. Inative em vez de excluir.','IN_USE');
   }
+  if(kind==='employees'){
+    await ensureSchemaRevision(env,'payroll-employee-history',1,()=>ensurePayrollEmployeeRecordsSchema(env));
+    for(const table of Object.values(PAYROLL_EMPLOYEE_RECORD_KINDS)){
+      const history=await env.DB.prepare(`SELECT 1 AS found FROM ${table} WHERE company_id=? AND employee_id=? LIMIT 1`).bind(companyId,id).first();
+      if(history)throw new HttpError(409,'Funcionário possui histórico trabalhista. Inative em vez de excluir.','IN_USE');
+    }
+  }
+  if(kind==='employees'||kind==='events'){
+    const used=await env.DB.prepare(`SELECT 1 AS used FROM payroll_movements WHERE company_id=? AND ${kind==='employees'?'employee_id':'event_id'}=? LIMIT 1`).bind(companyId,id).first();
+    if(used)throw new HttpError(409,'Cadastro possui lançamentos. Inative em vez de excluir.','IN_USE');
+  }
   await env.DB.prepare(`DELETE FROM ${table} WHERE id=? AND company_id=?`).bind(id,companyId).run();
   await audit(env,{companyId,userId:auth.user.id,action:'DELETE',entity:table,entityId:id,before,request});
+  return {deleted:true,id};
+}
+
+
+
+// ===== SAGAS Folha Etapa 08: histórico funcional e salarial por vigência =====
+// Operação isolada por empresa e funcionário. Salários antigos nunca são presumidos.
+const PAYROLL_EMPLOYEE_RECORD_KINDS={
+  salary:'payroll_salary_history',schedule:'payroll_work_schedule_history',
+  dependents:'payroll_employee_dependents',occurrences:'payroll_employee_occurrences',
+  functional:'payroll_employee_functional_history'
+};
+async function ensurePayrollEmployeeRecordsSchema(env){
+  await env.DB.batch([
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS payroll_salary_history (
+      id TEXT PRIMARY KEY,company_id TEXT NOT NULL,employee_id TEXT NOT NULL REFERENCES payroll_employees(id) ON DELETE RESTRICT,
+      effective_from TEXT NOT NULL,salary_cents INTEGER NOT NULL CHECK(salary_cents>=0),
+      notes TEXT NOT NULL DEFAULT '',created_by TEXT NOT NULL,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,UNIQUE(company_id,employee_id,effective_from))`),
+    env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_payroll_salary_asof ON payroll_salary_history(company_id,employee_id,effective_from)`),
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS payroll_work_schedule_history (
+      id TEXT PRIMARY KEY,company_id TEXT NOT NULL,employee_id TEXT NOT NULL REFERENCES payroll_employees(id) ON DELETE RESTRICT,
+      effective_from TEXT NOT NULL,weekly_hours_milli INTEGER NOT NULL CHECK(weekly_hours_milli>0),
+      monthly_hours_milli INTEGER NOT NULL CHECK(monthly_hours_milli>0),notes TEXT NOT NULL DEFAULT '',
+      created_by TEXT NOT NULL,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,UNIQUE(company_id,employee_id,effective_from))`),
+    env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_payroll_schedule_asof ON payroll_work_schedule_history(company_id,employee_id,effective_from)`),
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS payroll_employee_dependents (
+      id TEXT PRIMARY KEY,company_id TEXT NOT NULL,employee_id TEXT NOT NULL REFERENCES payroll_employees(id) ON DELETE RESTRICT,
+      name TEXT NOT NULL,relationship TEXT NOT NULL CHECK(relationship IN ('FILHO','CONJUGE','OUTRO')),
+      birth_date TEXT NOT NULL,irrf_eligible INTEGER NOT NULL DEFAULT 0,
+      effective_from TEXT NOT NULL,effective_to TEXT,notes TEXT NOT NULL DEFAULT '',
+      created_by TEXT NOT NULL,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`),
+    env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_payroll_dependent_asof ON payroll_employee_dependents(company_id,employee_id,effective_from,effective_to)`),
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS payroll_employee_occurrences (
+      id TEXT PRIMARY KEY,company_id TEXT NOT NULL,employee_id TEXT NOT NULL REFERENCES payroll_employees(id) ON DELETE RESTRICT,
+      kind TEXT NOT NULL CHECK(kind IN ('FALTA','AFASTAMENTO','FERIAS','LICENCA')),
+      start_date TEXT NOT NULL,end_date TEXT NOT NULL,notes TEXT NOT NULL DEFAULT '',
+      created_by TEXT NOT NULL,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`),
+    env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_payroll_occurrence_month ON payroll_employee_occurrences(company_id,employee_id,start_date,end_date)`),
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS payroll_employee_functional_history (
+      id TEXT PRIMARY KEY,company_id TEXT NOT NULL,employee_id TEXT NOT NULL REFERENCES payroll_employees(id) ON DELETE RESTRICT,
+      effective_from TEXT NOT NULL,position_id TEXT NOT NULL REFERENCES payroll_positions(id) ON DELETE RESTRICT,
+      situation TEXT NOT NULL CHECK(situation IN ('ATIVO','AFASTADO','DESLIGADO')),
+      notes TEXT NOT NULL DEFAULT '',created_by TEXT NOT NULL,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,UNIQUE(company_id,employee_id,effective_from))`),
+    env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_payroll_functional_asof ON payroll_employee_functional_history(company_id,employee_id,effective_from)`)
+  ]);
+}
+function payrollStrictDate(value,label){
+  const s=isoDate(value,label),p=s.split('-').map(Number);
+  const d=new Date(Date.UTC(p[0],p[1]-1,p[2]));
+  if(d.getUTCFullYear()!==p[0]||d.getUTCMonth()+1!==p[1]||d.getUTCDate()!==p[2]||p[0]<1900||p[0]>2100)
+    throw new HttpError(400,`${label} inválida.`,'VALIDATION_ERROR');
+  return s;
+}
+function payrollHoursMilli(value,label,max){
+  const n=Number(value);
+  if(value===null||value===undefined||value===''||!Number.isFinite(n)||n<=0||n>max||Math.abs(n*1000-Math.round(n*1000))>1e-6)
+    throw new HttpError(400,`${label} deve ser positiva, no máximo ${max}, com até 3 casas decimais.`,'VALIDATION_ERROR');
+  return Math.round(n*1000);
+}
+function payrollEmployeeKindTable(kind){
+  if(!Object.prototype.hasOwnProperty.call(PAYROLL_EMPLOYEE_RECORD_KINDS,kind))
+    throw new HttpError(404,'Tipo de histórico desconhecido.','NOT_FOUND');
+  return PAYROLL_EMPLOYEE_RECORD_KINDS[kind];
+}
+async function payrollEmployeeRecordList(env,companyId,employeeId,kind){
+  const table=payrollEmployeeKindTable(kind);
+  await getPayroll(env,companyId,'employees',employeeId);
+  const ordering=kind==='occurrences'?'start_date':kind==='dependents'?'effective_from':'effective_from';
+  const r=await env.DB.prepare(`SELECT * FROM ${table} WHERE company_id=? AND employee_id=? ORDER BY ${ordering} DESC,id DESC LIMIT 251`).bind(companyId,employeeId).all();
+  if((r.results||[]).length>250)throw new HttpError(409,'Histórico excede 250 registros. Consulte de forma paginada.','LIMIT');
+  return (r.results||[]).map(x=>({
+    ...x,...(kind==='salary'?{salary:centsToMoney(x.salary_cents)}:{}),
+    ...(kind==='schedule'?{weekly_hours:x.weekly_hours_milli/1000,monthly_hours:x.monthly_hours_milli/1000}:{})
+  }));
+}
+async function payrollEmployeeRecordSave(env,request,auth,companyId,employeeId,kind,id,body){
+  await requirePermission(env,auth.user.id,companyId,'payroll.manage');
+  const table=payrollEmployeeKindTable(kind);
+  const employee=await getPayroll(env,companyId,'employees',employeeId);
+  const old=id?await env.DB.prepare(`SELECT * FROM ${table} WHERE id=? AND company_id=? AND employee_id=?`).bind(id,companyId,employeeId).first():null;
+  if(id&&!old)throw new HttpError(404,'Registro histórico não encontrado.','NOT_FOUND');
+  const notes=cleanText(body.notes||'',500);
+  let fields=[],vals=[];
+  const add=(key,value)=>{fields.push(key);vals.push(value)};
+  if(kind==='salary'||kind==='schedule'||kind==='functional'){
+    const from=payrollStrictDate(body.effective_from,'Vigência');
+    if(from<employee.admission_date)throw new HttpError(400,'A vigência não pode ser anterior à admissão.','VALIDATION_ERROR');
+    add('effective_from',from);
+  }
+  if(kind==='salary'){
+    const amount=moneyToCents(required(body.salary,'salário'));
+    if(!Number.isSafeInteger(amount)||amount<0||amount>99999999999)throw new HttpError(400,'Salário fora do limite.','VALIDATION_ERROR');
+    add('salary_cents',amount);add('notes',notes);
+  }else if(kind==='schedule'){
+    add('weekly_hours_milli',payrollHoursMilli(body.weekly_hours,'Jornada semanal',60));
+    add('monthly_hours_milli',payrollHoursMilli(body.monthly_hours,'Jornada mensal',300));add('notes',notes);
+  }else if(kind==='dependents'){
+    const name=cleanText(required(body.name,'nome'),160);
+    const relationship=String(body.relationship||'').toUpperCase();
+    if(!name||!['FILHO','CONJUGE','OUTRO'].includes(relationship))throw new HttpError(400,'Dependente ou parentesco inválido.','VALIDATION_ERROR');
+    const born=payrollStrictDate(body.birth_date,'Nascimento');
+    const from=payrollStrictDate(body.effective_from,'Vigência');
+    const to=body.effective_to?payrollStrictDate(body.effective_to,'Fim da vigência'):null;
+    if(born>from||from<employee.admission_date||to&&to<from)throw new HttpError(400,'Datas do dependente inconsistentes.','VALIDATION_ERROR');
+    add('name',name);add('relationship',relationship);add('birth_date',born);add('irrf_eligible',bool01(body.irrf_eligible,0));
+    add('effective_from',from);add('effective_to',to);add('notes',notes);
+  }else if(kind==='occurrences'){
+    const k=String(body.kind||'').toUpperCase();
+    if(!['FALTA','AFASTAMENTO','FERIAS','LICENCA'].includes(k))throw new HttpError(400,'Tipo de ocorrência inválido.','VALIDATION_ERROR');
+    const start=payrollStrictDate(body.start_date,'Data inicial');
+    const end=payrollStrictDate(body.end_date,'Data final');
+    if(start<employee.admission_date||end<start)throw new HttpError(400,'Período da ocorrência inválido.','VALIDATION_ERROR');
+    add('kind',k);add('start_date',start);add('end_date',end);add('notes',notes);
+  }else if(kind==='functional'){
+    const pos=await payrollReference(env,companyId,'positions',required(body.position_id,'cargo'),'Cargo');
+    const status=String(body.situation||'').toUpperCase();
+    if(!['ATIVO','AFASTADO','DESLIGADO'].includes(status))throw new HttpError(400,'Situação funcional inválida.','VALIDATION_ERROR');
+    add('position_id',pos.id);add('situation',status);add('notes',notes);
+  }
+  const recordId=id||uuid();
+  try{
+    if(id)await env.DB.prepare(`UPDATE ${table} SET ${fields.map(c=>c+'=?').join(',')},updated_at=CURRENT_TIMESTAMP WHERE id=? AND company_id=? AND employee_id=?`).bind(...vals,id,companyId,employeeId).run();
+    else await env.DB.prepare(`INSERT INTO ${table}(id,company_id,employee_id,${fields.join(',')},created_by) VALUES (${Array(fields.length+4).fill('?').join(',')})`).bind(recordId,companyId,employeeId,...vals,auth.user.id).run();
+  }catch(e){if(/UNIQUE constraint failed/i.test(String(e?.message||e)))throw new HttpError(409,'Já existe registro com essa vigência. Edite o existente.','DUPLICATE');throw e}
+  const after=await env.DB.prepare(`SELECT * FROM ${table} WHERE id=? AND company_id=? AND employee_id=?`).bind(recordId,companyId,employeeId).first();
+  await audit(env,{companyId,userId:auth.user.id,action:id?'UPDATE':'CREATE',entity:table,entityId:recordId,before:old,after,request});
+  return after;
+}
+async function payrollEmployeeRecordDelete(env,request,auth,companyId,employeeId,kind,id){
+  await requirePermission(env,auth.user.id,companyId,'payroll.manage');
+  const table=payrollEmployeeKindTable(kind);await getPayroll(env,companyId,'employees',employeeId);
+  const row=await env.DB.prepare(`SELECT * FROM ${table} WHERE id=? AND company_id=? AND employee_id=?`).bind(id,companyId,employeeId).first();
+  if(!row)throw new HttpError(404,'Registro histórico não encontrado.','NOT_FOUND');
+  await env.DB.prepare(`DELETE FROM ${table} WHERE id=? AND company_id=? AND employee_id=?`).bind(id,companyId,employeeId).run();
+  await audit(env,{companyId,userId:auth.user.id,action:'DELETE',entity:table,entityId:id,before:row,request});
+  return {deleted:true,id};
+}
+async function payrollEmployeeHistoricalContext(env,companyId,firstDate,lastDate){
+  await ensureSchemaRevision(env,'payroll-employee-history',1,()=>ensurePayrollEmployeeRecordsSchema(env));
+  const defs=[
+    ['salary',`SELECT employee_id,effective_from,salary_cents FROM payroll_salary_history WHERE company_id=? AND effective_from<=? ORDER BY employee_id,effective_from DESC`,firstDate],
+    ['schedule',`SELECT employee_id,effective_from,weekly_hours_milli,monthly_hours_milli FROM payroll_work_schedule_history WHERE company_id=? AND effective_from<=? ORDER BY employee_id,effective_from DESC`,firstDate],
+    ['dependents',`SELECT employee_id,id,irrf_eligible FROM payroll_employee_dependents WHERE company_id=? AND effective_from<=? AND (effective_to IS NULL OR effective_to>=?) ORDER BY employee_id`,lastDate],
+    ['occurrences',`SELECT employee_id,kind,start_date,end_date FROM payroll_employee_occurrences WHERE company_id=? AND start_date<=? AND end_date>=? ORDER BY employee_id`,lastDate],
+    ['functional',`SELECT employee_id,effective_from,situation,position_id FROM payroll_employee_functional_history WHERE company_id=? AND effective_from<=? ORDER BY employee_id,effective_from DESC`,firstDate],
+    ['changesSalary',`SELECT employee_id,effective_from FROM payroll_salary_history WHERE company_id=? AND effective_from>? AND effective_from<=? ORDER BY employee_id`,lastDate],
+    ['changesSchedule',`SELECT employee_id,effective_from FROM payroll_work_schedule_history WHERE company_id=? AND effective_from>? AND effective_from<=? ORDER BY employee_id`,lastDate],
+    ['changesFunctional',`SELECT employee_id,effective_from FROM payroll_employee_functional_history WHERE company_id=? AND effective_from>? AND effective_from<=? ORDER BY employee_id`,lastDate]
+  ];
+  const maps={};
+  for(const [kind,sql,date] of defs){
+    const args=kind==='dependents'?[companyId,date,firstDate]:kind==='occurrences'?[companyId,date,firstDate]:kind.startsWith('changes')?[companyId,firstDate,date]:[companyId,date];
+    const r=await env.DB.prepare(sql+' LIMIT 5001').bind(...args).all();
+    if((r.results||[]).length>5000)throw new HttpError(409,'Histórico extenso demais para esta prévia.','PREVIEW_LIMIT');
+    const groups=new Map();for(const row of r.results||[]){if(!groups.has(row.employee_id))groups.set(row.employee_id,[]);groups.get(row.employee_id).push(row)}
+    maps[kind]=groups;
+  }
+  return maps;
+}
+
+// ===== Etapa 04: versões imutáveis de parametrização dos eventos (não calcula folha) =====
+async function ensurePayrollEventRulesSchema(env){
+  await env.DB.batch([
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS payroll_event_rule_versions (
+      id TEXT PRIMARY KEY,
+      company_id TEXT NOT NULL,
+      event_id TEXT NOT NULL REFERENCES payroll_events(id) ON DELETE RESTRICT,
+      effective_from TEXT NOT NULL CHECK(length(effective_from)=7 AND substr(effective_from,5,1)='-'
+        AND substr(effective_from,6,2) BETWEEN '01' AND '12'),
+      revision INTEGER NOT NULL CHECK(revision>=1),
+      priority INTEGER NOT NULL CHECK(priority BETWEEN 0 AND 99),
+      calculation_code INTEGER NOT NULL CHECK(calculation_code BETWEEN 0 AND 999),
+      formula_text TEXT,
+      inss TEXT NOT NULL DEFAULT 'PENDENTE' CHECK(inss IN ('SIM','NAO','PENDENTE')),
+      irrf TEXT NOT NULL DEFAULT 'PENDENTE' CHECK(irrf IN ('SIM','NAO','PENDENTE')),
+      fgts TEXT NOT NULL DEFAULT 'PENDENTE' CHECK(fgts IN ('SIM','NAO','PENDENTE')),
+      request_key TEXT NOT NULL,
+      created_by TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(company_id,event_id,effective_from,revision),
+      UNIQUE(company_id,request_key)
+    )`),
+    env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_payroll_event_rule_effective
+       ON payroll_event_rule_versions(company_id,event_id,effective_from DESC,revision DESC)`)
+  ]);
+}
+function payrollIncidenceFlag(value,label){
+  const code=String(value??'PENDENTE').trim().toUpperCase();
+  if(!['SIM','NAO','PENDENTE'].includes(code))
+    throw new HttpError(400,`Incidência de ${label} inválida.`,'VALIDATION_ERROR');
+  return code;
+}
+function payrollRulePayload(body){
+  const eventId=cleanText(required(body.event_id,'evento'),100);
+  const effectiveFrom=payrollCompetence(required(body.effective_from,'competência inicial'));
+  const priority=Number(body.priority),calculationCode=Number(body.calculation_code);
+  if(body.priority===''||body.priority===undefined||body.priority===null||!Number.isInteger(priority)||priority<0||priority>99)
+    throw new HttpError(400,'Prioridade deve estar entre 0 e 99.','VALIDATION_ERROR');
+  if(body.calculation_code===''||body.calculation_code===undefined||body.calculation_code===null||!Number.isInteger(calculationCode)||calculationCode<0||calculationCode>999)
+    throw new HttpError(400,'Código de cálculo deve ser um inteiro entre 0 e 999.','VALIDATION_ERROR');
+  const raw=String(body.formula_text??'').trim();
+  if(raw.length>1500 || /[\u0000-\u0008\u000B\u000C\u000E-\u001F]/.test(raw))
+    throw new HttpError(400,'Fórmula deve ter até 1500 caracteres de texto válido.','VALIDATION_ERROR');
+  const requestKey=String(required(body.request_key,'identificador da operação'));
+  if(!/^[A-Za-z0-9_-]{16,100}$/.test(requestKey))
+    throw new HttpError(400,'Identificador da operação inválido.','VALIDATION_ERROR');
+  return {event_id:eventId,effective_from:effectiveFrom,priority,calculation_code:calculationCode,
+    formula_text:raw||null,inss:payrollIncidenceFlag(body.inss,'INSS'),
+    irrf:payrollIncidenceFlag(body.irrf,'IRRF'),fgts:payrollIncidenceFlag(body.fgts,'FGTS'),request_key:requestKey};
+}
+async function payrollEventRulesList(env,companyId,eventId,competence){
+  const event=await env.DB.prepare(`SELECT id,name,code,event_type,reference_unit,active FROM payroll_events WHERE company_id=? AND id=?`)
+    .bind(companyId,eventId).first();
+  if(!event)throw new HttpError(404,'Evento não encontrado nesta empresa.','NOT_FOUND');
+  let period=null;
+  if(competence!==null&&competence!==undefined&&competence!=='')period=payrollCompetence(competence);
+  const result=await env.DB.prepare(`SELECT id,effective_from,revision,priority,calculation_code,
+      formula_text,inss,irrf,fgts,created_by,created_at
+      FROM payroll_event_rule_versions WHERE company_id=? AND event_id=?
+      ORDER BY effective_from DESC,revision DESC LIMIT 501`).bind(companyId,eventId).all();
+  const versions=result.results||[];
+  if(versions.length>500)throw new HttpError(409,'Histórico muito grande para esta consulta.','TOO_MANY_RULE_VERSIONS');
+  const applicable=period?versions.find(v=>v.effective_from<=period)||null:null;
+  return {event,versions,applicable,competence:period,configuration_only:true,
+    formulas_executed:false,ready_for_payroll:false};
+}
+async function payrollEventRuleCreate(env,request,auth,companyId,body){
+  await requirePermission(env,auth.user.id,companyId,'payroll.manage');
+  const data=payrollRulePayload(body);
+  const event=await env.DB.prepare(`SELECT id,active FROM payroll_events WHERE id=? AND company_id=?`)
+    .bind(data.event_id,companyId).first();
+  if(!event)throw new HttpError(404,'Evento não encontrado nesta empresa.','NOT_FOUND');
+  if(!event.active)throw new HttpError(409,'Não é permitido configurar evento inativo.','INACTIVE_REFERENCE');
+  const previous=await env.DB.prepare(`SELECT * FROM payroll_event_rule_versions WHERE company_id=? AND request_key=?`)
+    .bind(companyId,data.request_key).first();
+  if(previous){
+    const fields=['event_id','effective_from','priority','calculation_code','formula_text','inss','irrf','fgts'];
+    if(!fields.every(k=>previous[k]===data[k]))
+      throw new HttpError(409,'Identificador de operação reutilizado com dados diferentes.','IDEMPOTENCY_CONFLICT');
+    return {id:previous.id,revision:previous.revision,effective_from:previous.effective_from,reused:true};
+  }
+  const revRow=await env.DB.prepare(`SELECT MAX(revision) AS rev FROM payroll_event_rule_versions
+    WHERE company_id=? AND event_id=? AND effective_from=?`)
+    .bind(companyId,data.event_id,data.effective_from).first();
+  const rev=Number(revRow?.rev||0)+1, id=uuid();
+  try{
+    await env.DB.prepare(`INSERT INTO payroll_event_rule_versions (
+      id,company_id,event_id,effective_from,revision,priority,calculation_code,
+      formula_text,inss,irrf,fgts,request_key,created_by)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+      .bind(id,companyId,data.event_id,data.effective_from,rev,data.priority,data.calculation_code,
+        data.formula_text,data.inss,data.irrf,data.fgts,data.request_key,auth.user.id).run();
+  }catch(e){
+    if(/UNIQUE constraint failed/i.test(String(e?.message||e)))
+      throw new HttpError(409,'Conflito de gravação. Atualize a tela e tente novamente.','CONFLICT');
+    throw e;
+  }
+  await audit(env,{companyId,userId:auth.user.id,action:'CREATE',entity:'payroll_event_rule_versions',entityId:id,
+    after:{...data,revision:rev},request});
+  return {id,revision:rev,effective_from:data.effective_from,reused:false,
+    configuration_only:true,formulas_executed:false};
+}
+
+
+
+// SAGAS Folha v44: tabelas históricas de vigência RGPS (empregado) e IRRF (pagamento).
+// Moeda: centavos; taxas em base 10.000. Não é processamento homologado.
+const HIST_INSS=[
+ ['2020-01','FLAT',[[183029,800],[305052,900],[610106,1100]]],
+ ['2020-03','PROGRESSIVE',[[104500,750],[208960,900],[313440,1200],[610106,1400]]],
+ ['2021-01','PROGRESSIVE',[[110000,750],[220348,900],[330522,1200],[643357,1400]]],
+ ['2022-01','PROGRESSIVE',[[121200,750],[242735,900],[364103,1200],[708722,1400]]],
+ ['2023-01','PROGRESSIVE',[[130200,750],[257129,900],[385694,1200],[750749,1400]]],
+ ['2023-05','PROGRESSIVE',[[132000,750],[257129,900],[385694,1200],[750749,1400]]],
+ ['2024-01','PROGRESSIVE',[[141200,750],[266668,900],[400003,1200],[778602,1400]]],
+ ['2025-01','PROGRESSIVE',[[151800,750],[279388,900],[419083,1200],[815741,1400]]],
+ ['2026-01','PROGRESSIVE',[[162100,750],[290284,900],[435427,1200],[847555,1400]]]
+];
+const HIST_IRRF=[
+ ['2020-01',[[190398,0,0],[282665,750,14280],[375105,1500,35480],[466468,2250,63613],[Infinity,2750,86936]],0,false],
+ ['2023-05',[[211200,0,0],[282665,750,15840],[375105,1500,37040],[466468,2250,65173],[Infinity,2750,88496]],52800,false],
+ ['2024-02',[[225920,0,0],[282665,750,16944],[375105,1500,38144],[466468,2250,66277],[Infinity,2750,89600]],56480,false],
+ ['2025-05',[[242880,0,0],[282665,750,18216],[375105,1500,39416],[466468,2250,67549],[Infinity,2750,90873]],60720,false],
+ ['2026-01',[[242880,0,0],[282665,750,18216],[375105,1500,39416],[466468,2250,67549],[Infinity,2750,90873]],60720,true]
+];
+function histTable(rows,ym){
+  if(!/^20(2[0-6])-(0[1-9]|1[0-2])$/.test(ym))
+    throw new HttpError(409,'Tabelas disponíveis apenas de 2020 a 2026.','TAX_TABLE_UNAVAILABLE');
+  let table=null;for(const row of rows)if(row[0]<=ym)table=row;
+  if(!table)throw new HttpError(409,'Tabela não encontrada.','TAX_TABLE_UNAVAILABLE');
+  return table;
+}
+function histPaymentDate(value){
+  const x=String(value||'');
+  if(!/^20(2[0-6])-(0[1-9]|1[0-2])-([0-2][0-9]|3[01])$/.test(x))
+    throw new HttpError(400,'Informe a data de pagamento entre 2020 e 2026.','PAYMENT_DATE_REQUIRED');
+  const d=new Date(x+'T12:00:00Z');
+  if(!Number.isFinite(d.getTime())||d.toISOString().slice(0,10)!==x)
+    throw new HttpError(400,'Data de pagamento inválida.','INVALID_PAYMENT_DATE');
+  return x;
+}
+function payrollTaxHistorical(baseInss,irrfGross,baseFgts,competence,paymentDate){
+  const payment=histPaymentDate(paymentDate), inssTable=histTable(HIST_INSS,competence),irrfTable=histTable(HIST_IRRF,payment.slice(0,7));
+  for(const n of [baseInss,irrfGross,baseFgts])if(!Number.isSafeInteger(n)||n<0||n>99999999999)throw new Error('Base tributária inválida');
+  const limited=Math.min(baseInss,inssTable[2].at(-1)[0]);
+  let sum=0;
+  if(inssTable[1]==='FLAT'){
+    const bracket=inssTable[2].find(x=>limited<=x[0])||inssTable[2].at(-1);
+    sum=limited*bracket[1];
+  }else{
+    let prev=0;for(const [limit,rate] of inssTable[2]){sum+=Math.max(0,Math.min(limited,limit)-prev)*rate;prev=limit;}
+  }
+  const inss=payrollTaxRound(sum,10000),simplified=irrfTable[2];
+  const legalOrSimplified=Math.max(inss,simplified);
+  const taxable=Math.max(0,irrfGross-legalOrSimplified);
+  const irrfBand=irrfTable[1].find(x=>taxable<=x[0]);
+  const before=Math.max(0,payrollTaxRound(taxable*irrfBand[1],10000)-irrfBand[2]);
+  let reduction=0;
+  if(irrfTable[3]){
+    if(irrfGross<=500000)reduction=Math.min(before,31289);
+    else if(irrfGross<=735000)reduction=Math.min(before,Math.max(0,97862-payrollTaxRound(irrfGross*133145,1000000)));
+  }
+  return {inss_cents:inss,irrf_base_cents:taxable,irrf_original_cents:before,
+    irrf_reduction_cents:reduction,irrf_cents:Math.max(0,before-reduction),
+    fgts_cents:payrollTaxRound(baseFgts*800,10000),irrf_deduction_cents:legalOrSimplified,
+    irrf_deduction_type:inss>=simplified?'INSS_SIMULADO':'DESCONTO_SIMPLIFICADO',
+    inss_table_from:inssTable[0],inss_mode:inssTable[1],irrf_table_from:irrfTable[0],payment_date:payment};
+}
+
+// ===== SAGAS Folha Etapa 06 — LEGACY 2026 formulas kept for regression; route uses HISTORICAL =====
+// Fonte INSS: Portaria MPS/MF 13/2026 — gov.br/inss; IRRF: Receita Federal tabela 2026;
+// FGTS regra geral: art. 15 Lei 8.036/1990. Não é motor de fechamento/homologação.
+// Valores em centavos; cálculos progressivos com arredondamento final half-up.
+function payrollTaxRound(numerator,denominator){
+  if(!Number.isSafeInteger(numerator)||!Number.isSafeInteger(denominator)||numerator<0||denominator<=0)
+    throw new Error('Cálculo monetário fora do limite');
+  return Math.floor((numerator+Math.floor(denominator/2))/denominator);
+}
+function payrollTax2026(inssBaseCents,irrfGrossCents,fgtsBaseCents){
+  for(const n of [inssBaseCents,irrfGrossCents,fgtsBaseCents]){
+    if(!Number.isSafeInteger(n)||n<0||n>99999999999)throw new Error('Base tributária inválida');
+  }
+  let prev=0,total=0;
+  for(const [limit,rate] of [[162100,750],[290284,900],[435427,1200],[847555,1400]]){
+    const band=Math.max(0,Math.min(inssBaseCents,limit)-prev);
+    total+=band*rate;
+    prev=limit;
+  }
+  const inssCents=payrollTaxRound(total,10000);
+  const legalDeduction=inssCents; // cenário sem dependentes ou pensão judicial
+  const simplifiedDeduction=60720;
+  const irrfDeduction=Math.max(legalDeduction,simplifiedDeduction);
+  const irrfBase=Math.max(0,irrfGrossCents-irrfDeduction);
+  let rate=0,deduction=0;
+  if(irrfBase<=242880){rate=0;deduction=0;}
+  else if(irrfBase<=282665){rate=750;deduction=18216;}
+  else if(irrfBase<=375105){rate=1500;deduction=39416;}
+  else if(irrfBase<=466468){rate=2250;deduction=67549;}
+  else {rate=2750;deduction=90873;}
+  const progressive=Math.max(0,payrollTaxRound(irrfBase*rate,10000)-deduction);
+  let reduction=0;
+  if(irrfGrossCents<=500000)reduction=Math.min(progressive,31289);
+  else if(irrfGrossCents<=735000)reduction=Math.min(progressive,
+    Math.max(0,97862-payrollTaxRound(irrfGrossCents*133145,1000000)));
+  const irrfCents=Math.max(0,progressive-reduction);
+  return {inss_cents:inssCents,irrf_base_cents:irrfBase,irrf_original_cents:progressive,
+    irrf_reduction_cents:reduction,irrf_cents:irrfCents,fgts_cents:payrollTaxRound(fgtsBaseCents*800,10000),
+    irrf_deduction_cents:irrfDeduction,irrf_deduction_type:legalDeduction>simplifiedDeduction?'INSS_SIMULADO':'DESCONTO_SIMPLIFICADO'};
+}
+async function payrollTaxPreviewHistorical(env,companyId,competenceId,paymentDate){
+  const simulated=await payrollEventCalculationPreview(env,companyId,competenceId);
+  const competence=simulated.competence.competence;
+  // INSS da competência, IRRF pela data de pagamento fornecida (nunca presumida).
+  const paid=histPaymentDate(paymentDate);
+  const inssTable=histTable(HIST_INSS,competence), irrfTable=histTable(HIST_IRRF,paid.slice(0,7));
+  const dependentRows=await env.DB.prepare(`SELECT employee_id,COUNT(*) AS total
+    FROM payroll_employee_dependents
+    WHERE company_id=? AND irrf_eligible=1 AND effective_from<=?
+      AND (effective_to IS NULL OR effective_to>=?)
+    GROUP BY employee_id LIMIT 2001`).bind(companyId,paid,paid).all();
+  if((dependentRows.results||[]).length>2000)throw new HttpError(409,'Dependentes excedem limite da prévia.','PREVIEW_LIMIT');
+  const dependentsByEmployee=new Map((dependentRows.results||[]).map(r=>[r.employee_id,Number(r.total)]));
+  const result=await env.DB.prepare(`SELECT r.event_id,r.effective_from,r.revision,r.inss,r.irrf,r.fgts
+    FROM payroll_event_rule_versions r
+    WHERE r.company_id=? AND r.effective_from<=? AND r.event_id IN (
+       SELECT DISTINCT event_id FROM payroll_movements WHERE company_id=? AND competence_id=?)
+    ORDER BY r.event_id,r.effective_from DESC,r.revision DESC LIMIT 5001`)
+    .bind(companyId,competence,companyId,competenceId).all();
+  const allRules=result.results||[];
+  if(allRules.length>5000)throw new HttpError(409,'Histórico excede limite de simulação.','RULES_LIMIT');
+  const activeRules=new Map();for(const rule of allRules)if(!activeRules.has(rule.event_id))activeRules.set(rule.event_id,rule);
+  let blocked=0,estimates=0;
+  const items=simulated.items.map(employee=>{
+    const warnings=employee.warnings.filter(w=>!w.includes('abatimento no IRRF ainda não está implementado.'));
+    const dependentCount=dependentsByEmployee.get(employee.employee_id)||0;
+    const events=employee.events||[];
+    const missing=events.filter(ev=>{
+      const rule=activeRules.get(ev.event_id);
+      return !rule||[rule.inss,rule.irrf,rule.fgts].some(v=>!['SIM','NAO'].includes(v));
+    });
+    if(missing.length)warnings.push('Defina INSS, IRRF e FGTS de todos os eventos: '+missing.map(ev=>ev.event_code).join(', ')+'.');
+    if(employee.pending_count>0)warnings.push('Existe evento sem valor calculável.');
+    if(dependentCount)warnings.push('Dedução de '+dependentCount+' dependente(s) informado(s) na data do pagamento: conferir elegibilidade legal e documentos.');
+    if(employee.salary_base_reference===null)warnings.push('Salário-base ou vínculo exige análise de proporcionalidade.');
+    // Incidência sobre DESCONTOS não é transformada automaticamente em redução de base.
+    if(events.some(ev=>ev.type==='DESCONTO'&&['SIM'].includes(activeRules.get(ev.event_id)?.inss)))
+      warnings.push('Desconto com incidência INSS exige tratamento específico e conferência.');
+    if(events.some(ev=>ev.type==='DESCONTO'&&['SIM'].includes(activeRules.get(ev.event_id)?.irrf)))
+      warnings.push('Desconto com incidência IRRF exige tratamento específico e conferência.');
+    const incomplete=missing.length||employee.pending_count>0||employee.salary_base_reference===null||
+      events.some(ev=>ev.value_preview===null)||
+      events.some(ev=>ev.type==='DESCONTO'&&(activeRules.get(ev.event_id)?.inss==='SIM'||activeRules.get(ev.event_id)?.irrf==='SIM'||activeRules.get(ev.event_id)?.fgts==='SIM'));
+    if(incomplete){blocked++;return {employee_id:employee.employee_id,employee_name:employee.employee_name,
+      blocked:true,dependent_count:dependentCount,dependent_deduction:centsToMoney(dependentCount*18959),base_inss:null,base_irrf_gross:null,base_fgts:null,inss_estimate:null,irrf_estimate:null,
+      fgts_estimate:null,irrf_base:null,irrf_before_reduction:null,irrf_reduction:null,
+      pending_reasons:[...new Set(warnings)],events:events.map(ev=>({code:ev.event_code,name:ev.event_name,
+        status:ev.status,amount:ev.value_preview,incidences:activeRules.get(ev.event_id)||null}))};}
+    const reference=Math.round(employee.salary_base_reference*100);
+    let inss=reference,irrf=reference,fgts=reference;
+    for(const ev of events){
+      const rule=activeRules.get(ev.event_id);
+      if(!rule)throw new Error('Regra ausente depois da validação');
+      if(ev.type!=='PROVENTO')continue;
+      const amount=Math.round(ev.value_preview*100);
+      if(!Number.isSafeInteger(amount)||amount<0)throw new Error('Evento fora do limite');
+      if(rule.inss==='SIM')inss+=amount;
+      if(rule.irrf==='SIM')irrf+=amount;
+      if(rule.fgts==='SIM')fgts+=amount;
+    }
+    const tax=payrollTaxHistoricalWithDependents(inss,irrf,fgts,competence,paid,dependentCount);
+    estimates++;
+    warnings.push('Cenário CLT padrão: dedução de dependentes informados; não contempla pensão judicial, outros vínculos, afastamento, rescisão, 13º ou férias.');
+    warnings.push('IRRF baseado na data informada: '+paid+'. Outros pagamentos no mesmo mês não são consolidados.');
+    warnings.push('Salário-base utiliza o histórico vigente na competência; confira todas as alterações e ocorrências.');
+    warnings.push('FGTS estimado a 8%: encargo do empregador, não descontado do funcionário.');
+    return {employee_id:employee.employee_id,employee_name:employee.employee_name,blocked:false,
+      dependent_count:dependentCount,dependent_deduction:centsToMoney(tax.dependent_deduction_cents),
+      base_inss:centsToMoney(inss),base_irrf_gross:centsToMoney(irrf),base_fgts:centsToMoney(fgts),
+      inss_estimate:centsToMoney(tax.inss_cents),irrf_estimate:centsToMoney(tax.irrf_cents),
+      fgts_estimate:centsToMoney(tax.fgts_cents),irrf_base:centsToMoney(tax.irrf_base_cents),
+      irrf_before_reduction:centsToMoney(tax.irrf_original_cents),irrf_reduction:centsToMoney(tax.irrf_reduction_cents),
+      irrf_deduction_type:tax.irrf_deduction_type,irrf_deduction:centsToMoney(tax.irrf_deduction_cents),
+      pending_reasons:[...new Set(warnings)],events:events.map(ev=>({code:ev.event_code,name:ev.event_name,
+        amount:ev.value_preview,incidences:activeRules.get(ev.event_id)||null}))};
+  });
+  return {kind:'TAX_SCENARIO_PREVIEW_HISTORICAL',competence:simulated.competence,year:Number(competence.slice(0,4)),
+    payment_date:paid,tables:{inss_from:inssTable[0],inss_mode:inssTable[1],irrf_from:irrfTable[0]},
+    items,estimated_employee_count:estimates,blocked_employee_count:blocked,
+    read_only:true,scenario_only:true,ready_for_payroll:false,ready_for_payment:false,ready_for_accounting:false,
+    payroll_net:null,message:'Cenário tributário CLT histórico 2020–2026, com dependentes informados na data de pagamento. Não gera impostos, FGTS, pagamentos ou contabilidade.',
+    sources:{inss:'https://www.gov.br/inss/pt-br/direitos-e-deveres/inscricao-e-contribuicao/tabela-de-contribuicao-mensal',
+      irrf:'https://www.gov.br/receitafederal/pt-br/assuntos/meu-imposto-de-renda/tabelas/tabelas-do-imposto-de-renda/',
+      fgts:'https://www.planalto.gov.br/ccivil_03/leis/l8036compilada.htm'}};
+}
+
+// ===== SAGAS Folha Etapa 09: PRÉVIA proporcional civil, sem folha homologada =====
+// Os segmentos usam o número de dias do mês; esse critério é identificado para
+// conferência e pode exigir ajuste conforme regras da folha e convenção coletiva.
+// Ausências/férias/afastamentos não são presumidos como faltas descontáveis.
+async function payrollLaborPreview(env,companyId,competenceId){
+  const base=await payrollSalaryPreview(env,companyId,competenceId);
+  const competence=base.competence.competence;
+  const [year,month]=competence.split('-').map(Number);
+  const daysInMonth=new Date(Date.UTC(year,month,0)).getUTCDate();
+  const first=competence+'-01', last=competence+'-'+String(daysInMonth).padStart(2,'0');
+  const queries={
+    salary:`SELECT employee_id,effective_from,salary_cents FROM payroll_salary_history
+      WHERE company_id=? AND effective_from<=? ORDER BY employee_id,effective_from,id LIMIT 5001`,
+    functional:`SELECT employee_id,effective_from,situation FROM payroll_employee_functional_history
+      WHERE company_id=? AND effective_from<=? ORDER BY employee_id,effective_from,id LIMIT 5001`,
+    schedule:`SELECT employee_id,effective_from FROM payroll_work_schedule_history
+      WHERE company_id=? AND effective_from>? AND effective_from<=? ORDER BY employee_id,effective_from,id LIMIT 5001`,
+    occurrences:`SELECT employee_id,kind,start_date,end_date FROM payroll_employee_occurrences
+      WHERE company_id=? AND start_date<=? AND end_date>=? ORDER BY employee_id,start_date,id LIMIT 5001`
+  };
+  const maps={};
+  for(const [kind,sql] of Object.entries(queries)){
+    const args=kind==='schedule'?[companyId,first,last]:kind==='occurrences'?[companyId,last,first]:[companyId,last];
+    const r=await env.DB.prepare(sql).bind(...args).all();
+    if((r.results||[]).length>5000)throw new HttpError(409,'Históricos numerosos demais para a prévia.','PREVIEW_LIMIT');
+    const m=new Map();for(const record of r.results||[]){
+      if(!m.has(record.employee_id))m.set(record.employee_id,[]);
+      m.get(record.employee_id).push(record);
+    }
+    maps[kind]=m;
+  }
+  const items=[];
+  for(const employee of base.items){
+    const warnings=[];
+    const salaries=maps.salary.get(employee.employee_id)||[];
+    const functional=maps.functional.get(employee.employee_id)||[];
+    const scheduleChanges=(maps.schedule.get(employee.employee_id)||[]).filter(r=>r.effective_from>first);
+    const occurrences=maps.occurrences.get(employee.employee_id)||[];
+    const admission=employee.admission_date>first?employee.admission_date:first;
+    const daysEligible=Math.max(0,daysInMonth-Number(admission.slice(-2))+1);
+    const segments=[];
+    let salarySum=0n,matchedDays=0,missing=false,invalidFunction=false;
+    for(let day=Number(admission.slice(-2));day<=daysInMonth;day++){
+      const date=competence+'-'+String(day).padStart(2,'0');
+      const applicable=salaries.filter(r=>r.effective_from<=date).at(-1)||null;
+      const status=functional.filter(r=>r.effective_from<=date).at(-1)||null;
+      if(status&&status.situation!=='ATIVO')invalidFunction=true;
+      if(!applicable){missing=true;continue;}
+      const cents=applicable.salary_cents;
+      if(!Number.isSafeInteger(cents)||cents<0||cents>99999999999)
+        throw new HttpError(409,'Salário histórico inválido.','DATA_INVALID');
+      salarySum+=BigInt(cents);matchedDays++;
+      const prior=segments.at(-1);
+      if(prior&&prior.salary_cents===cents){prior.days++;prior.end_date=date;}
+      else segments.push({start_date:date,end_date:date,days:1,salary_cents:cents});
+    }
+    if(missing)warnings.push('Falta salário com vigência cobrindo todos os dias desde a admissão nesta competência.');
+    if(invalidFunction)warnings.push('Há situação funcional não ativa durante a competência; exige tratamento trabalhista.');
+    if(occurrences.length)warnings.push('Há ocorrências: não foi presumido desconto ou remuneração de faltas, férias, licenças e afastamentos.');
+    if(scheduleChanges.length)warnings.push('Jornada alterada dentro do mês: conferir divisor e reflexos dos eventos.');
+    if(employee.flags.includes('SALARIO_EVENTO_DUPLICADO'))warnings.push('Há evento de salário lançado; verificar duplicidade com o salário do cadastro.');
+    if(employee.pending_event_count)warnings.push('Existem eventos cuja fórmula ainda não foi calculada.');
+    if(!employee.monthly_hours)warnings.push('Jornada histórica não informada; conferir divisor para eventos em horas.');
+    if(admission>first)warnings.push('Admissão no mês: proporcionalidade demonstrativa por dias corridos do mês.');
+    const referenceCents=missing||matchedDays!==daysEligible?null:Number((salarySum+BigInt(Math.floor(daysInMonth/2)))/BigInt(daysInMonth));
+    if(referenceCents!==null&&!Number.isSafeInteger(referenceCents))throw new HttpError(409,'Valor proporcional fora do limite.','DATA_INVALID');
+    const blocked=referenceCents===null||invalidFunction||occurrences.length>0||scheduleChanges.length>0||employee.flags.includes('SALARIO_EVENTO_DUPLICADO');
+    const computed=segments.map(seg=>({...seg,
+      salary_monthly:centsToMoney(seg.salary_cents),
+      reference_amount:centsToMoney(Number((BigInt(seg.salary_cents)*BigInt(seg.days)+BigInt(Math.floor(daysInMonth/2)))/BigInt(daysInMonth)))}));
+    const preview={employee_id:employee.employee_id,employee_name:employee.employee_name,
+      admission_date:employee.admission_date,day_count:daysInMonth,days_employed:daysEligible,
+      salary_reference:referenceCents===null?null:centsToMoney(referenceCents),
+      salary_proportional_preview:blocked?null:centsToMoney(referenceCents),
+      eligible_dependents:employee.eligible_dependents,occurrences_count:occurrences.length,
+      segments:computed,occurrences:occurrences.map(o=>({kind:o.kind,start_date:o.start_date,end_date:o.end_date})),
+      blocked, status:blocked?'PENDENTE':'SIMULACAO',warnings,
+      ready_for_payroll:false,ready_for_payment:false,ready_for_accounting:false};
+    items.push(preview);
+  }
+  return {kind:'LABOR_PROPORTIONAL_PREVIEW',competence:base.competence,
+    method:'DIAS_CORRIDOS_DO_MES',month_days:daysInMonth,items,
+    simulated_employee_count:items.filter(x=>!x.blocked).length,
+    pending_employee_count:items.filter(x=>x.blocked).length,
+    read_only:true,ready_for_payroll:false,ready_for_payment:false,ready_for_accounting:false,
+    payroll_net:null,message:'Simulação civil de proporcionalidade salarial com históricos. Não é folha homologada. Ausências não são descontadas automaticamente.'};
+}
+
+// ===== IRRF: dependentes elegíveis informados; validação legal ainda requerida =====
+// 2020–2026: dedução mensal por dependente de R$ 189,59. Opta pelo maior entre
+// deduções legais (INSS + dependentes) e o desconto simplificado vigente.
+function payrollTaxHistoricalWithDependents(baseInss,irrfGross,baseFgts,competence,paymentDate,dependents){
+  if(!Number.isSafeInteger(dependents)||dependents<0||dependents>100)
+    throw new HttpError(409,'Quantidade de dependentes incompatível.','DATA_INVALID');
+  const original=payrollTaxHistorical(baseInss,irrfGross,baseFgts,competence,paymentDate);
+  const table=histTable(HIST_IRRF,paymentDate.slice(0,7));
+  const depCents=dependents*18959;
+  const legal=original.inss_cents+depCents;
+  const deduction=Math.max(legal,table[2]);
+  const taxable=Math.max(0,irrfGross-deduction);
+  const band=table[1].find(x=>taxable<=x[0]);
+  const before=Math.max(0,payrollTaxRound(taxable*band[1],10000)-band[2]);
+  let reduction=0;
+  if(table[3]){
+    if(irrfGross<=500000)reduction=Math.min(before,31289);
+    else if(irrfGross<=735000)
+      reduction=Math.min(before,Math.max(0,97862-payrollTaxRound(irrfGross*133145,1000000)));
+  }
+  return {...original,irrf_base_cents:taxable,irrf_original_cents:before,
+    irrf_reduction_cents:reduction,irrf_cents:Math.max(0,before-reduction),
+    dependent_count:dependents,dependent_deduction_cents:depCents,
+    irrf_deduction_type:legal>=table[2]?'DEDUCOES_LEGAIS':'DESCONTO_SIMPLIFICADO',
+    irrf_deduction_cents:deduction};
+}
+
+// ===== SAGAS Folha - Etapa 05: avaliador ARITMETICO de preview (somente leitura). =====
+// Sintaxe SAGAS reduzida, NÃO é a linguagem proprietária de fórmulas do RM.
+// Sem eval, Function, JS executável, persistência de envelope, impostos ou fechamento.
+function payrollExprCents(formula, variables){
+  const input=String(formula||'').trim();
+  if(!input || input.length>180)throw new Error('FORMULA_FORA_DO_ESCOPO');
+  const t=[];let i=0;
+  while(i<input.length){
+    const rest=input.slice(i);let m;
+    if(/^\s+/.test(rest)){i+=/^\s+/.exec(rest)[0].length;continue;}
+    if((m=/^\d+(?:\.\d+)?/.exec(rest))){
+      if(m[0].replace(/\D/g,'').length>12)throw new Error('NUMERO_MUITO_GRANDE');
+      t.push({type:'number',value:m[0]});i+=m[0].length;
+    }else if((m=/^[A-Za-z_][A-Za-z0-9_]*/.exec(rest))){
+      t.push({type:'name',value:m[0].toUpperCase()});i+=m[0].length;
+    }else if('+-*/()'.includes(input[i])){t.push({type:input[i]});i++;}
+    else throw new Error('FORMULA_FORA_DO_ESCOPO');
+    if(t.length>80)throw new Error('FORMULA_MUITO_COMPLEXA');
+  }
+  const max=10n**38n;
+  function gcd(a,b){a=a<0n?-a:a;b=b<0n?-b:b;while(b){const c=a%b;a=b;b=c;}return a||1n;}
+  function rat(a,b=1n){
+    if(b===0n)throw new Error('DIVISAO_ZERO');
+    if(b<0n){a=-a;b=-b;}
+    const g=gcd(a,b);a/=g;b/=g;
+    if(a>max||a < -max||b>max)throw new Error('FORMULA_FORA_DO_LIMITE');
+    return {a,b};
+  }
+  function decimal(x){const parts=x.split('.'),scale=10n**BigInt(parts[1]?.length||0);return rat(BigInt(parts[0]+(parts[1]||'')),scale);}
+  const op=(l,r,kind)=>{
+    if(kind==='+')return rat(l.a*r.b+r.a*l.b,l.b*r.b);
+    if(kind==='-')return rat(l.a*r.b-r.a*l.b,l.b*r.b);
+    if(kind==='*')return rat(l.a*r.a,l.b*r.b);
+    return rat(l.a*r.b,l.b*r.a);
+  };
+  let j=0;
+  function factor(depth){
+    if(depth>18)throw new Error('FORMULA_MUITO_COMPLEXA');
+    let x=t[j];if(!x)throw new Error('FORMULA_INCOMPLETA');
+    if(x.type==='+'||x.type==='-'){j++;const v=factor(depth+1);return x.type==='-'?rat(-v.a,v.b):v;}
+    if(x.type==='('){j++;const v=expr(depth+1);if(t[j]?.type!==')')throw new Error('PARENTESES_INVALIDOS');j++;return v;}
+    j++;
+    if(x.type==='number')return decimal(x.value);
+    if(x.type==='name'){
+      if(!Object.prototype.hasOwnProperty.call(variables,x.value))throw new Error('VARIAVEL_NAO_DISPONIVEL');
+      return variables[x.value];
+    }
+    throw new Error('FORMULA_INVALIDA');
+  }
+  function term(depth){let v=factor(depth);while(t[j]?.type==='*'||t[j]?.type==='/'){const k=t[j++].type;v=op(v,factor(depth),k);}return v;}
+  function expr(depth){let v=term(depth);while(t[j]?.type==='+'||t[j]?.type==='-'){const k=t[j++].type;v=op(v,term(depth),k);}return v;}
+  const v=expr(0);
+  if(j!==t.length)throw new Error('FORMULA_INVALIDA');
+  if(v.a<0n)throw new Error('VALOR_NEGATIVO');
+  const cents=(v.a*100n*2n+v.b)/(2n*v.b); // arredondamento half-up, sem float
+  if(cents>99999999999n)throw new Error('VALOR_FORA_DO_LIMITE');
+  return Number(cents);
+}
+
+async function payrollEventCalculationPreview(env,companyId,competenceId){
+  // A prévia já protege limites e isola empresa/competência, sem fazer operações de escrita.
+  const salaryPreview=await payrollSalaryPreview(env,companyId,competenceId);
+  const competence=salaryPreview.competence.competence;
+  const eventsResult=await env.DB.prepare(`SELECT m.id,m.employee_id,m.event_id,m.unit,m.amount_cents,m.quantity_milli,
+        v.code AS event_code,v.name AS event_name,v.event_type
+      FROM payroll_movements m
+      JOIN payroll_events v ON v.id=m.event_id AND v.company_id=m.company_id
+      WHERE m.company_id=? AND m.competence_id=?
+      ORDER BY m.employee_id,v.code,m.id`).bind(companyId,competenceId).all();
+  const allEvents=eventsResult.results||[];
+  if(allEvents.length>5000)throw new HttpError(409,'Número de movimentos superior ao limite de prévia.','PREVIEW_LIMIT');
+  const ruleResult=await env.DB.prepare(`SELECT r.event_id,r.effective_from,r.revision,r.priority,r.calculation_code,
+        r.formula_text,r.inss,r.irrf,r.fgts
+      FROM payroll_event_rule_versions r
+      WHERE r.company_id=? AND r.effective_from<=? AND r.event_id IN (
+        SELECT DISTINCT event_id FROM payroll_movements WHERE company_id=? AND competence_id=?)
+      ORDER BY r.event_id,r.effective_from DESC,r.revision DESC LIMIT 5001`)
+    .bind(companyId,competence,companyId,competenceId).all();
+  const rules=ruleResult.results||[];
+  if(rules.length>5000)throw new HttpError(409,'Histórico de regras superior ao limite de prévia.','RULES_LIMIT');
+  const latest=new Map();for(const rule of rules)if(!latest.has(rule.event_id))latest.set(rule.event_id,rule);
+  const byEmployee=new Map();for(const movement of allEvents){
+    if(!byEmployee.has(movement.employee_id))byEmployee.set(movement.employee_id,[]);
+    byEmployee.get(movement.employee_id).push(movement);
+  }
+  const items=[];let pendingCount=0,calculatedCount=0;
+  for(const emp of salaryPreview.items){
+    const fullMonth=emp.salary_base_preview!==null && !emp.flags.includes('SALARIO_EVENTO_DUPLICADO');
+    let plus=0,minus=0,unresolved=0;const details=[],warnings=[...emp.warnings];
+    for(const mov of byEmployee.get(emp.employee_id)||[]){
+      const rule=latest.get(mov.event_id)||null;
+      let amount=null,status='INFORMADO',note='Valor lançado manualmente';
+      if(mov.unit==='VALOR'){
+        if(!Number.isSafeInteger(mov.amount_cents)||mov.amount_cents<0)throw new HttpError(409,'Movimento monetário inválido.','DATA_INVALID');
+        amount=mov.amount_cents;
+      }else if(!rule || !String(rule.formula_text||'').trim()){
+        status='PENDENTE';note='Evento sem fórmula vigente';
+      }else if(Number(rule.calculation_code)!==0){
+        status='PENDENTE';note='Código de cálculo especial ainda não implementado';
+      }else if(!fullMonth){
+        status='PENDENTE';note='Vínculo ou salário-base exige conferência';
+      }else {
+        const variables={SALARIO:{a:BigInt(Math.round(emp.salary_base_preview*100)),b:100n},
+          REFERENCIA:{a:BigInt(mov.quantity_milli),b:1000n},
+          QUANTIDADE:{a:BigInt(mov.quantity_milli),b:1000n}};
+        if(emp.monthly_hours!==null)variables.JORNADA_MENSAL={a:BigInt(Math.round(emp.monthly_hours*1000)),b:1000n};
+        if(mov.unit==='HORAS')variables.HORAS=variables.REFERENCIA;
+        if(mov.unit==='DIAS')variables.DIAS=variables.REFERENCIA;
+        if(mov.unit==='PERCENTUAL')variables.PERCENTUAL=variables.REFERENCIA;
+        try{amount=payrollExprCents(rule.formula_text,variables);status='CALCULADO_PREVIA';note='Fórmula aritmética SAGAS';calculatedCount++;}
+        catch(e){status='PENDENTE';note='Fórmula não suportada: '+String(e?.message||'erro de cálculo');}
+      }
+      if(amount===null){unresolved++;pendingCount++;}
+      else if(mov.event_type==='PROVENTO')plus+=amount;
+      else if(mov.event_type==='DESCONTO')minus+=amount;
+      else if(mov.event_type!=='INFORMATIVO')throw new HttpError(409,'Tipo de evento inválido.','DATA_INVALID');
+      if(!Number.isSafeInteger(plus)||!Number.isSafeInteger(minus))throw new HttpError(409,'Total excede o limite seguro.','DATA_INVALID');
+      const taxPending=!rule || [rule.inss,rule.irrf,rule.fgts].some(x=>x==='PENDENTE');
+      if(taxPending)warnings.push('Incidências não confirmadas para '+mov.event_code+'.');
+      details.push({id:mov.id,event_id:mov.event_id,event_code:mov.event_code,event_name:mov.event_name,type:mov.event_type,
+        unit:mov.unit,reference:mov.unit==='VALOR'?centsToMoney(mov.amount_cents):Number(mov.quantity_milli)/1000,
+        value_preview:amount===null?null:centsToMoney(amount),status,note,
+        priority:rule?rule.priority:null,rule_version:rule?rule.effective_from+'#'+rule.revision:null,
+        formula_text:mov.unit==='VALOR'?null:(rule?.formula_text||null),
+        calculation_code:rule?Number(rule.calculation_code):null,
+        incidences_checked:!taxPending});
+    }
+    details.sort((a,b)=>(a.priority??99)-(b.priority??99)||a.event_code.localeCompare(b.event_code)||a.id.localeCompare(b.id));
+    if(unresolved)warnings.push(unresolved+' evento(s) sem valorização nesta competência.');
+    const salary=fullMonth?Math.round(emp.salary_base_preview*100):null;
+    const subtotal=salary!==null && unresolved===0 ? salary+plus-minus:null;
+    if(subtotal!==null&&!Number.isSafeInteger(subtotal))throw new HttpError(409,'Subtotal excede o limite seguro.','DATA_INVALID');
+    items.push({employee_id:emp.employee_id,employee_name:emp.employee_name,admission_date:emp.admission_date,
+      salary_base_reference:salary===null?null:centsToMoney(salary),proventos_eventos:centsToMoney(plus),
+      descontos_eventos:centsToMoney(minus),subtotal_aritmetico:subtotal===null?null:centsToMoney(subtotal),
+      events:details,pending_count:unresolved,eligible_dependents:emp.eligible_dependents,warnings:[...new Set(warnings)],
+      ready_for_payroll:false,liquid:null});
+  }
+  const orphanMovements=allEvents.filter(m=>!items.some(i=>i.employee_id===m.employee_id)).length;
+  return {kind:'EVENT_FORMULA_PREVIEW',competence:salaryPreview.competence,items,
+    movement_count:allEvents.length,formula_calculated_count:calculatedCount,
+    unresolved_event_count:pendingCount,orphan_movement_count:orphanMovements,
+    read_only:true,ready_for_payroll:false,ready_for_payment:false,ready_for_accounting:false,
+    payroll_net:null,taxes_calculated:false,
+    message:'Simulação aritmética de eventos lançados. NÃO é envelope, folha homologada ou salário líquido.'};
+}
+
+
+// SAGAS Folha Etapa 10 — demonstrativo de CONFERÊNCIA por funcionário.
+// Agrega prévias existentes; não cria envelope final nem grava cálculos/financeiro/contábil.
+// Para evitar divergência de origem, tributação só é exibida se o salário considerado
+// pelo motor de eventos corresponder à referência proporcional trabalhista.
+async function payrollConferencePreview(env,companyId,competenceId,paymentDate){
+  const paid=histPaymentDate(paymentDate);
+  const [labor,events,tax]=await Promise.all([
+    payrollLaborPreview(env,companyId,competenceId),
+    payrollEventCalculationPreview(env,companyId,competenceId),
+    payrollTaxPreviewHistorical(env,companyId,competenceId,paid)
+  ]);
+  if(labor.competence.id!==events.competence.id||labor.competence.id!==tax.competence.id)
+    throw new HttpError(409,'Incompatibilidade de competências entre as prévias.','PREVIEW_MISMATCH');
+  const eventsByEmployee=new Map(events.items.map(x=>[x.employee_id,x]));
+  const taxesByEmployee=new Map(tax.items.map(x=>[x.employee_id,x]));
+  let pending=0,arithmetics=0,eligibleTax=0;
+  function cents(n){
+    if(typeof n!=='number'||!Number.isFinite(n)||n<0||!Number.isSafeInteger(Math.round(n*100)))return null;
+    const result=Math.round(n*100);
+    if(Math.abs(n*100-result)>0.000001)return null;
+    return result;
+  }
+  const items=labor.items.map(work=>{
+    const calc=eventsByEmployee.get(work.employee_id)||null;
+    const fiscal=taxesByEmployee.get(work.employee_id)||null;
+    const reasons=[],notices=[];
+    const add=(arr,msg)=>{if(typeof msg==='string'&&msg.trim()&&!arr.includes(msg))arr.push(msg)};
+    for(const w of work.warnings||[])add(notices,w);
+    for(const w of calc?.warnings||[])if(!/Não foram calculados INSS|não é salário líquido/i.test(w))add(notices,w);
+    for(const w of fiscal?.pending_reasons||[])add(notices,w);
+    if(work.blocked||work.salary_proportional_preview===null)
+      add(reasons,'Salário e ocorrências trabalhistas precisam de conferência antes de montar o subtotal.');
+    if(!calc)add(reasons,'Não foi possível vincular os eventos deste funcionário.');
+    if(calc&&calc.pending_count>0)add(reasons,calc.pending_count+' evento(s) com cálculo pendente.');
+    const salaryCents=cents(work.salary_proportional_preview);
+    const eventsSalaryCents=cents(calc?.salary_base_reference);
+    const pCents=cents(calc?.proventos_eventos),dCents=cents(calc?.descontos_eventos);
+    // Apenas referências idênticas autorizam uma soma aritmética nesta etapa;
+    // admissão parcial pode ser exibida à parte, nunca combinada sem motor próprio.
+    const compatible=salaryCents!==null&&eventsSalaryCents!==null&&salaryCents===eventsSalaryCents;
+    if(salaryCents!==null&&!compatible)
+      add(reasons,'A referência salarial dos eventos difere da proporcionalidade; não somar parcelas automaticamente.');
+    const subtotalAllowed=!work.blocked&&compatible&&calc?.pending_count===0&&pCents!==null&&dCents!==null;
+    const subtotalCents=subtotalAllowed?salaryCents+pCents-dCents:null;
+    if(subtotalCents!==null&&!Number.isSafeInteger(subtotalCents))throw new HttpError(409,'Subtotal aritmético fora do limite.','DATA_INVALID');
+    if(subtotalCents!==null)arithmetics++;
+    // Cenário tributário opcional e informativo: não soma ao subtotal, não produz líquido.
+    const taxAllowed=subtotalAllowed&&fiscal&&!fiscal.blocked&&
+      cents(fiscal.base_inss)!==null&&cents(fiscal.inss_estimate)!==null&&
+      cents(fiscal.irrf_estimate)!==null&&cents(fiscal.fgts_estimate)!==null;
+    if(!taxAllowed)add(reasons,'Cenário tributário ainda não validado para este funcionário.');
+    if(taxAllowed)eligibleTax++;
+    const issues=reasons.length>0;
+    if(issues)pending++;
+    return {employee_id:work.employee_id,employee_name:work.employee_name,
+      admission_date:work.admission_date,days_employed:work.days_employed,day_count:work.day_count,
+      salary_reference:work.salary_reference,
+      salary_proportional_preview:work.salary_proportional_preview,
+      salary_event_reference:calc?.salary_base_reference??null,
+      proventos_eventos:calc?.proventos_eventos??null,
+      descontos_eventos:calc?.descontos_eventos??null,
+      subtotal_aritmetico:subtotalCents===null?null:centsToMoney(subtotalCents),
+      occurrences_count:work.occurrences_count,segments:work.segments||[],
+      occurrences:work.occurrences||[],events:calc?.events||[],
+      pending_event_count:calc?.pending_count??null,
+      tax_scenario:taxAllowed?{
+        base_inss:fiscal.base_inss,inss_estimate:fiscal.inss_estimate,
+        base_irrf_gross:fiscal.base_irrf_gross,irrf_base:fiscal.irrf_base,
+        irrf_estimate:fiscal.irrf_estimate,base_fgts:fiscal.base_fgts,
+        fgts_estimate:fiscal.fgts_estimate,dependent_count:fiscal.dependent_count,
+        irrf_deduction:fiscal.irrf_deduction,irrf_deduction_type:fiscal.irrf_deduction_type
+      }:null,
+      status:issues?'PENDENTE':'CONFERENCIA',pendencias:reasons,observacoes:notices,
+      salario_liquido:null,ready_for_payroll:false,ready_for_payment:false,ready_for_accounting:false};
+  });
+  // Não silenciar lançamentos órfãos ou funcionários que não puderam ser incluídos.
+  if(events.orphan_movement_count>0)pending+=events.orphan_movement_count;
+  return {kind:'CONFERENCIA_DEMONSTRATIVO_FOLHA',competence:labor.competence,
+    payment_date:paid,tables:tax.tables,items,
+    employee_count:items.length,pending_employee_count:pending,
+    arithmetic_subtotal_count:arithmetics,tax_scenario_count:eligibleTax,
+    orphan_movement_count:events.orphan_movement_count||0,
+    read_only:true,scenario_only:true,ready_for_payroll:false,
+    ready_for_payment:false,ready_for_accounting:false,ready_for_closure:false,
+    folha_liquida:null,
+    message:'Demonstrativo de conferência: proventos, descontos, referências, tributos ilustrativos e pendências. Não é contracheque, remuneração homologada ou valor líquido a pagar.'};
+}
+
+
+// SAGAS Folha Etapa 11 — revisao explicita de ocorrencias e envelope de conferencia.
+// Classificar uma ocorrencia NAO autoriza, por si so, desconto, pagamento ou fechamento.
+const PAYROLL_OCCURRENCE_TREATMENTS={
+  FALTA:['PENDENTE','ABONADA','DESCONTO_A_CONFERIR'],
+  AFASTAMENTO:['PENDENTE','EMPRESA_A_CONFERIR','BENEFICIO_A_CONFERIR'],
+  FERIAS:['PENDENTE','FERIAS_A_CONFERIR'],
+  LICENCA:['PENDENTE','REMUNERADA_A_CONFERIR','NAO_REMUNERADA_A_CONFERIR']
+};
+async function ensurePayrollOccurrenceReviewSchema(env){
+  await env.DB.batch([
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS payroll_occurrence_reviews (
+      company_id TEXT NOT NULL,occurrence_id TEXT NOT NULL,
+      treatment TEXT NOT NULL,notes TEXT NOT NULL DEFAULT '',
+      updated_by TEXT NOT NULL,updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY(company_id,occurrence_id),
+      FOREIGN KEY(occurrence_id) REFERENCES payroll_employee_occurrences(id) ON DELETE CASCADE
+    )`),
+    env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_payroll_occurrence_reviews_company
+      ON payroll_occurrence_reviews(company_id,occurrence_id)`)
+  ]);
+}
+async function payrollOccurrenceReviewSave(env,request,auth,companyId,occurrenceId,body){
+  await requirePermission(env,auth.user.id,companyId,'payroll.manage');
+  await ensureSchemaRevision(env,'payroll-occurrence-reviews',1,()=>ensurePayrollOccurrenceReviewSchema(env));
+  const occurrence=await env.DB.prepare(`SELECT id,kind,employee_id,start_date,end_date
+    FROM payroll_employee_occurrences WHERE company_id=? AND id=?`).bind(companyId,occurrenceId).first();
+  if(!occurrence)throw new HttpError(404,'Ocorrencia nao encontrada nesta empresa.','NOT_FOUND');
+  const treatment=String(required(body?.treatment,'tratamento')||'').trim().toUpperCase();
+  if(!(PAYROLL_OCCURRENCE_TREATMENTS[occurrence.kind]||[]).includes(treatment))
+    throw new HttpError(400,'Tratamento incompativel com o tipo da ocorrencia.','VALIDATION_ERROR');
+  const notes=cleanText(body?.notes||'',500)||'';
+  const before=await env.DB.prepare(`SELECT * FROM payroll_occurrence_reviews
+    WHERE company_id=? AND occurrence_id=?`).bind(companyId,occurrenceId).first();
+  await env.DB.prepare(`INSERT INTO payroll_occurrence_reviews
+    (company_id,occurrence_id,treatment,notes,updated_by,updated_at)
+    VALUES (?,?,?,?,?,CURRENT_TIMESTAMP)
+    ON CONFLICT(company_id,occurrence_id) DO UPDATE SET
+      treatment=excluded.treatment,notes=excluded.notes,
+      updated_by=excluded.updated_by,updated_at=CURRENT_TIMESTAMP`)
+    .bind(companyId,occurrenceId,treatment,notes,auth.user.id).run();
+  const after=await env.DB.prepare(`SELECT * FROM payroll_occurrence_reviews
+    WHERE company_id=? AND occurrence_id=?`).bind(companyId,occurrenceId).first();
+  await audit(env,{companyId,userId:auth.user.id,action:before?'UPDATE':'CREATE',
+    entity:'payroll_occurrence_reviews',entityId:occurrenceId,before,after,request});
+  return {occurrence_id:occurrenceId,employee_id:occurrence.employee_id,kind:occurrence.kind,
+    treatment:after.treatment,notes:after.notes,updated_at:after.updated_at,
+    pay_calculated:false,ready_for_payroll:false};
+}
+function payrollCalendarDayIndex(date){
+  const [y,m,d]=date.split('-').map(Number);
+  return Math.floor(Date.UTC(y,m-1,d)/86400000);
+}
+async function payrollEnvelopePreview(env,companyId,competenceId,paymentDate){
+  await ensureSchemaRevision(env,'payroll-occurrence-reviews',1,()=>ensurePayrollOccurrenceReviewSchema(env));
+  const conference=await payrollConferencePreview(env,companyId,competenceId,paymentDate);
+  const month=conference.competence.competence;
+  const [year,number]=month.split('-').map(Number);
+  const first=month+'-01';
+  const last=month+'-'+String(new Date(Date.UTC(year,number,0)).getUTCDate()).padStart(2,'0');
+  const r=await env.DB.prepare(`SELECT o.id,o.employee_id,o.kind,o.start_date,o.end_date,o.notes,
+      v.treatment,v.notes AS review_notes,v.updated_at AS reviewed_at
+    FROM payroll_employee_occurrences o
+    LEFT JOIN payroll_occurrence_reviews v ON v.company_id=o.company_id AND v.occurrence_id=o.id
+    WHERE o.company_id=? AND o.start_date<=? AND o.end_date>=?
+    ORDER BY o.employee_id,o.start_date,o.id LIMIT 5001`).bind(companyId,last,first).all();
+  if((r.results||[]).length>5000)
+    throw new HttpError(409,'Ocorrencias numerosas demais; selecione uma competencia menor.','PREVIEW_LIMIT');
+  const grouped=new Map();
+  for(const rec of r.results||[]){
+    if(!grouped.has(rec.employee_id))grouped.set(rec.employee_id,[]);
+    grouped.get(rec.employee_id).push(rec);
+  }
+  let occurrencesCount=0,pendingOccurrences=0,overlapEmployeeCount=0;
+  const items=conference.items.map(employee=>{
+    const source=grouped.get(employee.employee_id)||[];
+    const days=new Set();let overlap=false;
+    const occurrences=source.map(o=>{
+      const from=o.start_date>first?o.start_date:first;
+      const to=o.end_date<last?o.end_date:last;
+      const qty=payrollCalendarDayIndex(to)-payrollCalendarDayIndex(from)+1;
+      if(qty<=0||qty>31)throw new HttpError(409,'Intervalo da ocorrencia inconsistente.','DATA_INVALID');
+      for(let dt=payrollCalendarDayIndex(from);dt<=payrollCalendarDayIndex(to);dt++){
+        if(days.has(dt))overlap=true;
+        days.add(dt);
+      }
+      const treatment=(PAYROLL_OCCURRENCE_TREATMENTS[o.kind]||[]).includes(o.treatment)
+        ?o.treatment:'PENDENTE';
+      const pending=treatment==='PENDENTE';
+      if(pending)pendingOccurrences++;
+      occurrencesCount++;
+      return {id:o.id,employee_id:o.employee_id,kind:o.kind,
+        start_date:o.start_date,end_date:o.end_date,
+        within_competence_from:from,within_competence_to:to,days_in_competence:qty,
+        treatment,notes:o.notes||'',review_notes:o.review_notes||'',reviewed_at:o.reviewed_at||null,
+        treatment_options:PAYROLL_OCCURRENCE_TREATMENTS[o.kind]||['PENDENTE'],pending,
+        remuneration_impact:null,dsr_impact:null,tax_impact:null};
+    });
+    if(overlap)overlapEmployeeCount++;
+    const blockers=[...new Set(employee.pendencias||[])];
+    if(occurrences.some(o=>o.pending))blockers.push('Ha ocorrencias sem classificacao remuneratoria.');
+    if(overlap)blockers.push('Ha dias de ocorrencias sobrepostos; nao somar dias por registro.');
+    if(occurrences.some(o=>!o.pending))
+      blockers.push('Tratamentos registrados ainda exigem calculo e validacao dos reflexos (DSR, previdencia e outros).');
+    return {employee_id:employee.employee_id,employee_name:employee.employee_name,
+      admission_date:employee.admission_date,base_reference:employee.salary_reference,
+      salary_proportional_preview:employee.salary_proportional_preview,
+      proventos_eventos:employee.proventos_eventos,descontos_eventos:employee.descontos_eventos,
+      subtotal_aritmetico:employee.subtotal_aritmetico,
+      events:employee.events||[],salary_segments:employee.segments||[],
+      occurrences,occurrences_count:occurrences.length,distinct_occurrence_days:days.size,
+      overlapping_occurrence_days:overlap,
+      pending_count:blockers.length,status:blockers.length?'PENDENTE':'EM_CONFERENCIA',
+      pendencias:blockers,observacoes:employee.observacoes||[],tax_scenario:employee.tax_scenario,
+      remuneration_from_occurrences:null,net_pay:null,
+      ready_for_payroll:false,ready_for_payment:false,ready_for_accounting:false};
+  });
+  // Nunca incluir registros de funcionarios nao contemplados pela competencia nem
+  // tentar montar envelopes para colaboradores de empresa diversa.
+  const matched=new Set(items.map(i=>i.employee_id));
+  const orphanOccurrenceCount=(r.results||[]).filter(o=>!matched.has(o.employee_id)).length;
+  return {kind:'ENVELOPE_PRELIMINAR_ETAPA_11',competence:conference.competence,
+    payment_date:conference.payment_date,items,
+    employee_count:items.length,occurrence_count:occurrencesCount,
+    pending_occurrence_count:pendingOccurrences,
+    overlapping_employee_count:overlapEmployeeCount,orphan_occurrence_count:orphanOccurrenceCount,
+    pending_employee_count:items.filter(i=>i.status==='PENDENTE').length,
+    read_only:true,preview_only:true,ready_for_payroll:false,
+    ready_for_payment:false,ready_for_accounting:false,ready_for_closure:false,
+    folha_liquida:null,
+    message:'Envelopes preliminares de conferencia: dias de faltas, ferias, licencas e afastamentos, classificacoes e pendencias. Nenhum desconto de ausencia, DSR, liquido, fechamento, financeiro ou contabilizacao e efetuado.'};
+}
+
+// ===== SAGAS Folha Etapa 12: projeção remuneratória controlada =====
+// Este cálculo NÃO lança eventos, descontos, DSR, verbas a pagar ou contabilidade.
+// Divisor 30: estimativa apenas para mensalistas, exige confirmação das regras
+// contratuais/coletivas e das justificativas antes da folha efetiva.
+function payrollRemunerationRoundCents(numerator,divisor){
+  if(numerator<0n||divisor<=0n)throw new HttpError(409,'Base monetária inválida.','DATA_INVALID');
+  const result=(numerator+divisor/2n)/divisor;
+  if(result>BigInt(Number.MAX_SAFE_INTEGER))throw new HttpError(409,'Valor monetário excede limite seguro.','DATA_INVALID');
+  return Number(result);
+}
+function payrollRemunerationWeek(date){
+  const index=payrollCalendarDayIndex(date);
+  // Segunda-feira da semana civil: etiqueta para CONFERÊNCIA de DSR.
+  const day=new Date(index*86400000).getUTCDay();
+  return new Date((index-(day+6)%7)*86400000).toISOString().slice(0,10);
+}
+function payrollRemunerationDay(dateIndex){return new Date(dateIndex*86400000).toISOString().slice(0,10);}
+async function payrollRemunerationPreview(env,companyId,competenceId,paymentDate){
+  const envelope=await payrollEnvelopePreview(env,companyId,competenceId,paymentDate);
+  const items=envelope.items.map(employee=>{
+    const issues=[],warnings=[],daysToDeduct=new Set(),affectedWeeks=new Set();
+    const occurrences=employee.occurrences||[];
+    const salarySegments=employee.salary_segments||[];
+    let eligible=true;
+    if(employee.overlapping_occurrence_days){
+      issues.push('Ocorrências sobrepostas: não é possível apurar dias sem resolver a sobreposição.');
+      eligible=false;
+    }
+    const missingSalary=employee.base_reference===null||!Number.isFinite(employee.base_reference);
+    if(missingSalary){
+      issues.push('Histórico salarial não cobre o período de referência.');eligible=false;
+    }
+    const admission=employee.admission_date||null;
+    const findSalary=(day)=>{
+      const seg=salarySegments.find(x=>x.start_date<=day&&x.end_date>=day);
+      return seg&&Number.isSafeInteger(seg.salary_cents)&&seg.salary_cents>=0?seg.salary_cents:null;
+    };
+    let hasPendingTreatment=false,hasNonCalculable=false;
+    const breakdown=[];
+    for(const o of occurrences){
+      const status=o.treatment||'PENDENTE';
+      if(status==='PENDENTE'){hasPendingTreatment=true;issues.push('Ocorrência sem tratamento: '+o.kind+' ('+o.start_date+').');}
+      const row={id:o.id,kind:o.kind,treatment:status,from:o.within_competence_from,to:o.within_competence_to,
+        days:o.days_in_competence,estimated_discount:null,method:null,dsr_pending:false,
+        company_first15_days:null,benefit_after15_days:null};
+      if(o.kind==='FALTA'&&status==='ABONADA'){
+        row.estimated_discount=0;row.method='SEM_DESCONTO_POR_ABONO_CONFERIDO';
+      }else if(o.kind==='FALTA'&&status==='DESCONTO_A_CONFERIR'){
+        row.method='SALARIO_HISTORICO_DIVIDIDO_POR_30';row.dsr_pending=true;
+        for(let n=payrollCalendarDayIndex(row.from);n<=payrollCalendarDayIndex(row.to);n++){
+          const day=payrollRemunerationDay(n);
+          if(!admission||day<admission){eligible=false;issues.push('Falta anterior à admissão na competência.');}
+          daysToDeduct.add(day);affectedWeeks.add(payrollRemunerationWeek(day));
+        }
+      }else if(o.kind==='AFASTAMENTO'){
+        // A contagem desde o início do afastamento é informativa: sem pressupor causa
+        // médica, concessão do benefício, continuidade ou responsabilidade da empresa.
+        let first=0,after=0;
+        for(let n=payrollCalendarDayIndex(row.from);n<=payrollCalendarDayIndex(row.to);n++){
+          const since=n-payrollCalendarDayIndex(o.start_date)+1;
+          if(since>=1&&since<=15)first++;else if(since>15)after++;
+        }
+        row.company_first15_days=first;row.benefit_after15_days=after;
+        hasNonCalculable=true;
+        warnings.push('Afastamento: 15 primeiros dias e período posterior são informativos; confirmar espécie, vínculo e continuidade.');
+      }else if(o.kind==='FERIAS'||o.kind==='LICENCA'){
+        hasNonCalculable=true;
+        warnings.push(o.kind==='FERIAS'?'Férias precisam de verbas, períodos e incidências próprios.':'Licença depende de fundamento legal e remuneração acordada.');
+      }
+      breakdown.push(row);
+    }
+    if(daysToDeduct.size>30){
+      eligible=false;issues.push('Mais de 30 dias de faltas no mês: regra com divisor 30 exige tratamento específico.');
+    }
+    if(hasPendingTreatment){eligible=false;}
+    if(hasNonCalculable){eligible=false;issues.push('Outras ocorrências exigem cálculo específico antes de fechar a remuneração.');}
+    let numerator=0n,found=0;
+    for(const day of daysToDeduct){
+      const cents=findSalary(day);
+      if(cents===null){eligible=false;issues.push('Vigência salarial indisponível para o dia '+day+'.');continue;}
+      numerator+=BigInt(cents);found++;
+    }
+    // Mesmo sem faltas, '0' só é afirmado quando há histórico suficiente e todas
+    // as ocorrências foram classificadas. O contrário seria falso zero.
+    const calculated=eligible&&found===daysToDeduct.size;
+    const discountCents=calculated?payrollRemunerationRoundCents(numerator,30n):null;
+    if(daysToDeduct.size)warnings.push('Estimativa = soma dos salários diários históricos / 30; DSR e incidências ainda pendentes.');
+    if(daysToDeduct.size)issues.push('Possível perda de DSR: verificar jornada semanal, justificativas, feriados e norma coletiva.');
+    // A estimativa nunca vira desconto definitivo e não interfere no subtotal anterior.
+    return {...employee,remuneration_preview:{
+      method:'DIAS_DE_FALTA_X_SALARIO_VIGENTE_DIV_30',
+      deduction_days:daysToDeduct.size,
+      absence_discount_estimate:discountCents===null?null:centsToMoney(discountCents),
+      absence_discount_calculated:calculated,
+      dsr_weeks_to_review:[...affectedWeeks].sort(),
+      dsr_discount:null,fgts_adjustment:null,inss_adjustment:null,irrf_adjustment:null,
+      company_benefit_adjustment:null,net_pay:null,
+      breakdown,issues:[...new Set(issues)],warnings:[...new Set(warnings)],
+      ready_for_payroll:false,ready_for_payment:false,ready_for_accounting:false
+    }};
+  });
+  return {...envelope,kind:'REMUNERACAO_PRELIMINAR_ETAPA_12',items,
+    eligible_absence_estimate_count:items.filter(x=>x.remuneration_preview.absence_discount_calculated).length,
+    pending_remuneration_count:items.filter(x=>x.remuneration_preview.issues.length>0).length,
+    read_only:true,preview_only:true,ready_for_payroll:false,ready_for_closure:false,
+    ready_for_payment:false,ready_for_accounting:false,folha_liquida:null,
+    message:'Etapa 12: estimativa não homologada de faltas descontáveis, sem DSR, encargos, líquido, pagamentos, fechamento ou contabilidade.'};
+}
+
+// ===== SAGAS Folha Etapa 13: conferência do DSR por semana e afastamentos =====
+// SIMULAÇÃO, nunca gera rubrica, pagamento, fechamento ou contabilidade.
+// Repouso semanal não se confunde com sua remuneração; feriados, escalas e CCT
+// exigem conferência externa. Uma semana jamais duplica seu DSR neste cenário.
+const PAYROLL_DSR_TREATMENTS=['PENDENTE','MANTER_REMUNERACAO','DESCONTO_A_CONFERIR'];
+async function ensurePayrollDsrReviewSchema(env){
+  await env.DB.batch([
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS payroll_dsr_reviews (
+      company_id TEXT NOT NULL,competence_id TEXT NOT NULL,employee_id TEXT NOT NULL,
+      week_start TEXT NOT NULL,rest_date TEXT,
+      treatment TEXT NOT NULL CHECK(treatment IN ('PENDENTE','MANTER_REMUNERACAO','DESCONTO_A_CONFERIR')),
+      notes TEXT NOT NULL DEFAULT '',updated_by TEXT NOT NULL,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY(company_id,competence_id,employee_id,week_start),
+      FOREIGN KEY(employee_id) REFERENCES payroll_employees(id) ON DELETE RESTRICT,
+      FOREIGN KEY(competence_id) REFERENCES payroll_competences(id) ON DELETE RESTRICT
+    )`),
+    env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_payroll_dsr_review_comp
+      ON payroll_dsr_reviews(company_id,competence_id,employee_id)`)
+  ]);
+}
+async function payrollDsrReviewSave(env,request,auth,companyId,body){
+  await requirePermission(env,auth.user.id,companyId,'payroll.manage');
+  const competenceId=String(required(body?.competence_id,'competência'));
+  const employeeId=String(required(body?.employee_id,'funcionário'));
+  const weekStart=payrollStrictDate(body?.week_start,'início da semana');
+  if(payrollRemunerationWeek(weekStart)!==weekStart)
+    throw new HttpError(400,'A semana precisa iniciar na segunda-feira.','VALIDATION_ERROR');
+  const treatment=String(required(body?.treatment,'tratamento')).trim().toUpperCase();
+  if(!PAYROLL_DSR_TREATMENTS.includes(treatment))
+    throw new HttpError(400,'Tratamento de DSR inválido.','VALIDATION_ERROR');
+  const restDate=body?.rest_date?payrollStrictDate(body.rest_date,'data do repouso'):null;
+  const notes=cleanText(body?.notes||'',500)||'';
+  if(treatment==='DESCONTO_A_CONFERIR'&&(!restDate||notes.trim().length<5))
+    throw new HttpError(400,'Para estimar DSR, informe data do repouso e justificativa da conferência.','VALIDATION_ERROR');
+  if(restDate){
+    const diff=payrollCalendarDayIndex(restDate)-payrollCalendarDayIndex(weekStart);
+    if(diff<0||diff>13)throw new HttpError(400,'Data do repouso incompatível com a semana informada.','VALIDATION_ERROR');
+  }
+  await payrollReadOpenCompetence(env,companyId,competenceId);
+  await ensureSchemaRevision(env,'payroll-dsr-reviews',1,()=>ensurePayrollDsrReviewSchema(env));
+  const period=await env.DB.prepare(`SELECT competence FROM payroll_competences WHERE company_id=? AND id=?`)
+    .bind(companyId,competenceId).first();
+  // Não pode selecionar semana desconectada da competência.
+  if(weekStart>period.competence+'-31' ||
+     payrollCalendarDayIndex(weekStart)+6<payrollCalendarDayIndex(period.competence+'-01'))
+    throw new HttpError(400,'Semana fora da competência selecionada.','VALIDATION_ERROR');
+  const employee=await env.DB.prepare(`SELECT id FROM payroll_employees WHERE company_id=? AND id=?`)
+    .bind(companyId,employeeId).first();
+  if(!employee)throw new HttpError(404,'Funcionário não encontrado na empresa.','NOT_FOUND');
+  // Aceita somente semana realmente afetada por falta classificada na competência.
+  // A API jamais cria revisões arbitrárias para semanas sem ocorrência.
+  const month=period.competence;
+  const [year,number]=month.split('-').map(Number);
+  const first=month+'-01',last=month+'-'+String(new Date(Date.UTC(year,number,0)).getUTCDate()).padStart(2,'0');
+  const occ=await env.DB.prepare(`SELECT o.start_date,o.end_date,o.kind,v.treatment
+    FROM payroll_employee_occurrences o
+    LEFT JOIN payroll_occurrence_reviews v ON v.company_id=o.company_id AND v.occurrence_id=o.id
+    WHERE o.company_id=? AND o.employee_id=? AND o.kind='FALTA' AND
+      v.treatment='DESCONTO_A_CONFERIR' AND o.start_date<=? AND o.end_date>=?`)
+    .bind(companyId,employeeId,last,first).all();
+  const matched=(occ.results||[]).some(o=>{
+    const start=o.start_date>first?o.start_date:first;
+    const end=o.end_date<last?o.end_date:last;
+    for(let i=payrollCalendarDayIndex(start);i<=payrollCalendarDayIndex(end);i++)
+      if(payrollRemunerationWeek(payrollRemunerationDay(i))===weekStart)return true;
+    return false;
+  });
+  if(!matched)throw new HttpError(409,'Semana sem falta classificada para desconto. Atualize as ocorrências.','NOT_REVIEWABLE');
+  const existing=await env.DB.prepare(`SELECT * FROM payroll_dsr_reviews
+    WHERE company_id=? AND competence_id=? AND employee_id=? AND week_start=?`)
+    .bind(companyId,competenceId,employeeId,weekStart).first();
+  // Repouso escolhido não pode já estar associado a outra semana da mesma competência.
+  if(restDate && treatment==='DESCONTO_A_CONFERIR'){
+    const dup=await env.DB.prepare(`SELECT week_start FROM payroll_dsr_reviews
+      WHERE company_id=? AND employee_id=? AND rest_date=? AND treatment='DESCONTO_A_CONFERIR'
+      AND NOT(competence_id=? AND week_start=?) LIMIT 1`)
+      .bind(companyId,employeeId,restDate,competenceId,weekStart).first();
+    if(dup)throw new HttpError(409,'Data de DSR já vinculada a outra semana.','DSR_DUPLICATE');
+  }
+  await env.DB.prepare(`INSERT INTO payroll_dsr_reviews
+    (company_id,competence_id,employee_id,week_start,rest_date,treatment,notes,updated_by)
+    VALUES (?,?,?,?,?,?,?,?)
+    ON CONFLICT(company_id,competence_id,employee_id,week_start) DO UPDATE SET
+    rest_date=excluded.rest_date,treatment=excluded.treatment,notes=excluded.notes,
+    updated_by=excluded.updated_by,updated_at=CURRENT_TIMESTAMP`)
+    .bind(companyId,competenceId,employeeId,weekStart,
+      treatment==='DESCONTO_A_CONFERIR'?restDate:null,treatment,notes,auth.user.id).run();
+  const after=await env.DB.prepare(`SELECT * FROM payroll_dsr_reviews
+    WHERE company_id=? AND competence_id=? AND employee_id=? AND week_start=?`)
+    .bind(companyId,competenceId,employeeId,weekStart).first();
+  await audit(env,{companyId,userId:auth.user.id,action:existing?'UPDATE':'CREATE',
+    entity:'payroll_dsr_reviews',entityId:employeeId+':'+weekStart,before:existing,after,request});
+  return {...after,ready_for_payment:false,ready_for_accounting:false,ready_for_payroll:false};
+}
+async function payrollDsrAndLeavePreview(env,companyId,competenceId,paymentDate){
+  await ensureSchemaRevision(env,'payroll-dsr-reviews',1,()=>ensurePayrollDsrReviewSchema(env));
+  const view=await payrollRemunerationPreview(env,companyId,competenceId,paymentDate);
+  const month=view.competence.competence;
+  const rows=await env.DB.prepare(`SELECT r.* FROM payroll_dsr_reviews r
+    WHERE r.company_id=? AND r.competence_id=? ORDER BY r.employee_id,r.week_start LIMIT 5001`)
+    .bind(companyId,competenceId).all();
+  if((rows.results||[]).length>5000)throw new HttpError(409,'Muitas revisões de DSR.','PREVIEW_LIMIT');
+  const reviews=new Map((rows.results||[]).map(x=>[x.employee_id+':'+x.week_start,x]));
+  let weeksPending=0,weeksReviewed=0;
+  const items=view.items.map(employee=>{
+    const preview=employee.remuneration_preview;
+    const salarySegments=employee.salary_segments||[];
+    const missingHistory=employee.base_reference===null||!Number.isFinite(employee.base_reference);
+    const issues=[],warnings=[];
+    let dsrSum=0n,complete=true;
+    const weeks=(preview.dsr_weeks_to_review||[]).map(weekStart=>{
+      const review=reviews.get(employee.employee_id+':'+weekStart)||null;
+      const treatment=review?.treatment||'PENDENTE';
+      const restDate=review?.rest_date||null;
+      const details={week_start:weekStart,rest_date:restDate,treatment,notes:review?.notes||'',
+        estimated_discount:null,days_in_week:0,carried_to_other_competence:false,
+        flags:[]};
+      for(const occurrence of employee.occurrences||[]){
+        if(occurrence.kind!=='FALTA'||occurrence.treatment!=='DESCONTO_A_CONFERIR')continue;
+        const from=payrollCalendarDayIndex(occurrence.within_competence_from);
+        const to=payrollCalendarDayIndex(occurrence.within_competence_to);
+        for(let d=from;d<=to;d++)
+          if(payrollRemunerationWeek(payrollRemunerationDay(d))===weekStart)details.days_in_week++;
+      }
+      if(employee.overlapping_occurrence_days){details.flags.push('Ocorrências sobrepostas: DSR não apurado.');complete=false;}
+      if(!preview.absence_discount_calculated){
+        details.flags.push('Prévia de faltas incompleta: revisar ocorrências e histórico.');complete=false;
+      }
+      if(treatment==='PENDENTE'){
+        details.flags.push('Repouso e convenção/escala ainda não conferidos.');
+        weeksPending++;complete=false;
+      }else if(treatment==='MANTER_REMUNERACAO'){
+        weeksReviewed++;
+        details.estimated_discount=0;
+      }else if(treatment==='DESCONTO_A_CONFERIR'){
+        weeksReviewed++;
+        if(!restDate){details.flags.push('Data do repouso ausente.');complete=false;}
+        else if(restDate.slice(0,7)!==month){
+          details.flags.push('Repouso em outra competência: não projetar o valor nesta folha.');
+          details.carried_to_other_competence=true;complete=false;
+        }else if(employee.admission_date&&restDate<employee.admission_date){
+          details.flags.push('Repouso anterior à admissão.');complete=false;
+        }else if((employee.occurrences||[]).some(o=>o.within_competence_from<=restDate&&o.within_competence_to>=restDate)){
+          details.flags.push('Repouso sobreposto a ocorrência: verificar duplicidade.');complete=false;
+        }else{
+          const segment=salarySegments.find(s=>s.start_date<=restDate&&s.end_date>=restDate);
+          if(missingHistory||!segment||!Number.isSafeInteger(segment.salary_cents)||segment.salary_cents<0){
+            details.flags.push('Histórico salarial incompleto para a data do repouso.');complete=false;
+          }else{
+            const amount=payrollRemunerationRoundCents(BigInt(segment.salary_cents),30n);
+            details.estimated_discount=centsToMoney(amount);
+            dsrSum+=BigInt(amount);
+          }
+        }
+      }
+      if(details.flags.length)issues.push(...details.flags.map(f=>weekStart+': '+f));
+      return details;
+    });
+    // Afastamentos podem representar doenças sucessivas, acidente, maternidade,
+    // licenças etc. A mesma causa ou benefício são DESCONHECIDOS nesse cadastro.
+    const allLeaves=(employee.occurrences||[]).filter(o=>o.kind==='AFASTAMENTO')
+      .sort((a,b)=>a.start_date.localeCompare(b.start_date));
+    const leaves=allLeaves.map((o,i)=>{
+      const prev=i>0?allLeaves[i-1]:null;
+      const gap=prev?payrollCalendarDayIndex(o.start_date)-payrollCalendarDayIndex(prev.end_date)-1:null;
+      const possibleContinuation=gap!==null&&gap>=0&&gap<=60;
+      const first15=preview.breakdown.find(x=>x.id===o.id)?.company_first15_days??null;
+      const after15=preview.breakdown.find(x=>x.id===o.id)?.benefit_after15_days??null;
+      if(possibleContinuation)warnings.push('Afastamentos com intervalo até 60 dias: verificar se foram pelo mesmo motivo e se houve benefício anterior.');
+      return {id:o.id,start_date:o.start_date,end_date:o.end_date,
+        days_first15_in_competence:first15,days_after15_in_competence:after15,
+        potential_related_return:possibleContinuation,previous_end:prev?.end_date||null,
+        income_responsibility:'PENDENTE_CLASSIFICACAO',inss_benefit:null};
+    });
+    const total=complete&&weeks.length>0?centsToMoney(Number(dsrSum)):
+      weeks.length===0&&!missingHistory&&preview.absence_discount_calculated?0:null;
+    const status=total===null?'PENDENTE':'PREVIA_PARA_CONFERENCIA';
+    if(weeks.length)warnings.push('Estimativa DSR somente para mensalista com repouso e tratamento informados. Feriados, escala e CCT podem alterar o resultado.');
+    return {...employee,dsr_review:{weeks,weeks_count:weeks.length,
+        estimated_discount:total,status,issues:[...new Set(issues)],warnings:[...new Set(warnings)],
+        homologated:false,holiday_impacts:null,ready_for_payroll:false},
+      leave_review:{items:leaves,benefit_calculated:false,first15_amount:null},
+      net_pay:null,ready_for_payment:false,ready_for_accounting:false,ready_for_payroll:false};
+  });
+  return {...view,kind:'REMUNERACAO_DSR_CONFERENCIA_ETAPA_13',items,
+    dsr_weeks_pending:weeksPending,dsr_weeks_reviewed:weeksReviewed,
+    read_only:true,preview_only:true,ready_for_payroll:false,
+    ready_for_payment:false,ready_for_accounting:false,ready_for_closure:false,
+    folha_liquida:null,message:'Etapa 13: DSR por semana apenas para conferência, sem feriados, convenções coletivas, fechamento, encargos ou folha líquida.'};
+}
+
+// ===== SAGAS Folha Etapa 14: mapa de conferência de componentes =====
+// A finalidade é detectar pendências e conciliar referências. Não existe
+// desconto aplicado, folha líquida, obrigação financeira nem contabilização.
+function payrollCompositionCents(value){
+  if(typeof value!=='number'||!Number.isFinite(value)||value<0)return null;
+  const scaled=value*100,rounded=Math.round(scaled);
+  return Number.isSafeInteger(rounded)&&Math.abs(scaled-rounded)<0.000001?rounded:null;
+}
+function payrollCompositionItem(item){
+  const problems=[],notices=[];
+  const add=(list,value)=>{
+    if(typeof value==='string'&&value.trim()&&!list.includes(value)&&list.length<80)list.push(value);
+  };
+  const o=item.occurrences||[],events=item.events||[],r=item.remuneration_preview||{},dsr=item.dsr_review||{};
+  const salary=payrollCompositionCents(item.salary_proportional_preview);
+  const historical=payrollCompositionCents(item.base_reference);
+  const plus=payrollCompositionCents(item.proventos_eventos);
+  const minus=payrollCompositionCents(item.descontos_eventos);
+  const absence=payrollCompositionCents(r.absence_discount_estimate);
+  const dsrAmount=payrollCompositionCents(dsr.estimated_discount);
+  const originalSubtotal=payrollCompositionCents(item.subtotal_aritmetico);
+  const eventPendencies=events.filter(x=>x.status==='PENDENTE'||x.value_preview===null||x.value_preview===undefined);
+  const duplicateSalaryEvent=events.some(x=>x.type==='PROVENTO'&&/^(sal[aá]rio(\s*-?\s*base|\s*mensal)?|vencimento\s*mensal)$/i.test(String(x.event_name||'').trim()));
+  if(historical===null)add(problems,'Falta referência salarial histórica completa para a competência.');
+  if(salary===null)add(problems,'Salário proporcional ainda não está liberado para composição aritmética.');
+  if(duplicateSalaryEvent)add(problems,'Evento de salário-base pode duplicar salário do cadastro.');
+  if(eventPendencies.length)add(problems,eventPendencies.length+' evento(s) precisam de fórmula ou valorização.');
+  if(plus===null||minus===null)add(problems,'Totais de eventos indisponíveis ou inválidos.');
+  if(item.overlapping_occurrence_days)add(problems,'Ocorrências sobrepostas impedem composição.');
+  if(o.some(x=>x.pending||x.treatment==='PENDENTE'))add(problems,'Existe ocorrência sem classificação.');
+  if(o.some(x=>['AFASTAMENTO','FERIAS','LICENCA'].includes(x.kind)))
+    add(problems,'Afastamentos, férias e licenças dependem de cálculo e regras próprias.');
+  if(absence===null)add(problems,'Estimativa de faltas indisponível ou ainda não validada.');
+  if(dsrAmount===null)add(problems,'DSR necessita de conferência antes da composição.');
+  if(dsr.weeks?.some(w=>w.flags?.length))add(problems,'Semanas de DSR possuem alertas de conferência.');
+  for(const msg of r.issues||[])add(problems,msg);
+  for(const msg of dsr.issues||[])add(problems,msg);
+  for(const msg of item.pendencias||[])add(problems,msg);
+  for(const msg of r.warnings||[])add(notices,msg);
+  for(const msg of dsr.warnings||[])add(notices,msg);
+  if(!item.tax_scenario)add(problems,'Cenário tributário ainda indisponível ou não validado.');
+  else add(notices,'INSS, IRRF e FGTS são cenários; não estão homologados nem consolidados com as faltas.');
+  // Conferir SOMENTE o subtotal sem ocorrências, quando o demonstrativo anterior
+  // possui referência integral e a soma de eventos é consistente.
+  let subtotal=null;
+  if(o.length===0&&salary!==null&&plus!==null&&minus!==null&&
+      originalSubtotal!==null&&!duplicateSalaryEvent&&!eventPendencies.length&&
+      salary+plus-minus===originalSubtotal&&Number.isSafeInteger(salary+plus-minus))
+    subtotal=originalSubtotal;
+  if(originalSubtotal!==null&&subtotal===null)
+    add(problems,'Subtotal de eventos não conciliado com os parâmetros da etapa anterior.');
+  if(o.length)add(notices,'Descontos indicativos de faltas e DSR são exibidos separadamente, sem abatê-los do salário.');
+  if(item.leave_review?.items?.length)add(notices,'Afastamentos carecem de espécie, motivo e responsabilidade remuneratória.');
+  const checks=[
+    {area:'SALARIO',status:salary!==null?'CONFERENCIA':'PENDENTE',detail:salary!==null?'Referência proporcional disponível.':'Histórico, admissão ou ocorrências impedem base definitiva.'},
+    {area:'EVENTOS',status:plus!==null&&minus!==null&&!eventPendencies.length&&!duplicateSalaryEvent?'CONFERENCIA':'PENDENTE',detail:eventPendencies.length+' evento(s) pendentes de valorização; confirmar duplicidades e incidências.'},
+    {area:'OCORRENCIAS',status:!o.length?'NAO_APLICAVEL':
+      (absence!==null&&!item.overlapping_occurrence_days&&o.every(x=>!x.pending)&&!o.some(x=>['AFASTAMENTO','FERIAS','LICENCA'].includes(x.kind)))?'CONFERENCIA':'PENDENTE',detail:o.length+' ocorrência(s) identificada(s).'},
+    {area:'DSR',status:dsrAmount!==null&&!(dsr.issues||[]).length?'CONFERENCIA':'PENDENTE',detail:'DSR sujeito à escala, feriados e acordo coletivo.'},
+    {area:'TRIBUTOS',status:item.tax_scenario?'CENARIO':'PENDENTE',detail:'Incidências de ausências e outros pagamentos ainda não consolidadas.'},
+    {area:'FOLHA_FINAL',status:'BLOQUEADO',detail:'Pagamento, encargos, fechamento, contabilidade e eSocial não liberados.'}
+  ];
+  return {...item,composition:{
+    salary_reference:item.base_reference??null,
+    salary_proportional_preview:item.salary_proportional_preview??null,
+    event_earnings:item.proventos_eventos??null,
+    event_deductions:item.descontos_eventos??null,
+    absence_discount_estimate:r.absence_discount_estimate??null,
+    dsr_discount_estimate:dsr.estimated_discount??null,
+    prior_subtotal:item.subtotal_aritmetico??null,
+    reconciled_event_subtotal:subtotal===null?null:centsToMoney(subtotal),
+    net_pay:null,tax_approved:false,checks,issues:problems,warnings:notices,
+    status:problems.length?'PENDENTE':'CONFERENCIA',
+    ready_for_payment:false,ready_for_accounting:false,ready_for_payroll:false,
+    ready_for_closure:false
+  },ready_for_payment:false,ready_for_accounting:false,ready_for_payroll:false,net_pay:null};
+}
+async function payrollCompositionPreview(env,companyId,competenceId,paymentDate){
+  const dsr=await payrollDsrAndLeavePreview(env,companyId,competenceId,paymentDate);
+  const items=dsr.items.map(payrollCompositionItem);
+  const tally={};
+  for(const item of items)for(const check of item.composition.checks){
+    tally[check.area]??={pendente:0,conferencia:0,cenario:0,nao_aplicavel:0,bloqueado:0};
+    const field=({PENDENTE:'pendente',CONFERENCIA:'conferencia',CENARIO:'cenario',NAO_APLICAVEL:'nao_aplicavel',BLOQUEADO:'bloqueado'})[check.status];
+    if(field)tally[check.area][field]++;
+  }
+  return {...dsr,kind:'MAPA_CONFERENCIA_FOLHA_ETAPA_14',items,
+    employee_count:items.length,
+    composition_pending_count:items.filter(x=>x.composition.issues.length>0).length,
+    reconciled_event_subtotal_count:items.filter(x=>x.composition.reconciled_event_subtotal!==null).length,
+    checks_summary:tally,read_only:true,preview_only:true,ready_for_payroll:false,
+    ready_for_payment:false,ready_for_accounting:false,ready_for_closure:false,
+    folha_liquida:null,
+    message:'Mapa de conferência de componentes; valores independentes e estimados, sem somatório com faltas, DSR e impostos e sem folha líquida.'};
+}
+
+// ===== SAGAS Folha Etapa 15: mapa de incidências INSS / IRRF / FGTS =====
+// Somente consulta: usa a versão vigente das regras, mas não homologa a sua
+// correção fiscal, não aplica faltas/DSR nem realiza retenções ou pagamentos.
+function payrollIncidenceItem15(item,ruleByEvent){
+  const risks=[],notes=[],records=[];
+  const add=(list,value)=>{if(typeof value==='string'&&value&&!list.includes(value)&&list.length<100)list.push(value)};
+  const component=item.composition||{};
+  const salary=payrollCompositionCents(component.salary_proportional_preview);
+  const noOccurrences=!(item.occurrences||[]).length && !(item.overlapping_occurrence_days);
+  const salaryReady=noOccurrences && salary!==null &&
+    payrollCompositionCents(component.reconciled_event_subtotal)!==null;
+  if(!salaryReady)add(risks,'Salário proporcional, subtotal ou ocorrências impedem bases fiscais conciliadas.');
+  let pendingRules=0,pendingAmounts=0;
+  const contributions={inss:0,irrf:0,fgts:0};
+  const pending={inss:false,irrf:false,fgts:false};
+  for(const event of item.events||[]){
+    const version=ruleByEvent.get(event.event_id)||null;
+    const actualVersion=version?version.effective_from+'#'+version.revision:null;
+    const versionMatched=!!version && actualVersion===event.rule_version;
+    const amount=payrollCompositionCents(event.value_preview);
+    const flags={};
+    for(const field of ['inss','irrf','fgts']){
+      flags[field]=versionMatched&&['SIM','NAO'].includes(version[field])?version[field]:'PENDENTE';
+      if(flags[field]==='PENDENTE')pending[field]=true;
+    }
+    if(Object.values(flags).includes('PENDENTE')){
+      pendingRules++;
+      add(risks,'Incidência sem regra vigente conciliada para o evento '+String(event.event_code||event.event_id||'').slice(0,40)+'.');
+    }
+    if(amount===null){
+      pendingAmounts++;
+      add(risks,'Evento sem valorização válida: '+String(event.event_code||event.event_id||'').slice(0,40)+'.');
+      for(const field of ['inss','irrf','fgts'])pending[field]=true;
+    }
+    if(event.type==='PROVENTO'){
+      for(const field of ['inss','irrf','fgts']){
+        if(flags[field]==='SIM' && amount!==null){
+          const next=contributions[field]+amount;
+          if(!Number.isSafeInteger(next)||next>99999999999){
+            pending[field]=true;add(risks,'Soma de incidências excedeu limite permitido.');
+          }else contributions[field]=next;
+        }
+      }
+    }else if(event.type==='DESCONTO'){
+      // Descontos não são redutores automáticos das bases: natureza jurídica
+      // própria e documentação são necessárias para validar abatimentos.
+      if(Object.values(flags).includes('SIM')){
+        for(const field of ['inss','irrf','fgts'])if(flags[field]==='SIM')pending[field]=true;
+        add(risks,'Evento de desconto com incidência SIM exige avaliação de redutor: '+String(event.event_code||'').slice(0,40)+'.');
+      }
+    }else if(event.type==='INFORMATIVO' && Object.values(flags).includes('SIM')){
+      for(const field of ['inss','irrf','fgts'])if(flags[field]==='SIM')pending[field]=true;
+      add(risks,'Evento informativo com incidência SIM precisa ser classificado: '+String(event.event_code||'').slice(0,40)+'.');
+    }else if(event.type!=='INFORMATIVO'){
+      for(const field of ['inss','irrf','fgts'])pending[field]=true;
+      add(risks,'Tipo de evento desconhecido: '+String(event.event_code||'').slice(0,40)+'.');
+    }
+    records.push({movement_id:event.id,event_id:event.event_id,event_code:event.event_code,
+      event_name:event.event_name,event_type:event.type,value_preview:amount===null?null:centsToMoney(amount),
+      rule_version:versionMatched?actualVersion:null,
+      inss:flags.inss,irrf:flags.irrf,fgts:flags.fgts,
+      validation_status:amount===null||Object.values(flags).includes('PENDENTE')?'PENDENTE':'CONFERENCIA'});
+  }
+  if((component.issues||[]).length)add(notes,'A composição da Etapa 14 possui pendências; nenhuma base é homologada.');
+  add(notes,'Valores demonstrativos: incidências conforme regras cadastradas, sem validação jurídica automática.');
+  add(notes,'IRRF usa data de pagamento; INSS/FGTS usam competência. Múltiplos vínculos, pagamentos e verbas específicas exigem conferência.');
+  const bases={};
+  for(const field of ['inss','irrf','fgts']){
+    const cents=salaryReady&&!pending[field] ? salary+contributions[field] : null;
+    if(cents!==null&&!Number.isSafeInteger(cents)){
+      bases[field]=null;pending[field]=true;add(risks,'Valor fora do limite seguro para '+field.toUpperCase()+'.');
+    }else bases[field]=cents===null?null:centsToMoney(cents);
+  }
+  return {...item,incidence_review:{
+    salary_portion:salaryReady?centsToMoney(salary):null,
+    event_contributions:{inss:centsToMoney(contributions.inss),irrf:centsToMoney(contributions.irrf),fgts:centsToMoney(contributions.fgts)},
+    potential_bases:bases,
+    statuses:Object.fromEntries(['inss','irrf','fgts'].map(x=>[x,bases[x]===null?'PENDENTE':'CENARIO'])),
+    event_rows:records,pending_rules:pendingRules,pending_event_values:pendingAmounts,
+    issues:risks,warnings:notes,homologated:false,net_pay:null,
+    ready_for_payroll:false,ready_for_payment:false,ready_for_accounting:false,ready_for_closure:false
+  },ready_for_payroll:false,ready_for_payment:false,ready_for_accounting:false,net_pay:null};
+}
+async function payrollIncidencePreview15(env,companyId,competenceId,paymentDate){
+  const prior=await payrollCompositionPreview(env,companyId,competenceId,paymentDate);
+  const competence=prior.competence?.competence;
+  if(!/^\d{4}-(0[1-9]|1[0-2])$/.test(String(competence||'')))
+    throw new HttpError(409,'Competência inválida para consulta de incidências.','INVALID_COMPETENCE');
+  const rows=await env.DB.prepare(`SELECT r.event_id,r.effective_from,r.revision,r.inss,r.irrf,r.fgts
+    FROM payroll_event_rule_versions r WHERE r.company_id=? AND r.effective_from<=?
+      AND r.event_id IN (SELECT DISTINCT event_id FROM payroll_movements
+        WHERE company_id=? AND competence_id=?)
+    ORDER BY r.event_id,r.effective_from DESC,r.revision DESC LIMIT 5001`)
+    .bind(companyId,competence,companyId,competenceId).all();
+  if((rows.results||[]).length>5000)throw new HttpError(409,'Histórico de incidências superior ao limite da consulta.','RULES_LIMIT');
+  const byEvent=new Map();
+  for(const row of rows.results||[])if(!byEvent.has(row.event_id))byEvent.set(row.event_id,row);
+  const items=prior.items.map(x=>payrollIncidenceItem15(x,byEvent));
+  return {...prior,kind:'INCIDENCIAS_PRELIMINARES_ETAPA_15',items,
+    reviewed_employee_count:items.length,
+    pending_employee_count:items.filter(x=>Object.values(x.incidence_review.statuses).includes('PENDENTE')).length,
+    rules_pending_count:items.reduce((n,x)=>n+x.incidence_review.pending_rules,0),
+    bases_are_scenarios:true,read_only:true,
+    ready_for_payroll:false,ready_for_payment:false,ready_for_accounting:false,
+    ready_for_closure:false,folha_liquida:null,taxes_calculated:false,
+    message:'Regras de incidência por evento e bases apenas indicativas. Não foram calculados tributos a recolher ou salário líquido.'};
+}
+
+// ===== SAGAS Folha Etapa 16: SIMULACAO de INSS, IRRF e FGTS =====
+// Sempre read-only; não autoriza descontos, depósitos, pagamentos ou fechamento.
+// INSS: tabela da competência; IRRF: data do pagamento; FGTS: cenário geral 8%.
+// As bases vêm exclusivamente das incidências verificáveis da Etapa 15.
+function payrollTaxSimulationItem16(item,competence,paymentDate){
+  const source=item.incidence_review||{};
+  const bases=source.potential_bases||{};
+  const issues=[],warnings=[];
+  const add=(list,msg)=>{if(msg&&!list.includes(msg)&&list.length<80)list.push(msg)};
+  const cents={};
+  for(const key of ['inss','irrf','fgts']){
+    cents[key]=payrollCompositionCents(bases[key]);
+    if(cents[key]===null)add(issues,'Base '+key.toUpperCase()+' pendente ou sem conciliação.');
+  }
+  const dependents=Number(item.eligible_dependents??0);
+  if(!Number.isSafeInteger(dependents)||dependents<0||dependents>100)
+    add(issues,'Dependentes para IRRF inconsistentes.');
+  // Todos os valores são cenários. Nunca pressupor que cadastro de incidência
+  // SIM/NAO da rubrica é prova de incidência legal.
+  add(warnings,'Rubricas e incidências cadastradas exigem homologação fiscal.');
+  add(warnings,'O cálculo não contempla múltiplos vínculos, pensão alimentícia, pagamentos acumulados, férias, 13º, rescisões ou descontos específicos.');
+  add(warnings,'FGTS usa alíquota geral ilustrativa de 8%; verificar categoria especial, aprendiz e natureza de cada verba.');
+  if(dependents>0)add(warnings,'A dedução provisória de '+dependents+' dependente(s) depende de confirmação documental e da data de pagamento.');
+  if((item.occurrences||[]).length)add(issues,'Existem ocorrências que exigem ajuste das bases; simulação bloqueada.');
+  if((source.issues||[]).length)add(issues,'Existem pendências de classificação de incidências; simulação não é liberada.');
+  let calculated=null;
+  if(issues.length===0){
+    try{
+      const result=payrollTaxHistoricalWithDependents(cents.inss,cents.irrf,cents.fgts,
+        competence,paymentDate,dependents);
+      calculated={
+        inss_estimate:centsToMoney(result.inss_cents),
+        irrf_estimate:centsToMoney(result.irrf_cents),
+        fgts_estimate:centsToMoney(result.fgts_cents),
+        irrf_base_estimate:centsToMoney(result.irrf_base_cents),
+        irrf_before_reduction:centsToMoney(result.irrf_original_cents),
+        irrf_reduction:centsToMoney(result.irrf_reduction_cents),
+        irrf_deduction:centsToMoney(result.irrf_deduction_cents),
+        irrf_deduction_type:result.irrf_deduction_type,
+        inss_table_from:result.inss_table_from,
+        irrf_table_from:result.irrf_table_from,
+        inss_mode:result.inss_mode,
+        // Este FGTS não é um desconto do trabalhador.
+        fgts_is_employee_discount:false
+      };
+    }catch(err){
+      add(issues,'Tabelas ou parâmetros insuficientes: '+String(err?.message||'cálculo indisponível').slice(0,120));
+    }
+  }
+  return {...item,tax_simulation:{
+    status:calculated?'SIMULACAO_PARA_CONFERENCIA':'BLOQUEADO',
+    estimated_values:calculated,
+    potential_bases:{inss:bases.inss??null,irrf:bases.irrf??null,fgts:bases.fgts??null},
+    dependents_considered:Number.isSafeInteger(dependents)&&dependents>=0&&dependents<=100?dependents:null,
+    issues,warnings,
+    calculated:!!calculated,
+    approved:false,homologated:false,
+    net_pay:null,net_pay_calculated:false,
+    ready_for_payroll:false,ready_for_payment:false,ready_for_accounting:false,
+    ready_for_closure:false
+  },ready_for_payroll:false,ready_for_payment:false,ready_for_accounting:false,
+    ready_for_closure:false,net_pay:null};
+}
+async function payrollTaxSimulationPreview16(env,companyId,competenceId,paymentDate){
+  // Reaproveita o fluxo de autenticação, validação de competência e da data,
+  // abrangência da empresa e todas as pendências da Etapa 15.
+  const prior=await payrollIncidencePreview15(env,companyId,competenceId,paymentDate);
+  const competence=prior.competence?.competence;
+  const date=histPaymentDate(paymentDate);
+  histTable(HIST_INSS,competence);histTable(HIST_IRRF,date.slice(0,7));
+  const items=prior.items.map(item=>payrollTaxSimulationItem16(item,competence,date));
+  return {...prior,kind:'SIMULACAO_TRIBUTOS_ETAPA_16',items,
+    simulated_employee_count:items.filter(x=>x.tax_simulation.calculated).length,
+    blocked_employee_count:items.filter(x=>!x.tax_simulation.calculated).length,
+    employee_count:items.length,competence_month:competence,payment_date:date,
+    read_only:true,simulation_only:true,taxes_calculated:false,
+    ready_for_payroll:false,ready_for_payment:false,ready_for_accounting:false,
+    ready_for_closure:false,folha_liquida:null,
+    message:'Simulação sem homologação de INSS, IRRF e FGTS. Não gera retenções, depósitos, salário líquido, pagamentos ou lançamentos.'};
+}
+
+// ===== SAGAS Folha Etapa 17: envelope consolidado de CONFERENCIA =====
+// Consolida os resultados independentes das etapas 11–16 sem criar um
+// salario liquido e sem registrar verbas, encargo ou lancamentos no banco.
+function payrollConsolidationItem17(item){
+  const cmp=item.composition||{},sim=item.tax_simulation||{},tax=sim.estimated_values||{};
+  const inc=item.incidence_review||{},rem=item.remuneration_preview||{},dsr=item.dsr_review||{};
+  const reasons=[],advisories=[];
+  const add=(list,code,detail)=>{
+    if(!list.some(x=>x.code===code)&&list.length<100)list.push({code,detail});
+  };
+  const amount=(v)=>{
+    const cents=payrollCompositionCents(v);
+    return cents===null?null:centsToMoney(cents);
+  };
+  const hasOccurrences=(item.occurrences||[]).length>0;
+  const salary=payrollCompositionCents(cmp.salary_proportional_preview);
+  const earnings=payrollCompositionCents(cmp.event_earnings);
+  const deductions=payrollCompositionCents(cmp.event_deductions);
+  const previous=payrollCompositionCents(cmp.reconciled_event_subtotal);
+  let gross=null,subtotal=null;
+  if(salary!==null&&earnings!==null&&deductions!==null&&!hasOccurrences){
+    const sum=salary+earnings;
+    const result=sum-deductions;
+    if(Number.isSafeInteger(sum)&&Number.isSafeInteger(result)&&sum>=0&&result>=0){
+      gross=centsToMoney(sum);
+      if(previous!==null&&previous===result)subtotal=centsToMoney(result);
+      else add(reasons,'EVENTOS_NAO_CONCILIADOS','O subtotal do mapa de eventos nao coincide com a soma conciliada.');
+    }else add(reasons,'VALORES_FORA_LIMITE','Composicao monetaria negativa ou fora do limite numerico seguro.');
+  }else add(reasons,'SALARIO_EVENTOS_PENDENTES','Salario, eventos ou ocorrencias nao permitem compor os valores.');
+  if(hasOccurrences)add(reasons,'OCORRENCIAS_PENDENTES','Faltas, ferias, licencas ou afastamentos exigem tratamento antes de consolidar a folha.');
+  if((item.overlapping_occurrence_days||0)>0)add(reasons,'OCORRENCIAS_SOBREPOSTAS','Existem dias de ocorrencia sobrepostos.');
+  if((cmp.issues||[]).length)add(reasons,'COMPOSICAO_COM_PENDENCIAS',cmp.issues.length+' pendencia(s) identificada(s) no mapa de composicao.');
+  if((inc.issues||[]).length)add(reasons,'INCIDENCIAS_COM_PENDENCIAS',inc.issues.length+' problema(s) de regras de incidencia.');
+  if(!sim.calculated)add(reasons,'TRIBUTOS_SEM_CENARIO','Nao existe simulacao tributaria integral disponivel para conferencia.');
+  if((rem.issues||[]).length)add(reasons,'REMUNERACAO_COM_PENDENCIAS',rem.issues.length+' pendencia(s) na previa remuneratoria.');
+  if((dsr.issues||[]).length)add(reasons,'DSR_COM_PENDENCIAS',dsr.issues.length+' pendencia(s) na conferencia do DSR.');
+  if(subtotal!==null&&sim.calculated)
+    add(advisories,'COMPONENTES_PARA_CONFERENCIA','Subtotal aritmetico e tributos simulados estao disponiveis para conferencia; nao sao liquido ou pagamento.');
+  if((item.events||[]).some(x=>x.rule_version===null||x.rule_version===undefined))
+    add(advisories,'VERSOES_A_CONFERIR','Existem eventos sem identificacao de versao de regra no demonstrativo.');
+  add(advisories,'ENCARGOS_NAO_HOMOLOGADOS','Confirmar tabelas, incidencia legal das rubricas, escala, categoria e convenção coletiva.');
+  add(advisories,'FGTS_NAO_DESCONTA_EMPREGADO','FGTS e encargo patronal e nao integra descontos do empregado.');
+  const eventLines=(item.events||[]).map(x=>({
+    movement_id:x.id??null,event_id:x.event_id??null,
+    code:x.event_code??null,name:x.event_name??null,type:x.type??null,
+    value_preview:amount(x.value_preview),status:x.status??'PENDENTE',
+    rule_version:x.rule_version??null,
+    fiscal_rule_version:(inc.event_rows||[]).find(y=>y.movement_id===x.id)?.rule_version??null
+  }));
+  const gates=[
+    {code:'SALARIO_E_EVENTOS',status:subtotal!==null?'CONFERENCIA':'PENDENTE'},
+    {code:'OCORRENCIAS',status:!hasOccurrences?'NAO_APLICAVEL':'PENDENTE'},
+    {code:'DSR_E_AFASTAMENTOS',status:!hasOccurrences?'NAO_APLICAVEL':'PENDENTE'},
+    {code:'INCIDENCIAS',status:(inc.issues||[]).length===0?'CONFERENCIA':'PENDENTE'},
+    {code:'TRIBUTOS',status:sim.calculated?'SIMULACAO':'PENDENTE'},
+    {code:'HOMOLOGACAO',status:'BLOQUEADO'},
+    {code:'PAGAMENTO_E_CONTABILIDADE',status:'BLOQUEADO'}
+  ];
+  return {...item,consolidation:{
+    status:reasons.length?'PENDENTE':'CONFERENCIA',
+    event_lines:eventLines,
+    remuneration:{salary_reference:amount(cmp.salary_reference),salary_proportional:amount(cmp.salary_proportional_preview),
+      event_earnings:amount(cmp.event_earnings),event_deductions:amount(cmp.event_deductions),
+      gross_event_reference:gross,event_subtotal_reconciled:subtotal},
+    occurrence_review:{count:(item.occurrences||[]).length,
+      absence_discount_estimate:amount(rem.absence_discount_estimate),dsr_discount_estimate:amount(dsr.estimated_discount),
+      applied_to_subtotal:false},
+    taxes:{inss_estimate:amount(tax.inss_estimate),irrf_estimate:amount(tax.irrf_estimate),
+      fgts_employer_estimate:amount(tax.fgts_estimate),simulated:sim.calculated===true,
+      applied_as_employee_deduction:false},
+    gates,blockers:reasons,notes:advisories,
+    net_pay:null,approved:false,homologated:false,read_only:true,
+    ready_for_payroll:false,ready_for_payment:false,ready_for_accounting:false,ready_for_closure:false
+  },net_pay:null,ready_for_payroll:false,ready_for_payment:false,
+    ready_for_accounting:false,ready_for_closure:false};
+}
+async function payrollConsolidationPreview17(env,companyId,competenceId,paymentDate){
+  const prior=await payrollTaxSimulationPreview16(env,companyId,competenceId,paymentDate);
+  // Reutiliza os IDs humanos persistentes da Etapa 11.1; jamais deriva o
+  // codigo do UUID nem do indice de ordenacao da consulta.
+  const employees=await listPayroll(env,companyId,'employees');
+  const codes=new Map(employees.map(x=>[x.id,x.employee_code||null]));
+  const items=prior.items.map(x=>payrollConsolidationItem17({...x,
+    employee_code:codes.get(x.employee_id)||null}));
+  return {...prior,kind:'CONSOLIDACAO_ENVELOPE_ETAPA_17',items,
+    employee_count:items.length,
+    blocked_employee_count:items.filter(x=>x.consolidation.status==='PENDENTE').length,
+    conference_employee_count:items.filter(x=>x.consolidation.status==='CONFERENCIA').length,
+    total_event_lines:items.reduce((n,x)=>n+x.consolidation.event_lines.length,0),
+    read_only:true,preview_only:true,
+    ready_for_payroll:false,ready_for_payment:false,ready_for_accounting:false,
+    ready_for_closure:false,folha_liquida:null,
+    message:'Consolidacao informativa do envelope; sem salario liquido, pagamento, recolhimentos, contabilizacao ou fechamento.'};
+}
+
+// ===== SAGAS Folha Etapa 18: validacao orientada por evidencias =====
+// Diagnostico de impedimentos para o calculo futuro, sem reconhecer
+// simulacoes como tributos homologados e sem atualizar registros de negocio.
+function payrollValidationItem18(item){
+  const con=item.consolidation||{},cmp=item.composition||{},inc=item.incidence_review||{};
+  const tax=item.tax_simulation||{},ev=item.events||[],occ=item.occurrences||[];
+  const rules=inc.event_rows||[],checks=[];
+  const add=(code,title,status,detail,action,source)=>{
+    checks.push({code,title,status,detail,required_action:action,source});
+  };
+  const salary=payrollCompositionCents(cmp.salary_reference);
+  const salaryPart=payrollCompositionCents(cmp.salary_proportional_preview);
+  const salaryGood=salary!==null&&salaryPart!==null;
+  add('HISTORICO_SALARIAL','Historico salarial',salaryGood?'CONFERENCIA':'PENDENTE',
+    salaryGood?'Salario historico e proporcional disponiveis, ainda sujeitos a conferencia.':
+      'Ausencia ou invalidade de salario historico ou proporcional para a competencia.',
+    salaryGood?'Conferir vigencia, admissao, categoria e jornada.':'Completar historico salarial e verificar vigencia, admissao e jornada.',
+    'Cadastro do funcionario / Historico salarial');
+  const missingEvents=ev.filter(x=>payrollCompositionCents(x.value_preview)===null||x.status==='PENDENTE');
+  const missingFormulas=ev.filter(x=>!x.rule_version);
+  const duplicateBase=(cmp.issues||[]).some(x=>/duplic|sal[aá]rio.base/i.test(String(x)));
+  const reconciled=payrollCompositionCents(con.remuneration?.event_subtotal_reconciled)!==null;
+  const eventsGood=reconciled&&!missingEvents.length&&!missingFormulas.length&&!duplicateBase;
+  add('EVENTOS_E_SUBTOTAL','Eventos e subtotal',eventsGood?'CONFERENCIA':'PENDENTE',
+    'Eventos sem valor: '+missingEvents.length+'; sem versao de formula: '+missingFormulas.length+
+    '; subtotal conciliado: '+(reconciled?'sim':'nao')+'; duplicidade salarial: '+(duplicateBase?'possivel':'nao detectada')+'.',
+    eventsGood?'Conferir formulas, rubricas e valores lançados.':
+      'Revisar eventos, historico das formulas, possivel salario duplicado e divergencia do subtotal.',
+    'Lancamentos e versoes das formulas');
+  const overlapped=Number(item.overlapping_occurrence_days||0);
+  const untreated=occ.filter(x=>x.pending||!x.treatment||x.treatment==='PENDENTE');
+  add('OCORRENCIAS','Faltas e ocorrencias',occ.length?'PENDENTE':'NAO_APLICAVEL',
+    occ.length?occ.length+' ocorrencia(s), '+untreated.length+' sem tratamento; '+overlapped+' dia(s) sobreposto(s).':
+      'Sem ocorrencias registradas na competencia.',
+    occ.length?'Conferir classificacoes e reflexos remuneratorios antes de fechar a folha.':'Nenhuma acao nesta competencia.',
+    'Historico de ocorrencias / Revisao das faltas');
+  const dsr=item.dsr_review||{},weeks=dsr.weeks||[];
+  add('DSR_E_FERIADOS','Repousos e feriados',occ.length?'PENDENTE':'NAO_APLICAVEL',
+    occ.length?weeks.length+' semana(s) de DSR a conferir; escala, feriados e norma coletiva nao homologados.':
+      'Sem ocorrencias com reflexos a analisar neste diagnostico.',
+    occ.length?'Validar semana, repouso real, feriados, abono e norma coletiva.':'Nenhuma acao nesta competencia.',
+    'Revisao semanal do DSR');
+  const leaves=occ.filter(x=>['AFASTAMENTO','FERIAS','LICENCA'].includes(x.kind));
+  add('FERIAS_E_AFASTAMENTOS','Ferias e afastamentos',leaves.length?'PENDENTE':'NAO_APLICAVEL',
+    leaves.length?leaves.length+' ocorrencia(s) exigem especie, direitos e responsabilidade remuneratoria.':
+      'Nao ha ferias, licencas ou afastamentos neste envelope.',
+    leaves.length?'Conferir tipo, limites, periodos, retorno e efeitos previdenciarios.':'Nenhuma acao nesta competencia.',
+    'Historico funcional / Ocorrencias');
+  const fiscalNoVersion=ev.filter(x=>!rules.find(y=>y.movement_id===x.id)?.rule_version);
+  const taxFlags=(inc.issues||[]).length;
+  const incidentsGood=taxFlags===0&&fiscalNoVersion.length===0;
+  add('INCIDENCIAS','Incidencias dos eventos',incidentsGood?'CONFERENCIA':'PENDENTE',
+    taxFlags+' alerta(s) de incidencias; '+fiscalNoVersion.length+' evento(s) sem versao fiscal rastreavel.',
+    incidentsGood?'Conferir a natureza legal das incidencias INSS, IRRF e FGTS.':
+      'Completar revisoes de incidencias com vigencia e verificar rubricas sem versao fiscal.',
+    'Regras fiscais de eventos');
+  const taxOk=tax.calculated===true&&tax.estimated_values!==null&&(tax.issues||[]).length===0;
+  add('TRIBUTOS','Contribuicoes e imposto',taxOk?'SIMULACAO':'PENDENTE',
+    taxOk?'Existe somente simulacao tributaria, sem base homologada nem desconto efetivo.':
+      'Simulacao nao disponivel ou inconsistente.',
+    taxOk?'Validar bases, tabelas legais, deducoes, multiplo vinculo e periodos de pagamento.':
+      'Conferir bases e incidencias e gerar nova simulacao para analise.',
+    'Simulacao INSS / IRRF / FGTS');
+  add('VALIDACAO_LEGAL','Homologacao e normas', 'NAO_IMPLEMENTADO',
+    'Nao ha fluxo completo de homologacao de folha, validacao de convenio coletivo ou calculo definitivo.',
+    'Implementar e homologar regras de categorias, descontos e bases antes de liberar a folha.',
+    'Controle de processamento da folha');
+  add('PAGAMENTO_CONTABIL','Pagamentos e contabilizacao','NAO_IMPLEMENTADO',
+    'Integracao de folha fechada com contas a pagar e contabilidade nao esta habilitada.',
+    'Concluir apuracao e homologacao antes de programar pagamento e lancamentos contabeis.',
+    'Integracao financeira e contabil');
+  const pending=checks.filter(x=>x.status==='PENDENTE');
+  const unimplemented=checks.filter(x=>x.status==='NAO_IMPLEMENTADO');
+  const preview=checks.filter(x=>x.status==='CONFERENCIA'||x.status==='SIMULACAO');
+  const nextActions=pending.concat(unimplemented).map(x=>({code:x.code,title:x.title,required_action:x.required_action,source:x.source}));
+  const displayCode=/^\d{5}$/.test(String(item.employee_code||''))?item.employee_code:null;
+  if(!displayCode)nextActions.unshift({code:'CODIGO_FUNCIONARIO',title:'Codigo unico',required_action:'Verificar geracao do codigo sequencial do funcionario.',source:'Cadastro de funcionarios'});
+  return {...item,validation:{status:pending.length||!displayCode?'PENDENTE':'CONFERENCIA_PRELIMINAR',
+    employee_code:displayCode,checks,next_actions:nextActions,
+    pending_count:pending.length+(!displayCode?1:0),not_implemented_count:unimplemented.length,
+    conference_count:preview.length,blocked_for_final:true,
+    calculated_net_pay:null,homologated:false,approved:false,read_only:true,
+    ready_for_payroll:false,ready_for_payment:false,ready_for_accounting:false,ready_for_closure:false},
+    net_pay:null,ready_for_payroll:false,ready_for_payment:false,ready_for_accounting:false,
+    ready_for_closure:false};
+}
+async function payrollValidationPreview18(env,companyId,competenceId,paymentDate){
+  const base=await payrollConsolidationPreview17(env,companyId,competenceId,paymentDate);
+  const items=base.items.map(payrollValidationItem18);
+  const issuesByType={};
+  for(const item of items){
+    for(const ch of item.validation.checks){
+      const summary=issuesByType[ch.code]??={code:ch.code,title:ch.title,pendente:0,conferencia:0,nao_aplicavel:0,nao_implementado:0,simulacao:0};
+      const key=({PENDENTE:'pendente',CONFERENCIA:'conferencia',NAO_APLICAVEL:'nao_aplicavel',NAO_IMPLEMENTADO:'nao_implementado',SIMULACAO:'simulacao'})[ch.status];
+      if(key)summary[key]++;
+    }
+  }
+  return {...base,kind:'MAPA_VALIDACAO_ENVELOPES_ETAPA_18',items,
+    validation_summary:Object.values(issuesByType),
+    employee_count:items.length,
+    pending_employee_count:items.filter(x=>x.validation.pending_count>0).length,
+    conference_employee_count:items.filter(x=>x.validation.pending_count===0).length,
+    total_pending_checks:items.reduce((n,x)=>n+x.validation.pending_count,0),
+    approved_employee_count:0,ready_for_payroll:false,ready_for_payment:false,
+    ready_for_accounting:false,ready_for_closure:false,
+    folha_liquida:null,read_only:true,preview_only:true,
+    message:'Checklist objetivo de pendencias e evidencias por funcionario; nenhum processamento definitivo disponivel.'};
+}
+
+// ===== SAGAS Folha Etapa 19: saneamento dirigido de salario e eventos =====
+// A revisão informa o REGISTRO e a TELA existentes para cada pendência;
+// nunca substitui lançamento, fórmula, salário, tributo nem homologa a folha.
+function payrollRemediationItem19(employee){
+  const existing=employee.validation||{};
+  const comp=employee.composition||{};
+  const inc=employee.incidence_review||{};
+  const events=employee.events||[];
+  const fiscalByMovement=new Map((inc.event_rows||[]).map(x=>[x.movement_id,x]));
+  const tasks=[];
+  const add=(code,area,priority,detail,action,actionKind,recordId,eventId)=>{
+    if(tasks.length>=250)throw new HttpError(409,'Quantidade de pendências acima do limite de conferência.','REMEDIATION_LIMIT');
+    tasks.push({code,area,priority,detail,action,action_kind:actionKind,
+      employee_id:employee.employee_id,record_id:recordId||null,event_id:eventId||null});
+  };
+  if(payrollCompositionCents(comp.salary_reference)===null){
+    add('HISTORICO_SALARIAL','SALARIO','ALTA',
+      'Referência salarial indisponível no período consultado.',
+      'Conferir vigência do histórico salarial desde a admissão e todas as alterações do mês.',
+      'ABRIR_HISTORICO_SALARIAL',employee.employee_id,null);
+  }else if(payrollCompositionCents(comp.salary_proportional_preview)===null){
+    add('SALARIO_PROPORCIONAL','SALARIO','ALTA',
+      'Salário proporcional ainda não pode ser consolidado.',
+      'Revisar admissão, situações funcionais, jornada e ocorrências. O histórico salarial pode estar correto.',
+      'ABRIR_HISTORICO_FUNCIONAL',employee.employee_id,null);
+  }
+  for(const ev of events){
+    const code=String(ev.event_code||ev.event_id||'—').slice(0,70);
+    const name=String(ev.event_name||'').slice(0,100);
+    const label='Evento '+code+(name?' — '+name:'');
+    const manual=ev.unit==='VALOR';
+    const value=payrollCompositionCents(ev.value_preview);
+    const note=String(ev.note||'');
+    if(value===null||ev.status==='PENDENTE'){
+      if(manual){
+        add('LANCAMENTO_VALOR_PENDENTE','EVENTO','ALTA',label+': valor manual pendente ou inválido.',
+          'Conferir o lançamento original e corrigir seu valor ou excluí-lo e lançar novamente conforme os controles atuais.',
+          'ABRIR_LANCAMENTOS',ev.id,ev.event_id);
+      }else if(!ev.rule_version){
+        add('FORMULA_SEM_VIGENCIA','EVENTO','ALTA',label+': não há fórmula com versão vigente.',
+          'Cadastrar ou revisar a fórmula do evento com vigência igual ou anterior à competência.',
+          'ABRIR_REGRA_EVENTO',ev.id,ev.event_id);
+      }else if(/c[oó]digo de c[aá]lculo especial/i.test(note)){
+        add('CODIGO_CALCULO_NAO_SUPORTADO','EVENTO','ALTA',label+': código de cálculo especial ainda sem motor.',
+          'Conferir a parametrização; alterar a fórmula isoladamente não implementa o código especial.',
+          'ABRIR_REGRA_EVENTO',ev.id,ev.event_id);
+      }else if(/JORNADA_MENSAL|jornada/i.test(note)){
+        add('JORNADA_NECESSARIA','EVENTO','ALTA',label+': jornada mensal é necessária para avaliar a fórmula.',
+          'Completar o histórico de jornada e reconferir a regra de cálculo.',
+          'ABRIR_HISTORICO_JORNADA',employee.employee_id,ev.event_id);
+      }else{
+        add('FORMULA_NAO_AVALIADA','EVENTO','ALTA',label+': '+(note||'prévia de valor indisponível').slice(0,160),
+          'Abrir a regra do evento na competência e conferir sintaxe, variáveis e referência lançada.',
+          'ABRIR_REGRA_EVENTO',ev.id,ev.event_id);
+      }
+    }
+    // Salário lançado em provento pode duplicar a remuneração de cadastro.
+    if(ev.type==='PROVENTO'&&/^(sal[aá]rio(\s*-?\s*base|\s*mensal)?|vencimento\s*mensal)$/i.test(name.trim())){
+      add('POSSIVEL_SALARIO_DUPLICADO','EVENTO','ALTA',label+': pode duplicar o salário já obtido do histórico.',
+        'Conferir se o evento representa salário-base que já integra a composição; não excluir automaticamente.',
+        'ABRIR_LANCAMENTOS',ev.id,ev.event_id);
+    }
+    const f=fiscalByMovement.get(ev.id);
+    if(!f||!f.rule_version||f.validation_status==='PENDENTE'||
+      ['inss','irrf','fgts'].some(k=>!f||f[k]==='PENDENTE')){
+      add('INCIDENCIA_NAO_CONFERIDA','INCIDENCIA','MEDIA',label+': incidências INSS/IRRF/FGTS sem confirmação para a competência.',
+        'Abrir regra do evento e conferir a vigência e a natureza tributária de cada incidência.',
+        'ABRIR_REGRA_EVENTO',ev.id,ev.event_id);
+    }
+  }
+  if(!(existing.checks||[]).some(c=>c.code==='EVENTOS_E_SUBTOTAL')){
+    add('VALIDACAO_ANTERIOR_AUSENTE','CONTROLE','ALTA','Mapa anterior sem o bloco de eventos.',
+      'Reexecutar a validação após conferir a competência.','ABRIR_LANCAMENTOS',null,null);
+  }
+  const ordering={ALTA:0,MEDIA:1,BAIXA:2};
+  tasks.sort((a,b)=>ordering[a.priority]-ordering[b.priority]||
+    a.area.localeCompare(b.area)||a.code.localeCompare(b.code)||
+    String(a.record_id||'').localeCompare(String(b.record_id||'')));
+  const count=(area)=>tasks.filter(x=>x.area===area).length;
+  return {employee_id:employee.employee_id,employee_code:employee.employee_code||null,
+    employee_name:employee.employee_name,
+    remediation:{tasks,task_count:tasks.length,needs_salary_review:count('SALARIO')>0,
+      needs_event_review:count('EVENTO')>0,needs_incidence_review:count('INCIDENCIA')>0,
+      has_further_legal_blockers:true,ready_for_payroll:false,
+      ready_for_payment:false,ready_for_accounting:false,net_pay:null}};
+}
+async function payrollRemediationPreview19(env,companyId,competenceId,paymentDate){
+  const prior=await payrollValidationPreview18(env,companyId,competenceId,paymentDate);
+  const items=prior.items.map(payrollRemediationItem19);
+  const totals={salary:0,events:0,incidences:0};
+  for(const emp of items)for(const task of emp.remediation.tasks){
+    if(task.area==='SALARIO')totals.salary++;
+    if(task.area==='EVENTO')totals.events++;
+    if(task.area==='INCIDENCIA')totals.incidences++;
+  }
+  return {kind:'SANEAMENTO_REMUNERACAO_EVENTOS_ETAPA_19',competence:prior.competence,
+    payment_date:prior.payment_date,items,employee_count:items.length,
+    employees_with_tasks:items.filter(x=>x.remediation.task_count>0).length,
+    total_tasks:items.reduce((n,x)=>n+x.remediation.task_count,0),totals,
+    read_only:true,preview_only:true,ready_for_payroll:false,
+    ready_for_payment:false,ready_for_accounting:false,ready_for_closure:false,
+    folha_liquida:null,net_pay:null,
+    message:'Pendencias tecnicas vinculadas aos cadastros existentes; consultar ou corrigir registros pelos formularios existentes, sem fechamento automatico.'};
+}
+
+// ===== SAGAS Folha Etapa 20: memoria de calculo evento a evento =====
+// Apenas rastreia resultados ja calculados no motor aritmetico SAGAS, com
+// conferencia em centavos e bloqueios. Nao altera cadastro ou contabiliza.
+function payrollCalculationMemoryItem20(item){
+  const c=item.composition||{}, original=item.consolidation||{};
+  const lines=[],issues=[],notes=[];
+  const LIMIT=99999999999n;
+  const addIssue=(code,detail)=>{if(issues.length<150)issues.push({code,detail});};
+  const toCents=payrollCompositionCents;
+  const show=n=>n===null?null:centsToMoney(Number(n));
+  const salary=toCents(c.salary_proportional_preview);
+  if(salary===null)addIssue('SALARIO_NAO_APURADO','Nao foi possivel apurar salario proporcional historico para a competencia.');
+  const events=item.events||[];
+  if(events.length>500)addIssue('MUITOS_EVENTOS','Mais de 500 movimentos por funcionario; memoria bloqueada para conferência detalhada.');
+  let earning=0n,deduction=0n,information=0n,eventsKnown=true;
+  const seen=new Set();
+  lines.push({line:1,origin:'HISTORICO_SALARIAL',record_id:item.employee_id,
+    event_id:null,code:'SALARIO',description:'Salario proporcional do historico',
+    type:'PROVENTO',unit:'VALOR',reference:null,expression:null,rule_version:null,
+    value:salary===null?null:centsToMoney(salary),status:salary===null?'PENDENTE':'CONFERENCIA',
+    detail:salary===null?'Historico salarial sem cobertura ou com impedimento.':'Referencia historica; nao e salario liquido.'});
+  for(const e of events){
+    if(!e.id||seen.has(e.id))addIssue('MOVIMENTO_DUPLICADO','Lancamento sem ID ou ID repetido na memoria de calculo.');
+    seen.add(e.id);
+    const amount=toCents(e.value_preview),type=e.type||null;
+    const validType=['PROVENTO','DESCONTO','INFORMATIVO'].includes(type);
+    const pending=e.status==='PENDENTE'||amount===null||!validType;
+    if(pending){
+      eventsKnown=false;
+      addIssue('EVENTO_PENDENTE','Lancamento '+String(e.event_code||e.id||'?').slice(0,60)+' sem valor seguro ou tipo valido.');
+    }else{
+      if(type==='PROVENTO')earning+=BigInt(amount);
+      else if(type==='DESCONTO')deduction+=BigInt(amount);
+      else information+=BigInt(amount);
+    }
+    lines.push({line:lines.length+1,origin:e.unit==='VALOR'?'LANCAMENTO_MANUAL':'FORMULA_VERSIONADA',
+      record_id:e.id||null,event_id:e.event_id||null,code:e.event_code||null,
+      description:e.event_name||null,type,unit:e.unit||null,reference:e.reference??null,
+      expression:e.unit==='VALOR'?null:e.formula_text||null,
+      rule_version:e.rule_version||null,
+      value:amount===null?null:centsToMoney(amount),status:pending?'PENDENTE':e.status||'CONFERENCIA',
+      detail:String(e.note||'').slice(0,240)});
+  }
+  if(earning>LIMIT||deduction>LIMIT||information>LIMIT){
+    eventsKnown=false;addIssue('TOTAL_FORA_LIMITE','Soma dos valores dos movimentos excedeu o limite monetario seguro.');
+  }
+  if((item.occurrences||[]).length||item.overlapping_occurrence_days)
+    addIssue('OCORRENCIAS_TRABALHISTAS','Existem faltas, ferias, afastamentos, licencas ou sobreposicoes que impedem compor o subtotal para pagamento.');
+  const expectedEarnings=toCents(c.event_earnings),expectedDeductions=toCents(c.event_deductions);
+  if(expectedEarnings===null||expectedDeductions===null)
+    addIssue('TOTAIS_FONTE_AUSENTES','A composicao anterior nao apresenta totais validos de proventos e descontos.');
+  else if(eventsKnown&&(earning!==BigInt(expectedEarnings)||deduction!==BigInt(expectedDeductions)))
+    addIssue('EVENTOS_DIVERGENTES','Soma por lancamento diverge dos totais apurados pela composicao anterior.');
+  const amountReady=salary!==null&&eventsKnown&&earning<=LIMIT&&deduction<=LIMIT&&
+    (item.occurrences||[]).length===0&&!item.overlapping_occurrence_days;
+  const gross=amountReady?BigInt(salary)+earning:null;
+  const beforeTaxes=gross===null?null:gross-deduction;
+  if(gross!==null&&(gross>LIMIT||beforeTaxes<0n||beforeTaxes>LIMIT))
+    addIssue('SUBTOTAL_INVALIDO','Subtotal aritmetico negativo ou acima do limite; nao exibir como remuneração.');
+  const prior=toCents(c.reconciled_event_subtotal);
+  if(beforeTaxes!==null&&beforeTaxes>=0n&&beforeTaxes<=LIMIT&&prior!==null&&beforeTaxes!==BigInt(prior))
+    addIssue('SUBTOTAL_NAO_CONCILIADO','O subtotal por lancamento difere do subtotal da etapa 14/17.');
+  if(prior===null)addIssue('SUBTOTAL_FONTE_PENDENTE','O demonstrativo anterior nao liberou subtotal aritmetico conciliado.');
+  if((item.remediation?.tasks||[]).length)
+    notes.push('Ha '+item.remediation.tasks.length+' tarefa(s) de saneamento dos cadastros e eventos na Etapa 19.');
+  notes.push('Faltas, DSR e simulacoes de INSS/IRRF nao foram descontados. FGTS e encargo patronal.');
+  const ready=issues.length===0&&beforeTaxes!==null&&beforeTaxes>=0n&&beforeTaxes<=LIMIT;
+  return {employee_id:item.employee_id,employee_code:item.employee_code||null,
+    employee_name:item.employee_name,processing_preview:{
+      status:ready?'CONCILIADO_PARA_CONFERENCIA':'PENDENTE',lines,
+      salary_reference:c.salary_reference??null,
+      salary_proportional:salary===null?null:centsToMoney(salary),
+      event_earnings:eventsKnown&&earning<=LIMIT?show(earning):null,
+      event_deductions:eventsKnown&&deduction<=LIMIT?show(deduction):null,
+      informative_events:eventsKnown&&information<=LIMIT?show(information):null,
+      gross_arithmetic:ready?show(gross):null,
+      subtotal_before_absences_taxes:ready?show(beforeTaxes):null,
+      source_subtotal:prior===null?null:centsToMoney(prior),
+      reconciled:ready,issues,notes,
+      // Este subtotal NAO e o valor liquido devido ao funcionario.
+      net_pay:null,homologated:false,read_only:true,
+      ready_for_payroll:false,ready_for_payment:false,ready_for_accounting:false,ready_for_closure:false},
+    net_pay:null,ready_for_payroll:false,ready_for_payment:false,ready_for_accounting:false};
+}
+async function payrollCalculationMemoryPreview20(env,companyId,competenceId,paymentDate){
+  // Valida as fontes e isola empresa, competência e data usando todo o pipeline.
+  const previous=await payrollValidationPreview18(env,companyId,competenceId,paymentDate);
+  const items=previous.items.map(x=>payrollCalculationMemoryItem20({
+    ...x,remediation:payrollRemediationItem19(x).remediation}));
+  return {kind:'MEMORIA_CALCULO_EVENTOS_ETAPA_20',competence:previous.competence,
+    payment_date:previous.payment_date,items,employee_count:items.length,
+    reconciled_employee_count:items.filter(e=>e.processing_preview.reconciled).length,
+    pending_employee_count:items.filter(e=>!e.processing_preview.reconciled).length,
+    movement_line_count:items.reduce((a,e)=>a+e.processing_preview.lines.length-1,0),
+    read_only:true,preview_only:true,folha_liquida:null,net_pay:null,
+    ready_for_payroll:false,ready_for_payment:false,ready_for_accounting:false,ready_for_closure:false,
+    message:'Memoria aritmetica rastreavel por lancamento; nao e processamento final, folha liquida ou aprovacao.'};
+}
+
+// ===== SAGAS Folha Etapa 21: projecao aritmetica condicionada =====
+// NAO e salario liquido homologado. Continua somente leitura.
+// Quando houver incidencias e bases pendentes, nao se cria valor substituto.
+function payrollBalanceScenarioItem21(item){
+  const mem=item.processing_preview||{};
+  const tax=item.tax_simulation||{};
+  const sim=tax.estimated_values||{};
+  const inc=item.incidence_review||{};
+  const reasons=[],warnings=[];
+  const add=(code,detail)=>{if(!reasons.some(x=>x.code===code)&&reasons.length<100)reasons.push({code,detail});};
+  const toCents=payrollCompositionCents;
+  const toAmount=n=>n===null?null:centsToMoney(Number(n));
+  const max=99999999999n;
+  const salary=toCents(mem.salary_proportional);
+  const earning=toCents(mem.event_earnings);
+  const deduction=toCents(mem.event_deductions);
+  const gross=toCents(mem.gross_arithmetic);
+  const beforeTax=toCents(mem.subtotal_before_absences_taxes);
+  const inss=toCents(sim.inss_estimate);
+  const irrf=toCents(sim.irrf_estimate);
+  const fgts=toCents(sim.fgts_estimate);
+  if(!mem.reconciled||(mem.issues||[]).length)
+    add('MEMORIA_PENDENTE','Memoria da Etapa 20 sem conciliacao completa.');
+  if([salary,earning,deduction,gross,beforeTax].some(x=>x===null))
+    add('REMUNERACAO_INCOMPLETA','Salario e proventos/descontos precisam estar conciliados.');
+  if((item.occurrences||[]).length||item.overlapping_occurrence_days)
+    add('OCORRENCIAS_PENDENTES','Faltas, ferias, licencas e afastamentos requerem calculo especifico.');
+  if((item.remediation?.tasks||[]).length)
+    add('SANEAMENTO_PENDENTE','Ha pendencias de historico ou eventos sem tratamento.');
+  if((item.composition?.issues||[]).length)
+    add('COMPOSICAO_PENDENTE','A composicao salarial apresenta impedimentos.');
+  if(!tax.calculated||(tax.issues||[]).length||[inss,irrf,fgts].some(x=>x===null))
+    add('TRIBUTOS_INCOMPLETOS','Cenario de INSS, IRRF e FGTS sem base conferivel.');
+  if((inc.issues||[]).length||['inss','irrf','fgts'].some(x=>inc.statuses?.[x]!=='CENARIO'))
+    add('INCIDENCIAS_PENDENTES','As tres bases tributarias precisam estar classificadas.');
+  if(!sim.inss_table_from||!sim.irrf_table_from)
+    add('TABELAS_NAO_IDENTIFICADAS','A versao da tabela previdenciaria e de IRRF deve constar na simulacao.');
+  if(sim.fgts_is_employee_discount!==false)
+    add('FGTS_SEM_SEPARACAO','Confirmar que FGTS nao sera deduzido do trabalhador.');
+  const rows=inc.event_rows||[];
+  for(const e of item.events||[]){
+    const rule=rows.find(x=>x.movement_id===e.id);
+    if(!rule||rule.validation_status!=='CONFERENCIA'||
+       !['SIM','NAO'].includes(rule.inss)||!['SIM','NAO'].includes(rule.irrf)||
+       !['SIM','NAO'].includes(rule.fgts))
+      add('EVENTO_SEM_INCIDENCIA','Ha evento sem classificacao fiscal revisavel.');
+    const description=String(e.event_name||'')+' '+String(e.event_code||'');
+    // Evita simular tributo em dobro ou usar o fluxo mensal em verbas especiais.
+    if(/13\s*(?:º|O|\.|-)?\s*SAL|DECIMO\s+TERCEIRO|F[ÉE]RIAS|RESCIS|AFASTAMENTO|LICEN[ÇC]A|PENS[ÃA]O|JUDICIAL/i.test(description))
+      add('RUBRICA_ESPECIAL','Evento com tratamento especifico: 13o, ferias, rescisao, afastamento ou pensao.');
+    if(e.type==='DESCONTO'&&/\b(?:INSS|IRRF|FGTS|PREVID[ÊE]NCIA|IMPOSTO\s+DE\s+RENDA)\b/i.test(description))
+      add('TRIBUTO_JA_LANCADO','Existe desconto tributario lancado como evento: risco de desconto duplicado.');
+  }
+  let balance=null;
+  if([salary,earning,deduction,gross,beforeTax,inss,irrf,fgts].every(x=>x!==null)){
+    const sg=BigInt(salary)+BigInt(earning);
+    const sb=sg-BigInt(deduction);
+    if(sg!==BigInt(gross)||sb!==BigInt(beforeTax))
+      add('MEMORIA_DIVERGENTE','Bruto, eventos e subtotal da memoria nao fecham em centavos.');
+    const after=sb-BigInt(inss)-BigInt(irrf);
+    if(after<0n)add('PROJECAO_NEGATIVA','Os descontos simulados excederiam o subtotal aritmetico.');
+    if([sg,sb,after,BigInt(fgts)].some(x=>x>max||x<0n))
+      add('VALOR_FORA_LIMITE','Valor fora do limite monetario seguro.');
+    if(reasons.length===0)balance=toAmount(after);
+  }
+  warnings.push('Resultado apenas hipotetico: incidencias e tabelas ainda dependem de validacao fiscal e trabalhista.');
+  warnings.push('FGTS e encargo do empregador e nunca reduz o valor demonstrado ao empregado.');
+  warnings.push('Nao contempla ferias, 13o, rescisao, multiplos vinculos, pensao ou pagamentos acumulados.');
+  return {employee_id:item.employee_id,employee_code:item.employee_code||null,
+    employee_name:item.employee_name,
+    balance_scenario:{status:balance===null?'BLOQUEADO':'CENARIO_ARITMETICO',
+      salary_preview:salary===null?null:centsToMoney(salary),
+      earnings_preview:earning===null?null:centsToMoney(earning),
+      deductions_preview:deduction===null?null:centsToMoney(deduction),
+      gross_before_deductions:gross===null?null:centsToMoney(gross),
+      subtotal_before_taxes:beforeTax===null?null:centsToMoney(beforeTax),
+      inss_scenario:inss===null?null:centsToMoney(inss),
+      irrf_scenario:irrf===null?null:centsToMoney(irrf),
+      fgts_employer_scenario:fgts===null?null:centsToMoney(fgts),
+      arithmetic_balance_preview:balance,
+      inss_table_from:sim.inss_table_from||null,
+      irrf_table_from:sim.irrf_table_from||null,
+      issues:reasons,warnings,net_pay:null,net_pay_calculated:false,
+      approved:false,homologated:false,read_only:true,
+      ready_for_payroll:false,ready_for_payment:false,ready_for_accounting:false,
+      ready_for_closure:false},
+    net_pay:null,ready_for_payroll:false,ready_for_payment:false,
+    ready_for_accounting:false,ready_for_closure:false};
+}
+async function payrollBalanceScenarioPreview21(env,companyId,competenceId,paymentDate){
+  const previous=await payrollValidationPreview18(env,companyId,competenceId,paymentDate);
+  const items=previous.items.map(item=>{
+    const remediation=payrollRemediationItem19(item).remediation;
+    const memory=payrollCalculationMemoryItem20({...item,remediation});
+    return payrollBalanceScenarioItem21({...item,remediation,
+      processing_preview:memory.processing_preview});
+  });
+  return {kind:'SALDO_ARITMETICO_SIMULADO_ETAPA_21',competence:previous.competence,
+    payment_date:previous.payment_date,items,employee_count:items.length,
+    scenario_employee_count:items.filter(x=>x.balance_scenario.status==='CENARIO_ARITMETICO').length,
+    blocked_employee_count:items.filter(x=>x.balance_scenario.status==='BLOQUEADO').length,
+    read_only:true,preview_only:true,folha_liquida:null,net_pay:null,
+    ready_for_payroll:false,ready_for_payment:false,ready_for_accounting:false,
+    ready_for_closure:false,
+    message:'Saldo aritmetico apenas hipotetico: nao constitui salario liquido homologado, pagamento ou contabilizacao.'};
+}
+
+// ===== SAGAS Folha Etapa 22: soma das referencias revisadas de faltas e DSR =====
+// TOTAL EXCLUSIVAMENTE INFORMATIVO. Nunca desconta do salario, nao recalcula
+// tributos e nao grava eventos, contas a pagar, fechamento ou contabilidade.
+function payrollAbsenceDsrReviewItem22(item){
+  const occurrences=item.occurrences||[];
+  const rem=item.remuneration_preview||{};
+  const dsr=item.dsr_review||{};
+  const issues=[],warnings=[];
+  const add=(code,detail)=>{if(!issues.some(x=>x.code===code)&&issues.length<100)issues.push({code,detail});};
+  const val=payrollCompositionCents;
+  const MAX=99999999999n;
+  const absenceCents=val(rem.absence_discount_estimate);
+  const dsrCents=val(dsr.estimated_discount);
+  const weeks=dsr.weeks||[];
+  const affected=rem.dsr_weeks_to_review||[];
+  const absenceRows=rem.breakdown||[];
+  const days=Number(rem.deduction_days);
+  if(item.overlapping_occurrence_days)add('OCORRENCIAS_SOBREPOSTAS','Ocorrencias sobrepostas requerem correcao antes de estimar descontos.');
+  if(occurrences.some(o=>o.kind!=='FALTA'))
+    add('OUTRAS_OCORRENCIAS','Ferias, licencas e afastamentos exigem calculos proprios; esta soma nao se aplica.');
+  if(occurrences.some(o=>!['ABONADA','DESCONTO_A_CONFERIR'].includes(o.treatment)))
+    add('TRATAMENTO_INCOMPLETO','Classifique todas as faltas como abonadas ou desconto a conferir.');
+  if(!Array.isArray(rem.breakdown)||absenceRows.length!==occurrences.length ||
+     occurrences.some(o=>!absenceRows.some(x=>x.id===o.id&&x.kind===o.kind&&x.treatment===o.treatment)))
+    add('DETALHE_INCONSISTENTE','Detalhamento das faltas nao corresponde aos registros da competencia.');
+  if(rem.absence_discount_calculated!==true||absenceCents===null)
+    add('FALTAS_NAO_APURADAS','Historico salarial ou contagem de faltas nao permite apuracao integral.');
+  if(!Number.isSafeInteger(days)||days<0||days>30)
+    add('DIAS_INVALIDOS','Contagem de dias de falta ausente ou fora do limite 0 a 30.');
+  if(occurrences.some(o=>o.kind==='FALTA'&&o.treatment==='DESCONTO_A_CONFERIR')&&days===0)
+    add('FALTA_SEM_DIAS','Ha falta descontavel mas nenhum dia de desconto registrado.');
+  if(dsrCents===null||!Array.isArray(dsr.weeks))
+    add('DSR_NAO_APURADO','Semanas de DSR ainda precisam de tratamento e base salarial.');
+  if(!Array.isArray(rem.dsr_weeks_to_review))
+    add('SEMANAS_NAO_APURADAS','Semanas afetadas pelas faltas nao foram identificadas.');
+  const seenWeek=new Set(),seenRest=new Set(),expected=new Set(affected);
+  let totalReviewed=0n;
+  for(const w of weeks){
+    if(seenWeek.has(w.week_start))add('SEMANA_DUPLICADA','A mesma semana aparece repetida na conferencia.');
+    seenWeek.add(w.week_start);
+    if(!expected.has(w.week_start))add('SEMANA_INDEVIDA','Semana sem falta descontavel consta na conferencia de DSR.');
+    if(w.flags?.length)add('DSR_COM_ALERTAS','Existem semanas com alertas de escala, vigencia ou datas.');
+    if(w.carried_to_other_competence)add('DSR_OUTRA_COMPETENCIA','Repouso pertencente a outra competencia deve ser tratado separadamente.');
+    if(!['MANTER_REMUNERACAO','DESCONTO_A_CONFERIR'].includes(w.treatment))
+      add('DSR_PENDENTE','Falta decisao registrada para uma ou mais semanas de DSR.');
+    const value=val(w.estimated_discount);
+    if(value===null)add('SEM_VALOR_DSR','Uma das semanas nao possui valor indicativo calculavel.');
+    else totalReviewed+=BigInt(value);
+    if(w.treatment==='MANTER_REMUNERACAO'&&value!==0)
+      add('ABONO_DSR_DIVERGENTE','DSR mantido nao pode gerar valor de desconto.');
+    if(w.treatment==='DESCONTO_A_CONFERIR'){
+      if(!w.rest_date||!w.notes?.trim())
+        add('DSR_SEM_JUSTIFICATIVA','Desconto de DSR deve ter data de repouso e justificativa registradas.');
+      if(w.rest_date){
+        if(seenRest.has(w.rest_date))add('REPOUSO_DUPLICADO','Data de repouso foi usada em mais de uma semana.');
+        seenRest.add(w.rest_date);
+        if(item.competence_month && w.rest_date.slice(0,7)!==item.competence_month)
+          add('REPOUSO_FORA_DA_COMPETENCIA','Repouso informado nao pertence ao mes da conferencia.');
+      }
+    }
+  }
+  if(seenWeek.size!==expected.size||[...expected].some(w=>!seenWeek.has(w)))
+    add('REVISÕES_INCOMPLETAS','Ha semana de falta sem conferencia correspondente de DSR.');
+  if(dsrCents!==null && BigInt(dsrCents)!==totalReviewed)
+    add('DSR_TOTAL_DIVERGENTE','Soma das semanas nao corresponde ao total da conferencia de DSR.');
+  if(occurrences.length && (rem.issues||[]).some(x=>!/poss.vel perda de dsr/i.test(x)))
+    add('FALTAS_COM_PENDENCIAS','A pre-via de faltas possui impedimentos adicionais.');
+  if((dsr.issues||[]).length)
+    add('DSR_COM_PENDENCIAS','A revisao do DSR possui impedimentos ainda nao resolvidos.');
+  // Os valores monetarios so sao exibidos em conjunto se TODAS as verificacoes
+  // passaram. Os campos individuais podem continuar visiveis como referencias.
+  let total=null;
+  if(absenceCents!==null&&dsrCents!==null&&issues.length===0){
+    const joined=BigInt(absenceCents)+BigInt(dsrCents);
+    if(joined>MAX)add('SOMA_FORA_LIMITE','Total indicativo excede o limite seguro.');
+    else total=centsToMoney(Number(joined));
+  }
+  if(issues.length)total=null;
+  warnings.push('Referencia para mensalista: faltas pelo salario historico / 30 e DSR por semana conferida.');
+  warnings.push('Exige validacao de jornada, feriados, justificativas, norma coletiva e eventual repercussao nas bases de INSS, IRRF e FGTS.');
+  warnings.push('Sem recalculo de tributos, sem abatimento efetivo do salario e sem calculo de salario liquido.');
+  return {employee_id:item.employee_id,employee_code:item.employee_code||null,
+    employee_name:item.employee_name,absence_dsr_adjustment:{
+      status:issues.length?'PENDENTE':occurrences.length?'CONFERENCIA_DE_VALORES':'SEM_OCORRENCIAS',
+      occurrence_count:occurrences.length,deduction_days:Number.isSafeInteger(days)?days:null,
+      reviewed_weeks:weeks.length,absence_estimate:absenceCents===null?null:centsToMoney(absenceCents),
+      dsr_estimate:dsrCents===null?null:centsToMoney(dsrCents),
+      combined_discount_reference:total,
+      dsr_weeks:weeks.map(w=>({week_start:w.week_start,rest_date:w.rest_date||null,
+        days_in_week:w.days_in_week||0,treatment:w.treatment,notes:w.notes||'',
+        amount:w.estimated_discount??null,flags:w.flags||[]})),
+      occurrence_lines:absenceRows.map(o=>({id:o.id,kind:o.kind,treatment:o.treatment,
+        from:o.from,to:o.to,days:o.days,estimated_discount:o.estimated_discount})),
+      issues,warnings,net_pay:null,applied_discount:null,approved:false,homologated:false,
+      read_only:true,ready_for_payroll:false,ready_for_payment:false,
+      ready_for_accounting:false,ready_for_closure:false},
+    net_pay:null,ready_for_payroll:false,ready_for_payment:false,
+    ready_for_accounting:false,ready_for_closure:false};
+}
+async function payrollAbsenceDsrPreview22(env,companyId,competenceId,paymentDate){
+  const data=await payrollDsrAndLeavePreview(env,companyId,competenceId,paymentDate);
+  // Os IDs humanos vêm da tabela de sequencia ja utilizada desde o Worker v49.
+  // A previa da Etapa 13 nao os inclui diretamente.
+  const employees=await listPayroll(env,companyId,'employees');
+  const codes=new Map(employees.map(e=>[e.id,e.employee_code||null]));
+  const items=data.items.map(x=>payrollAbsenceDsrReviewItem22({...x,
+    employee_code:codes.get(x.employee_id)||null,
+    competence_month:data.competence.competence}));
+  return {kind:'DESCONTOS_FALTAS_DSR_CONFERENCIA_ETAPA_22',competence:data.competence,
+    payment_date:data.payment_date,items,employee_count:items.length,
+    pending_employee_count:items.filter(x=>x.absence_dsr_adjustment.status==='PENDENTE').length,
+    reviewed_employee_count:items.filter(x=>x.absence_dsr_adjustment.status==='CONFERENCIA_DE_VALORES').length,
+    read_only:true,preview_only:true,net_pay:null,folha_liquida:null,
+    ready_for_payroll:false,ready_for_payment:false,ready_for_accounting:false,
+    ready_for_closure:false,
+    message:'Conferencia de faltas e DSR somente como referencias monetarias; nenhum desconto aplicado, tributo recalculado, pagamento ou contabilizacao.'};
+}
+
+// ===== SAGAS Folha Etapa 23: recomposicao tributaria indicativa apos faltas/DSR =====
+// Read-only: nao altera incidencias, nao calcula tributos a descontar e nao
+// homologa bases previdenciarias, de IRRF ou FGTS.
+function payrollTaxBaseRecompositionItem23(item,absenceItem,competence){
+  const inc=item.incidence_review||{},comp=item.composition||{};
+  const review=absenceItem?.absence_dsr_adjustment||{};
+  const errors=[],warnings=[];
+  const add=(code,detail)=>{if(!errors.some(x=>x.code===code)&&errors.length<80)errors.push({code,detail});};
+  const cents=payrollCompositionCents;
+  const MAX=99999999999n;
+  const sal=cents(comp.salary_reference);
+  const absence=cents(review.absence_estimate);
+  const dsr=cents(review.dsr_estimate);
+  const discount=cents(review.combined_discount_reference);
+  const kinds=['inss','irrf','fgts'];
+  const contributions={},original={},before={},adjusted={},status={};
+  const events=inc.event_rows||[];
+  if(!absenceItem||absenceItem.employee_id!==item.employee_id)
+    add('FUNCIONARIO_NAO_CONCILIADO','Funcionario sem referencia correspondente na conferencia de faltas/DSR.');
+  if(absenceItem&&absenceItem.employee_name!==item.employee_name)
+    add('IDENTIDADE_DIVERGENTE','Nome divergente entre bases da mesma competencia.');
+  if(sal===null)add('SALARIO_INCOMPLETO','Historico salarial proporcional nao cobre a referencia necessaria.');
+  const segmentList=item.salary_segments||[];
+  if(segmentList.length!==1||!segmentList[0].start_date?.startsWith(competence)||
+    !segmentList[0].end_date?.startsWith(competence))
+    add('SEGMENTOS_NAO_HOMOLOGADOS','Admissao proporcional, mudanca de salario ou lacuna de historico requer regra especifica.');
+  if(item.admission_date && item.admission_date>competence+'-01')
+    add('ADMISSAO_PARCIAL','Admissao no mes exige base proporcional a conferir.');
+  if(item.overlapping_occurrence_days)
+    add('OCORRENCIAS_SOBREPOSTAS','Ocorrencias sobrepostas impedem recomposicao segura.');
+  if((item.occurrences||[]).some(x=>x.kind!=='FALTA'))
+    add('OCORRENCIA_ESPECIAL','Ferias, licencas e afastamentos nao usam este ajuste simplificado.');
+  if(review.status==='PENDENTE'||discount===null||absence===null||dsr===null)
+    add('FALTAS_DSR_NAO_CONFERIDOS','Etapa 22 nao liberou total de faltas e DSR para conferencia.');
+  if((review.issues||[]).length)
+    add('REVISAO_COM_ERROS','Existem alertas impeditivos na conferencia de faltas e DSR.');
+  if(sal!==null&&discount!==null&&BigInt(discount)>BigInt(sal))
+    add('ABATIMENTO_EXCEDE_SALARIO','Abatimento indicativo ultrapassa a parcela salarial historica.');
+  if(sal!==null&&discount!==null && BigInt(sal)>MAX)
+    add('LIMITE_MONETARIO','Referencia excede o limite monetario da simulacao.');
+  const duplicateSalary=(item.events||[]).some(x=>x.type==='PROVENTO'&&
+    /^(sal[aá]rio(\s*-?\s*base|\s*mensal)?|vencimento\s*mensal)$/i.test(String(x.event_name||'').trim()));
+  if(duplicateSalary)add('SALARIO_EM_DUPLICIDADE','Evento de salario base pode duplicar a parcela historica.');
+  if((item.events||[]).some(x=>x.type==='DESCONTO'&&
+     /(falta|dsr|repouso|descanso\s+semanal)/i.test(String(x.event_name||''))))
+    add('ABATIMENTO_JA_LANCADO','Desconto de faltas/DSR existente nos eventos: impedir aplicacao duplicada.');
+  if((item.events||[]).length!==events.length)
+    add('EVENTOS_NAO_CONCILIADOS','Incidencias e eventos possuem quantidades divergentes.');
+  for(const ev of events){
+    if(cents(ev.value_preview)===null || ev.validation_status==='PENDENTE')
+      add('EVENTO_PENDENTE','Ha eventos sem valor valido ou sem regra vigente.');
+    if(kinds.some(k=>!['SIM','NAO'].includes(ev[k])))
+      add('INCIDENCIA_PENDENTE','Evento sem classificacao confirmada para todas as bases.');
+    if(ev.event_type==='DESCONTO'&&kinds.some(k=>ev[k]==='SIM'))
+      add('REDUTOR_ESPECIFICO','Desconto com incidencia requer tratamento legal especifico.');
+    if(ev.event_type==='INFORMATIVO'&&kinds.some(k=>ev[k]==='SIM'))
+      add('INFORMATIVO_TRIBUTAVEL','Evento informativo com incidencia depende de classificacao.');
+    if(!['PROVENTO','DESCONTO','INFORMATIVO'].includes(ev.event_type))
+      add('TIPO_EVENTO_INVALIDO','Tipo de evento nao reconhecido.');
+  }
+  for(const kind of kinds){
+    contributions[kind]=cents(inc.event_contributions?.[kind]);
+    original[kind]=inc.potential_bases?.[kind]??null;
+    if(contributions[kind]===null)add('CONTRIBUICAO_INCONSISTENTE','Soma de proventos tributaveis indisponivel para '+kind.toUpperCase()+'.');
+    if(sal!==null&&contributions[kind]!==null){
+      const beforeValue=BigInt(sal)+BigInt(contributions[kind]);
+      before[kind]=beforeValue<=MAX?centsToMoney(Number(beforeValue)):null;
+      if(before[kind]===null)add('LIMITE_MONETARIO','Soma inicial excede o limite seguro.');
+    }else before[kind]=null;
+    adjusted[kind]=null;
+    status[kind]='PENDENTE';
+  }
+  // Teste da etapa anterior quando nao ha faltas. Com ocorrencias, a Etapa 15
+  // intencionalmente devolve base nula; nunca interpretar nulo como 0.
+  if(!(item.occurrences||[]).length){
+    for(const kind of kinds){
+      const baseline=cents(original[kind]);
+      if(before[kind]!==null&&baseline!==null&&baseline!==cents(before[kind]))
+        add('BASE_ORIGINAL_DIVERGENTE','Base da Etapa 15 difere do salario + proventos para '+kind.toUpperCase()+'.');
+    }
+  }
+  if(errors.length===0){
+    for(const kind of kinds){
+      const gross=cents(before[kind]);
+      if(gross===null){add('BASE_INCOMPLETA','Componente '+kind.toUpperCase()+' nao pode ser somado.');continue;}
+      // Desconto potencial apenas sobre parcela salarial; nunca sobre proventos
+      // extras e nunca converte este valor em base fiscal homologada.
+      const result=BigInt(gross)-BigInt(discount);
+      if(result<0n||result>MAX){add('BASE_FORA_LIMITE','Desconto excede a base de '+kind.toUpperCase()+'.');continue;}
+      adjusted[kind]=centsToMoney(Number(result));
+      status[kind]='HIPOTESE_A_CONFERIR';
+    }
+  }
+  if(errors.length){for(const k of kinds){adjusted[k]=null;status[k]='PENDENTE';}}
+  warnings.push('Incidencia de faltas e DSR nas bases de INSS, IRRF e FGTS e apenas hipotese, sujeita a rubrica, legislacao, feriados e convencao coletiva.');
+  warnings.push('IRRF depende de regime de caixa e deducoes legais; esta etapa nao calcula IRRF devido.');
+  warnings.push('Nenhum ajuste foi aplicado a eventos, salario, tributos, fechamento, pagamentos ou contabilidade.');
+  return {employee_id:item.employee_id,employee_code:absenceItem?.employee_code||null,
+    employee_name:item.employee_name,tax_base_recomposition:{
+      status:errors.length?'PENDENTE':'HIPOTESE_A_CONFERIR',salary_reference:sal===null?null:centsToMoney(sal),
+      absence_reference:absence===null?null:centsToMoney(absence),
+      dsr_reference:dsr===null?null:centsToMoney(dsr),
+      total_reference:discount===null?null:centsToMoney(discount),
+      event_contributions:Object.fromEntries(kinds.map(k=>[k,contributions[k]===null?null:centsToMoney(contributions[k])])),
+      original_bases:original,bases_before_absence:before,scenario_after_absence:adjusted,
+      statuses:status,issues:errors,warnings,
+      read_only:true,applied:false,net_pay:null,approved:false,homologated:false,
+      taxes_due:null,ready_for_payroll:false,ready_for_payment:false,
+      ready_for_accounting:false,ready_for_closure:false
+    },net_pay:null,ready_for_payroll:false,ready_for_payment:false,
+    ready_for_accounting:false,ready_for_closure:false};
+}
+async function payrollTaxBaseRecompositionPreview23(env,companyId,competenceId,paymentDate){
+  const [inc,abs]=await Promise.all([
+    payrollIncidencePreview15(env,companyId,competenceId,paymentDate),
+    payrollAbsenceDsrPreview22(env,companyId,competenceId,paymentDate)
+  ]);
+  if(inc.competence?.competence!==abs.competence?.competence||inc.payment_date!==abs.payment_date)
+    throw new HttpError(409,'Competencia ou pagamento divergente entre conferencias.','PREVIEW_MISMATCH');
+  const absMap=new Map();
+  for(const i of abs.items){
+    if(absMap.has(i.employee_id))throw new HttpError(409,'Funcionario duplicado na conferencia de faltas.','PREVIEW_MISMATCH');
+    absMap.set(i.employee_id,i);
+  }
+  const items=inc.items.map(x=>payrollTaxBaseRecompositionItem23(x,absMap.get(x.employee_id)||null,inc.competence.competence));
+  if(items.length!==abs.items.length||items.some(x=>!absMap.has(x.employee_id)))
+    throw new HttpError(409,'Listas de funcionarios nao coincidem nas conferencias.','PREVIEW_MISMATCH');
+  return {kind:'RECOMPOSICAO_BASES_FALTAS_DSR_ETAPA_23',competence:inc.competence,
+    payment_date:inc.payment_date,items,employee_count:items.length,
+    preview_employee_count:items.filter(x=>x.tax_base_recomposition.status==='HIPOTESE_A_CONFERIR').length,
+    pending_employee_count:items.filter(x=>x.tax_base_recomposition.status==='PENDENTE').length,
+    read_only:true,preview_only:true,folha_liquida:null,net_pay:null,taxes_calculated:false,
+    ready_for_payroll:false,ready_for_payment:false,ready_for_accounting:false,
+    ready_for_closure:false,
+    message:'Recomposicao apenas ilustrativa de bases; nenhuma incidencia fiscal ou desconto esta homologado.'};
+}
+
+// ===== SAGAS Folha Etapa 24: simulacao sobre as bases recompostas =====
+// A Etapa 23 fornece apenas cenarios matematicos de incidencia. Estes valores
+// nao sao bases homologadas e NUNCA geram descontos reais ou salario liquido.
+function payrollRecomposedTaxItem24(item,dependents,competence,paymentDate){
+  const source=item.tax_base_recomposition||{};
+  const bases=source.scenario_after_absence||{};
+  const kinds=['inss','irrf','fgts'];
+  const issues=[],warnings=[];
+  const add=(code,detail)=>{if(!issues.some(x=>x.code===code)&&issues.length<80)issues.push({code,detail});};
+  if(!item.employee_id || !item.employee_code || !/^\d{5}$/.test(item.employee_code))
+    add('FUNCIONARIO_INCONSISTENTE','Funcionário sem ID sequencial válido para conferência.');
+  if(source.status!=='HIPOTESE_A_CONFERIR'||(source.issues||[]).length)
+    add('RECOMPOSICAO_PENDENTE','A Etapa 23 não liberou todas as bases para a hipótese fiscal.');
+  const cents={};
+  for(const kind of kinds){
+    cents[kind]=payrollCompositionCents(bases[kind]);
+    if(cents[kind]===null || cents[kind]>99999999999)
+      add('BASE_'+kind.toUpperCase()+'_PENDENTE','Base recomposta de '+kind.toUpperCase()+' não é segura ou está pendente.');
+    if(source.statuses?.[kind]!=='HIPOTESE_A_CONFERIR')
+      add('CLASSIFICACAO_'+kind.toUpperCase()+'_PENDENTE','Conferência de incidência da base '+kind.toUpperCase()+' incompleta.');
+  }
+  if(!Number.isSafeInteger(dependents)||dependents<0||dependents>100)
+    add('DEPENDENTES_INVALIDOS','Quantidade de dependentes na data do pagamento é inconsistente.');
+  warnings.push('As bases de INSS, IRRF e FGTS após faltas/DSR são apenas hipóteses: conferir natureza legal das rubricas, escala, feriados e instrumentos coletivos.');
+  warnings.push('Considera somente o vínculo examinado. Verificar múltiplos vínculos, pensão judicial, pagamentos acumulados, férias, 13º, rescisão e categorias especiais.');
+  warnings.push('O IRRF usa o rendimento mensal recomposto como hipótese, com deduções da simulação; exige validação pelo regime de caixa e demais rendimentos.');
+  warnings.push('FGTS na alíquota geral ilustrativa de 8% é encargo do empregador e não desconto do trabalhador.');
+  let results=null;
+  if(issues.length===0){
+    try{
+      const tax=payrollTaxHistoricalWithDependents(cents.inss,cents.irrf,cents.fgts,
+        competence,paymentDate,dependents);
+      const deductionSum=BigInt(tax.inss_cents)+BigInt(tax.irrf_cents);
+      if(deductionSum>99999999999n)throw new Error('Soma de descontos simulados excede limite.');
+      results={
+        inss_estimate:centsToMoney(tax.inss_cents),
+        irrf_estimate:centsToMoney(tax.irrf_cents),
+        fgts_employer_estimate:centsToMoney(tax.fgts_cents),
+        sum_employee_tax_simulations:centsToMoney(Number(deductionSum)),
+        irrf_base_estimate:centsToMoney(tax.irrf_base_cents),
+        irrf_before_reduction:centsToMoney(tax.irrf_original_cents),
+        irrf_reduction:centsToMoney(tax.irrf_reduction_cents),
+        irrf_deduction:centsToMoney(tax.irrf_deduction_cents),
+        irrf_deduction_type:tax.irrf_deduction_type,
+        irrf_dependents:dependents,
+        inss_table_from:tax.inss_table_from,irrf_table_from:tax.irrf_table_from,
+        inss_mode:tax.inss_mode,fgts_employee_discount:false
+      };
+    }catch(err){
+      add('SIMULACAO_INDISPONIVEL',String(err?.message||'Cálculo tributário pendente.').slice(0,160));
+    }
+  }
+  return {...item,recomposed_tax_simulation:{
+    status:results?'HIPOTESE_TRIBUTARIA_A_CONFERIR':'PENDENTE',
+    bases_recomposed:{inss:bases.inss??null,irrf:bases.irrf??null,fgts:bases.fgts??null},
+    dependents_considered:Number.isSafeInteger(dependents)&&dependents>=0&&dependents<=100?dependents:null,
+    estimates:results,issues,warnings,read_only:true,calculated:!!results,
+    bases_homologated:false,taxes_due:null,taxes_withheld:null,fgts_deposited:false,
+    applied:false,approved:false,homologated:false,net_pay:null,
+    ready_for_payroll:false,ready_for_payment:false,ready_for_accounting:false,
+    ready_for_closure:false},
+    net_pay:null,ready_for_payroll:false,ready_for_payment:false,
+    ready_for_accounting:false,ready_for_closure:false};
+}
+async function payrollRecomposedTaxPreview24(env,companyId,competenceId,paymentDate){
+  const date=histPaymentDate(paymentDate);
+  const prior=await payrollTaxBaseRecompositionPreview23(env,companyId,competenceId,date);
+  const competence=prior.competence?.competence;
+  histTable(HIST_INSS,competence);
+  histTable(HIST_IRRF,date.slice(0,7));
+  // Dependentes vigentes no pagamento; consulta limitada exclusivamente à empresa.
+  const employees=prior.items.map(x=>x.employee_id);
+  if(employees.length>2000)throw new HttpError(409,'Prévia excedeu limite de funcionários.','PREVIEW_LIMIT');
+  const dependentRows=await env.DB.prepare(`SELECT employee_id,COUNT(*) AS total
+    FROM payroll_employee_dependents
+    WHERE company_id=? AND irrf_eligible=1 AND effective_from<=?
+      AND (effective_to IS NULL OR effective_to>=?)
+    GROUP BY employee_id LIMIT 2001`).bind(companyId,date,date).all();
+  if((dependentRows.results||[]).length>2000)
+    throw new HttpError(409,'Dependentes excedem limite da prévia.','PREVIEW_LIMIT');
+  const dependents=new Map((dependentRows.results||[]).map(x=>[x.employee_id,Number(x.total)]));
+  const items=prior.items.map(x=>payrollRecomposedTaxItem24(x,dependents.get(x.employee_id)||0,competence,date));
+  return {kind:'TRIBUTOS_BASES_RECOMPOSTAS_ETAPA_24',competence:prior.competence,
+    payment_date:date,items,employee_count:items.length,
+    scenario_employee_count:items.filter(x=>x.recomposed_tax_simulation.calculated).length,
+    pending_employee_count:items.filter(x=>!x.recomposed_tax_simulation.calculated).length,
+    read_only:true,preview_only:true,simulated:true,taxes_calculated:false,
+    taxes_due:null,folha_liquida:null,net_pay:null,
+    ready_for_payroll:false,ready_for_payment:false,ready_for_accounting:false,
+    ready_for_closure:false,
+    message:'Hipóteses de INSS/IRRF/FGTS sobre bases recompostas, sem desconto, depósito, homologação ou efeitos fiscais.'};
+}
+
+// ===== SAGAS Folha Etapa 25: conciliacao aritmetica de remuneracao recomposta =====
+// Estritamente read-only: os eventos continuam cadastrados, as faltas/DSR e
+// os tributos continuam hipoteticos e nenhuma conta a pagar recebe o saldo.
+function payrollReconciledRemunerationItem25(item){
+  const recomposition=item.tax_base_recomposition||{};
+  const tax=item.recomposed_tax_simulation||{};
+  const amounts=tax.estimates||{};
+  const inc=item.incidence_review||{};
+  const events=item.events||[];
+  const incidenceRows=inc.event_rows||[];
+  const issues=[],warnings=[];
+  const limit=99999999999n;
+  const add=(code,detail)=>{
+    if(!issues.some(x=>x.code===code)&&issues.length<100)issues.push({code,detail});
+  };
+  const val=payrollCompositionCents;
+  const money=n=>n===null?null:centsToMoney(Number(n));
+  if(!item.employee_id||!/^[0-9]{5}$/.test(String(item.employee_code||'')))
+    add('IDENTIFICACAO_PENDENTE','Identificador do funcionario ausente ou fora da mascara de cinco digitos.');
+  if(recomposition.status!=='HIPOTESE_A_CONFERIR'||(recomposition.issues||[]).length)
+    add('BASES_PENDENTES','Etapa 23 nao disponibilizou as tres bases recompostas para conferencia.');
+  if(tax.status!=='HIPOTESE_TRIBUTARIA_A_CONFERIR'||!tax.calculated||(tax.issues||[]).length)
+    add('TRIBUTOS_PENDENTES','Etapa 24 nao apresentou simulacoes fiscais consistentes.');
+  const salary=val(recomposition.salary_reference);
+  const absence=val(recomposition.absence_reference);
+  const dsr=val(recomposition.dsr_reference);
+  const absenceTotal=val(recomposition.total_reference);
+  const inss=val(amounts.inss_estimate);
+  const irrf=val(amounts.irrf_estimate);
+  const fgts=val(amounts.fgts_employer_estimate);
+  const taxSum=val(amounts.sum_employee_tax_simulations);
+  for(const [name,n] of [['SALARIO',salary],['FALTAS',absence],['DSR',dsr],
+    ['ABATIMENTOS',absenceTotal],['INSS',inss],['IRRF',irrf],['FGTS',fgts],['SOMA_TRIBUTOS',taxSum]]){
+    if(n===null)add(name+'_INCOMPLETO','Componente '+name+' nao tem valor em centavos conciliavel.');
+    else if(BigInt(n)>limit)add(name+'_EXCEDE_LIMITE','Componente '+name+' excede o limite seguro.');
+  }
+  if(salary!==null&&absenceTotal!==null&&BigInt(absenceTotal)>BigInt(salary))
+    add('ABATIMENTO_EXCEDE_SALARIO','Faltas e DSR hipoteticos excedem a referencia salarial.');
+  if([absence,dsr,absenceTotal].every(n=>n!==null)&&
+    BigInt(absence)+BigInt(dsr)!==BigInt(absenceTotal))
+    add('SOMA_FALTAS_DSR_DIVERGENTE','Soma das faltas e DSR difere do total da Etapa 23 por pelo menos um centavo.');
+  if([inss,irrf,taxSum].every(n=>n!==null)&&BigInt(inss)+BigInt(irrf)!==BigInt(taxSum))
+    add('SOMA_INSS_IRRF_DIVERGENTE','Soma tributaria simulada difere dos descontos INSS e IRRF.');
+  if(amounts.fgts_employee_discount!==false)
+    add('FGTS_SEM_SEPARACAO','A origem nao confirmou FGTS como encargo exclusivo do empregador.');
+  if(!amounts.inss_table_from||!amounts.irrf_table_from)
+    add('TABELAS_PENDENTES','As versoes das tabelas de INSS e IRRF precisam acompanhar a simulacao.');
+  if(events.length>500||incidenceRows.length>500)
+    add('LIMITE_EVENTOS','Conferencia por funcionario limitada a 500 eventos.');
+  const seen=new Set(),matched=new Map(),rows=[];
+  for(const r of incidenceRows){
+    if(!r.movement_id||matched.has(r.movement_id))
+      add('REGRA_DUPLICADA','Ha eventos repetidos ou sem ID na conferencia de incidencias.');
+    else matched.set(r.movement_id,r);
+  }
+  if(events.length!==incidenceRows.length)
+    add('TOTAL_LINHAS_DIVERGENTE','Quantidade de movimentos difere da lista de incidencias.');
+  let earnings=0n,deductions=0n,informative=0n,allKnown=true;
+  for(const event of events){
+    const id=event.id||null, rule=id?matched.get(id):null;
+    const cents=val(event.value_preview);
+    const type=event.type||null;
+    const validType=['PROVENTO','DESCONTO','INFORMATIVO'].includes(type);
+    if(!id||seen.has(id))add('MOVIMENTO_DUPLICADO','ID ausente ou repetido na lista de movimentos.');
+    if(id)seen.add(id);
+    if(!validType||cents===null||event.status==='PENDENTE'){
+      allKnown=false;add('EVENTO_SEM_VALOR','Um evento esta sem valorizacao valida ou tipo confirmado.');
+    }else{
+      if(type==='PROVENTO')earnings+=BigInt(cents);
+      else if(type==='DESCONTO')deductions+=BigInt(cents);
+      else informative+=BigInt(cents);
+    }
+    if(!rule||rule.event_type!==type||val(rule.value_preview)!==cents||
+      rule.validation_status!=='CONFERENCIA'||!rule.rule_version||
+      ['inss','irrf','fgts'].some(k=>!['SIM','NAO'].includes(rule[k])))
+      add('INCIDENCIA_NAO_CONCILIADA','Movimento e regra fiscal nao coincidem para '+String(event.event_code||id||'?').slice(0,55)+'.');
+    const name=String(event.event_name||'')+' '+String(event.event_code||'');
+    if(type==='PROVENTO'&&/^(sal[aá]rio(\s*-?\s*base|\s*mensal)?|vencimento\s*mensal)$/i.test(String(event.event_name||'').trim()))
+      add('SALARIO_DUPLICADO','Evento de salario base pode duplicar a referencia historica.');
+    if(type==='DESCONTO'&&/(?:falta|\bdsr\b|repouso|descanso\s+semanal|\binss\b|\birrf\b|\bfgts\b|previd[êe]ncia|imposto\s+de\s+renda)/i.test(name))
+      add('DESCONTO_REPETIDO','Existe desconto possivelmente duplicado de falta, DSR ou tributo em evento lancado.');
+    if(/13\s*(?:º|o|\.|-)?\s*sal|d[eé]cimo\s+terceiro|f[ée]rias|rescis|afastamento|licen[çc]a|pens[ãa]o|judicial/i.test(name))
+      add('VERBA_ESPECIAL','Existe rubrica especial que exige apuracao especifica fora do cenario mensal.');
+    rows.push({movement_id:id,event_code:event.event_code||null,
+      event_name:event.event_name||null,type,unit:event.unit||null,
+      value_preview:cents===null?null:centsToMoney(cents),
+      inss:rule?.inss||'PENDENTE',irrf:rule?.irrf||'PENDENTE',
+      fgts:rule?.fgts||'PENDENTE',rule_version:rule?.rule_version||null,
+      status:cents!==null&&validType&&rule?.validation_status==='CONFERENCIA'?'CONFERENCIA':'PENDENTE'});
+  }
+  if([earnings,deductions,informative].some(n=>n>limit))
+    add('EVENTOS_FORA_LIMITE','Soma das verbas excede limite monetario seguro.');
+  if(!allKnown)add('MOVIMENTOS_PENDENTES','Totais por tipo de evento nao puderam ser conferidos.');
+  // Se houver total na Etapa 14, conferir em centavos; em meses com faltas
+  // essa fonte pode ser nula sem invalidar os movimentos rastreados.
+  for(const [label,origin,computed] of [
+    ['PROVENTOS',item.composition?.event_earnings,earnings],
+    ['DESCONTOS',item.composition?.event_deductions,deductions]]){
+    const prior=val(origin);
+    if(prior!==null&&allKnown&&BigInt(prior)!==computed)
+      add('TOTAL_'+label+'_DIVERGENTE','Soma dos eventos de '+label+' difere da composicao anterior.');
+  }
+  // A base recomposta considera exclusivamente proventos incidentes, que
+  // podem diferir do total de proventos; confirmar internamente sua origem.
+  for(const type of ['inss','irrf','fgts']){
+    const income=val(inc.event_contributions?.[type]);
+    const base=val(recomposition.scenario_after_absence?.[type]);
+    if(income===null||base===null||salary===null||absenceTotal===null){
+      add('BASE_'+type.toUpperCase()+'_PENDENTE','Base '+type.toUpperCase()+' ou parcela incidente nao conciliavel.');
+    }else if(BigInt(salary)+BigInt(income)-BigInt(absenceTotal)!==BigInt(base))
+      add('BASE_'+type.toUpperCase()+'_DIVERGENTE','Base '+type.toUpperCase()+' nao fecha em centavos com salario + proventos incidentes - faltas/DSR.');
+    if(base!==null&&val(tax.bases_recomposed?.[type])!==base)
+      add('BASE_'+type.toUpperCase()+'_TRIBUTO_DIVERGENTE','Base de '+type.toUpperCase()+' da Etapa 24 nao coincide com a recomposicao.');
+  }
+  let gross=null,afterAbsence=null,afterEvents=null,projected=null;
+  if(salary!==null&&absenceTotal!==null&&allKnown&&earnings<=limit&&deductions<=limit){
+    const g=BigInt(salary)+earnings;
+    const a=g-BigInt(absenceTotal);
+    const subtotal=a-deductions;
+    if(g>limit||a<0n||a>limit||subtotal<0n||subtotal>limit)
+      add('SUBTOTAL_FORA_LIMITE','Remuneracao e descontos produzem saldo negativo ou superior ao limite.');
+    else{gross=g;afterAbsence=a;afterEvents=subtotal;}
+  }
+  if(afterEvents!==null&&inss!==null&&irrf!==null){
+    const p=afterEvents-BigInt(inss)-BigInt(irrf);
+    if(p<0n||p>limit)add('DESCONTOS_EXCEDEM_REMUNERACAO','Descontos simulados ultrapassam a remuneracao da hipotese.');
+    else if(!issues.length)projected=p;
+  }
+  warnings.push('A soma e apenas hipotese matematica; faltas, DSR, incidencias e tributos precisam de homologacao trabalhista e fiscal.');
+  warnings.push('INSS e IRRF continuam simulacoes, nao retencoes. FGTS e encargo do empregador e nunca reduz a remuneracao.');
+  warnings.push('Nao contempla ferias, 13o, rescisao, afastamentos, multiplos vinculos, pensoes ou normas coletivas especiais.');
+  return {employee_id:item.employee_id,employee_code:item.employee_code||null,
+    employee_name:item.employee_name,remuneration_reconciliation:{
+      status:projected===null?'PENDENTE':'HIPOTESE_ARITMETICA_A_CONFERIR',
+      salary_reference:money(salary),event_earnings:allKnown&&earnings<=limit?money(earnings):null,
+      event_deductions:allKnown&&deductions<=limit?money(deductions):null,
+      informative_events:allKnown&&informative<=limit?money(informative):null,
+      absence_reference:money(absence),dsr_reference:money(dsr),
+      absence_dsr_reference:money(absenceTotal),
+      gross_before_absence:money(gross),
+      balance_after_absence:money(afterAbsence),
+      balance_after_event_deductions:money(afterEvents),
+      inss_simulated:money(inss),irrf_simulated:money(irrf),
+      fgts_employer_simulated:money(fgts),
+      arithmetic_balance_projection:money(projected),
+      inss_table_from:amounts.inss_table_from||null,
+      irrf_table_from:amounts.irrf_table_from||null,
+      lines:rows,issues,warnings,
+      read_only:true,preview_only:true,approved:false,homologated:false,
+      net_pay:null,net_pay_calculated:false,taxes_withheld:null,fgts_deposited:false,
+      ready_for_payroll:false,ready_for_payment:false,ready_for_accounting:false,
+      ready_for_closure:false
+    },net_pay:null,folha_liquida:null,ready_for_payroll:false,
+    ready_for_payment:false,ready_for_accounting:false,ready_for_closure:false};
+}
+async function payrollReconciledRemunerationPreview25(env,companyId,competenceId,paymentDate){
+  // O pipeline anterior confere empresa, competencia, pagamento e versoes de
+  // regras, sem expor dados de outra coligada.
+  const previous=await payrollRecomposedTaxPreview24(env,companyId,competenceId,paymentDate);
+  const items=previous.items.map(payrollReconciledRemunerationItem25);
+  return {kind:'CONCILIACAO_REMUNERACAO_RECOMPOSTA_ETAPA_25',competence:previous.competence,
+    payment_date:previous.payment_date,items,employee_count:items.length,
+    projected_employee_count:items.filter(x=>x.remuneration_reconciliation.status==='HIPOTESE_ARITMETICA_A_CONFERIR').length,
+    pending_employee_count:items.filter(x=>x.remuneration_reconciliation.status==='PENDENTE').length,
+    read_only:true,preview_only:true,homologated:false,net_pay:null,folha_liquida:null,
+    taxes_withheld:null,ready_for_payroll:false,ready_for_payment:false,
+    ready_for_accounting:false,ready_for_closure:false,
+    message:'Conciliacao aritmetica das referencias e impostos simulados: nao e folha liquida, nao desconta, nao paga nem contabiliza.'};
+}
+
+// ===== SAGAS Folha Etapa 31: versoes IMUTAVEIS de demonstrativos nao homologados =====
+// Este documento nao constitui folha liquida. Nao altera payroll_movements,
+// financeiro, contabilidade ou estados de competencias. Conteudos em centavos.
+async function ensurePayrollCalculationVersionsSchema31(env){
+  await env.DB.batch([
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS payroll_calculation_versions (
+      id TEXT PRIMARY KEY,
+      company_id TEXT NOT NULL,
+      competence_id TEXT NOT NULL REFERENCES payroll_competences(id) ON DELETE RESTRICT,
+      payment_date TEXT NOT NULL,
+      run_id TEXT NOT NULL REFERENCES payroll_processing_runs(id) ON DELETE RESTRICT,
+      run_fingerprint TEXT NOT NULL,
+      version INTEGER NOT NULL CHECK(version>0),
+      fingerprint TEXT NOT NULL,
+      document_json TEXT NOT NULL,
+      created_by TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(company_id,run_id),
+      UNIQUE(company_id,competence_id,payment_date,version)
+    )`),
+    env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_payroll_calc_versions_competence
+      ON payroll_calculation_versions(company_id,competence_id,payment_date,version DESC)`)
+  ]);
+}
+function payrollCalculationVersionMeta31(r){
+  return {id:r.id,competence_id:r.competence_id,payment_date:r.payment_date,
+    run_id:r.run_id,run_fingerprint:r.run_fingerprint,version:Number(r.version),
+    fingerprint:r.fingerprint,created_by:r.created_by,created_at:r.created_at,
+    kind:'VERSAO_DEMONSTRATIVA_ETAPA_31',homologated:false,approved:false,
+    net_pay:null,ready_for_payroll:false,ready_for_payment:false,
+    ready_for_accounting:false,ready_for_closure:false};
+}
+function payrollCalculationVersionSnapshot31(run,snapshot,reconciliation){
+  if(!run||!snapshot||snapshot.kind!=='PROTOCOLO_CONFERENCIA_ETAPA_28'||
+     snapshot.employee_count<1||!Array.isArray(snapshot.items)||
+     snapshot.items.length!==snapshot.employee_count||
+     !reconciliation||!Array.isArray(reconciliation.items)||
+     reconciliation.competence?.id!==run.competence_id||
+     reconciliation.approved!==undefined&&reconciliation.approved!==false||
+     reconciliation.ready_for_payment!==false||reconciliation.ready_for_accounting!==false)
+    throw new HttpError(409,'Origem da versao demonstrativa inconsistente.','INVALID_CALCULATION_SOURCE');
+  const lookup=new Map();
+  for(const e of reconciliation.items){
+    if(!e.employee_id||lookup.has(e.employee_id))
+      throw new HttpError(409,'Lista de funcionarios repetida ou incompleta.','INVALID_CALCULATION_EMPLOYEE');
+    lookup.set(e.employee_id,e);
+  }
+  if(lookup.size!==snapshot.items.length)
+    throw new HttpError(409,'Quantidade de funcionarios divergente entre fontes.','CALCULATION_SOURCE_MISMATCH');
+  const fields=['salary_reference','event_earnings','gross_before_absence',
+    'absence_reference','dsr_reference','absence_dsr_reference',
+    'balance_after_absence','event_deductions','balance_after_event_deductions',
+    'inss_simulated','irrf_simulated','fgts_employer_simulated',
+    'arithmetic_balance_projection'];
+  const items=[];
+  for(const emp of snapshot.items){
+    const live=lookup.get(emp.employee_id);
+    if(!live||live.employee_code!==emp.employee_code||
+       !/^[0-9]{5}$/.test(String(emp.employee_code||'')))
+      throw new HttpError(409,'ID do funcionario diverge do protocolo.','EMPLOYEE_ID_MISMATCH');
+    const calc=live.remuneration_reconciliation||{};
+    const amounts={};
+    for(const field of fields){
+      const v=calc[field];
+      const cents=v===null||v===undefined?null:payrollCompositionCents(v);
+      if(v!==null&&v!==undefined&&cents===null)
+        throw new HttpError(409,'Valor invalido no demonstrativo: '+field,'INVALID_CALCULATION_AMOUNT');
+      amounts[field]=cents;
+    }
+    const reference=emp.arithmetic_reference_cents;
+    if(reference!==null&&(!Number.isSafeInteger(reference)||reference<0))
+      throw new HttpError(409,'Referencia tecnica invalida no protocolo.','INVALID_CALCULATION_REFERENCE');
+    // Referencia anterior nao e salario liquido. A propria versao fica pendente
+    // quando a origem fiscal/aritmetica nao disponibiliza todas as parcelas.
+    const confirmed=calc.status==='HIPOTESE_ARITMETICA_A_CONFERIR'&&
+      Array.isArray(calc.issues)&&calc.issues.length===0&&
+      fields.every(field=>amounts[field]!==null)&&
+      emp.state==='CONFERENCIA_TECNICA'&&emp.technical_pending_count===0;
+    // Etapa 32: arquivar a fotografia dos EVENTOS das novas versoes.
+    // Versoes antigas nao contem estas linhas e NAO podem ser reconstruidas
+    // a partir de lancamentos atuais (que poderiam ja ter mudado).
+    // Apenas movimentos com identidade unica sao aceitos como historico detalhado.
+    let events=null;
+    if(Array.isArray(calc.lines)&&calc.lines.length<=500){
+      const eventIds=new Set();
+      const extracted=[];
+      let reliable=true;
+      for(const line of calc.lines){
+        const movementId=typeof line.movement_id==='string'?line.movement_id.trim():'';
+        if(!movementId||eventIds.has(movementId)){
+          reliable=false;break;
+        }
+        eventIds.add(movementId);
+        const value=line.value_preview===null||line.value_preview===undefined?
+          null:payrollCompositionCents(line.value_preview);
+        if(line.value_preview!==null&&line.value_preview!==undefined&&value===null){
+          reliable=false;break;
+        }
+        extracted.push({movement_id:movementId,event_code:String(line.event_code??'').slice(0,50),
+          event_name:String(line.event_name??'').slice(0,200),
+          type:String(line.type??'').slice(0,30),unit:String(line.unit??'').slice(0,30),
+          value_cents:value,inss:String(line.inss??'PENDENTE'),
+          irrf:String(line.irrf??'PENDENTE'),fgts:String(line.fgts??'PENDENTE'),
+          rule_version:line.rule_version===null?null:String(line.rule_version??'').slice(0,160),
+          status:String(line.status??'PENDENTE').slice(0,40)});
+      }
+      if(reliable)events=extracted.sort((a,b)=>a.movement_id.localeCompare(b.movement_id));
+    }
+    // A memoria aritmetica e demonstrativa, e nunca vira saldo homologado.
+    items.push({employee_id:emp.employee_id,employee_code:emp.employee_code,
+      employee_name:emp.employee_name,technical_state:emp.state,
+      technical_reference_cents:reference,
+      calculation_status:confirmed?'DEMONSTRATIVO_CONCILIADO':'PENDENTE_CONFERENCIA',
+      amounts_cents:amounts,events,issues:Array.isArray(calc.issues)?
+        calc.issues.slice(0,100).map(i=>({code:String(i.code||'PENDENTE').slice(0,80),
+          detail:String(i.detail||'Conferencia necessaria').slice(0,500)})):
+        [{code:'CALCULO_INCOMPLETO',detail:'Demonstrativo ainda sem fonte completa.'}],
+      net_pay:null,homologated:false,approved:false,ready_for_payment:false,
+      ready_for_accounting:false,ready_for_closure:false});
+  }
+  items.sort((a,b)=>a.employee_id.localeCompare(b.employee_id));
+  return {kind:'DOCUMENTO_RESULTADOS_PRELIMINARES_ETAPA_31',
+    run_id:run.id,run_fingerprint:run.fingerprint,
+    competence_id:run.competence_id,payment_date:run.payment_date,
+    employee_count:items.length,pending_count:items.filter(x=>x.calculation_status!=='DEMONSTRATIVO_CONCILIADO').length,
+    items,approved:false,homologated:false,net_pay:null,
+    ready_for_payroll:false,ready_for_payment:false,ready_for_accounting:false,
+    ready_for_closure:false,
+    message:'Versao arquivada somente para conferencias. Salario liquido e integracoes indisponiveis.'};
+}
+async function payrollCalculationVersionsList31(env,companyId,competenceId,paymentDate){
+  if(!competenceId)throw new HttpError(400,'Selecione uma competencia.','VALIDATION_ERROR');
+  const period=await env.DB.prepare(`SELECT id,competence FROM payroll_competences
+    WHERE company_id=? AND id=?`).bind(companyId,competenceId).first();
+  if(!period)throw new HttpError(404,'Competencia nao encontrada.','NOT_FOUND');
+  if(paymentDate)payrollStrictDate(paymentDate,'data do pagamento');
+  const q=paymentDate?
+    env.DB.prepare(`SELECT id,competence_id,payment_date,run_id,run_fingerprint,version,fingerprint,created_by,created_at
+      FROM payroll_calculation_versions WHERE company_id=? AND competence_id=? AND payment_date=?
+      ORDER BY version DESC LIMIT 100`).bind(companyId,competenceId,paymentDate):
+    env.DB.prepare(`SELECT id,competence_id,payment_date,run_id,run_fingerprint,version,fingerprint,created_by,created_at
+      FROM payroll_calculation_versions WHERE company_id=? AND competence_id=?
+      ORDER BY created_at DESC,version DESC LIMIT 100`).bind(companyId,competenceId);
+  const found=await q.all();
+  return {kind:'HISTORICO_VERSOES_DEMONSTRATIVAS_ETAPA_31',competence:period,
+    items:(found.results||[]).map(payrollCalculationVersionMeta31),read_only:true,
+    homologated:false,approved:false,net_pay:null,ready_for_payment:false,
+    ready_for_accounting:false,ready_for_closure:false};
+}
+async function payrollCalculationVersionDetail31(env,companyId,id){
+  const row=await env.DB.prepare(`SELECT * FROM payroll_calculation_versions
+    WHERE company_id=? AND id=?`).bind(companyId,id).first();
+  if(!row)throw new HttpError(404,'Versao de demonstrativo nao encontrada.','NOT_FOUND');
+  // Confere a integridade do protocolo vinculado E do demonstrativo.
+  const source=await payrollProcessingRunDetail28(env,companyId,row.run_id);
+  if(source.run.fingerprint!==row.run_fingerprint||
+     source.run.competence_id!==row.competence_id||source.run.payment_date!==row.payment_date)
+    throw new HttpError(409,'Versao nao corresponde ao protocolo historico.','VERSION_SOURCE_MISMATCH');
+  let document;
+  try{document=JSON.parse(row.document_json)}catch{
+    throw new HttpError(409,'Documento de calculo invalido.','VERSION_INTEGRITY_ERROR');
+  }
+  const digest=await payrollProcessingSnapshotHash28(document);
+  if(digest!==row.fingerprint||document.run_id!==row.run_id||
+     document.run_fingerprint!==row.run_fingerprint||
+     document.competence_id!==row.competence_id||
+     document.payment_date!==row.payment_date||
+     document.kind!=='DOCUMENTO_RESULTADOS_PRELIMINARES_ETAPA_31'||
+     document.net_pay!==null||document.approved!==false||document.homologated!==false)
+    throw new HttpError(409,'Integridade da versao de calculo comprometida.','VERSION_INTEGRITY_ERROR');
+  return {kind:'DETALHE_VERSAO_DEMONSTRATIVA_ETAPA_31',
+    version:payrollCalculationVersionMeta31(row),document,read_only:true,
+    homologated:false,approved:false,net_pay:null,ready_for_payment:false,
+    ready_for_accounting:false,ready_for_closure:false};
+}
+async function payrollCalculationVersionCreate31(env,request,auth,companyId,body){
+  await requirePermission(env,auth.user.id,companyId,'payroll.manage');
+  const runId=String(body?.run_id||'');
+  if(!runId)throw new HttpError(400,'Informe o protocolo de origem.','VALIDATION_ERROR');
+  const status=await payrollProcessingReviewStatus29(env,companyId,runId);
+  const run=status.run;
+  // Somente protocolo atual, tecnicamente conciliado e com ciencia vigente.
+  if(!status.snapshot_current||!status.technical_complete||
+     !status.technical_acknowledgment_current||status.competence_status!=='OPEN')
+    throw new HttpError(409,'O protocolo precisa estar atual, sem pendencias e com ciencia tecnica vigente.','VERSION_PREREQUISITES');
+  const existing=await env.DB.prepare(`SELECT id FROM payroll_calculation_versions
+    WHERE company_id=? AND run_id=?`).bind(companyId,runId).first();
+  if(existing)return {kind:'VERSAO_DEMONSTRATIVA_ETAPA_31',created:false,
+    ...await payrollCalculationVersionDetail31(env,companyId,existing.id)};
+  const runDetail=await payrollProcessingRunDetail28(env,companyId,runId);
+  const reconciliation=await payrollReconciledRemunerationPreview25(env,companyId,
+    run.competence_id,run.payment_date);
+  // Rechecar atualidade depois dos calculos para reduzir riscos de dados velhos;
+  // nao equivale a trava transacional de homologacao, que ainda nao existe.
+  const again=await payrollProcessingReviewStatus29(env,companyId,runId);
+  if(!again.snapshot_current||!again.technical_acknowledgment_current)
+    throw new HttpError(409,'Dados alterados durante a conferência; registre novo protocolo.','VERSION_SOURCE_CHANGED');
+  const doc=payrollCalculationVersionSnapshot31(run,runDetail.snapshot,reconciliation);
+  const json=JSON.stringify(doc);
+  if(json.length>1500000)throw new HttpError(413,'Demonstrativo excede limite de tamanho.','VERSION_TOO_LARGE');
+  const fingerprint=await payrollProcessingSnapshotHash28(doc);
+  const id=uuid();
+  // Numero sequencial atribuido em um INSERT atomico no SQLite/D1.
+  const inserted=await env.DB.prepare(`INSERT INTO payroll_calculation_versions
+    (id,company_id,competence_id,payment_date,run_id,run_fingerprint,version,fingerprint,document_json,created_by)
+    SELECT ?,r.company_id,r.competence_id,r.payment_date,r.id,r.fingerprint,
+      COALESCE((SELECT MAX(v.version) FROM payroll_calculation_versions v
+        WHERE v.company_id=r.company_id AND v.competence_id=r.competence_id
+          AND v.payment_date=r.payment_date),0)+1,?,?,?
+    FROM payroll_processing_runs r JOIN payroll_competences c
+      ON c.id=r.competence_id AND c.company_id=r.company_id
+    WHERE r.id=? AND r.company_id=? AND c.status='OPEN' AND r.state='CONFERENCIA_TECNICA'
+      AND r.pending_count=0 AND r.technical_count=r.employees_count AND r.employees_count>0
+    ON CONFLICT(company_id,run_id) DO NOTHING`)
+    .bind(id,fingerprint,json,auth.user.id,runId,companyId).run();
+  const row=await env.DB.prepare(`SELECT id FROM payroll_calculation_versions
+    WHERE company_id=? AND run_id=?`).bind(companyId,runId).first();
+  if(!row)throw new HttpError(409,'Competencia bloqueada ou versao nao registrada.','VERSION_WRITE_BLOCKED');
+  const created=Number(inserted?.meta?.changes??inserted?.changes??0)>0;
+  if(created)await audit(env,{companyId,userId:auth.user.id,action:'CREATE',
+    entity:'payroll_calculation_versions',entityId:row.id,
+    after:{run_id:runId,run_fingerprint:run.fingerprint,fingerprint,
+      kind:'DEMONSTRATIVO_NAO_HOMOLOGADO'},request});
+  const detail=await payrollCalculationVersionDetail31(env,companyId,row.id);
+  return {kind:'VERSAO_DEMONSTRATIVA_ETAPA_31',created,...detail};
+}
+
+// ===== SAGAS Folha Etapa 32: comparacao HISTORICA de versoes demonstrativas =====
+// NUNCA usa movimentos atuais para inferir mudancas do passado.
+// O comparador valida o hash de CADA documento por meio do leitor da Etapa 31.
+const PAYROLL_COMPARISON_FIELDS_32=[
+  'salary_reference','event_earnings','gross_before_absence',
+  'absence_reference','dsr_reference','absence_dsr_reference',
+  'balance_after_absence','event_deductions','balance_after_event_deductions',
+  'inss_simulated','irrf_simulated','fgts_employer_simulated',
+  'arithmetic_balance_projection'
+];
+function payrollComparisonValue32(value){
+  // null e ausencia de valor; NUNCA equivale a zero.
+  if(value===null||value===undefined)return null;
+  if(!Number.isSafeInteger(value))
+    throw new HttpError(409,'Valor historico invalido para comparacao.','VERSION_INVALID_AMOUNT');
+  return value;
+}
+function payrollComparisonDiff32(before,after){
+  const a=payrollComparisonValue32(before),b=payrollComparisonValue32(after);
+  return {before_cents:a,after_cents:b,
+    delta_cents:a===null||b===null?null:b-a,
+    status:a===null&&b===null?'SEM_ALTERACAO':
+      a===null?'AGORA_DISPONIVEL':b===null?'AGORA_INDISPONIVEL':
+      a===b?'SEM_ALTERACAO':'ALTERADO'};
+}
+function payrollComparisonEventsIndex32(items){
+  if(!Array.isArray(items))return null;
+  const entries=new Map();
+  for(const item of items){
+    if(!item||typeof item.movement_id!=='string'||!item.movement_id||
+      entries.has(item.movement_id))
+      throw new HttpError(409,'Eventos historicos com IDs ambiguos.','VERSION_EVENTS_AMBIGUOUS');
+    entries.set(item.movement_id,item);
+  }
+  return entries;
+}
+function payrollComparisonEmployeeIndex32(document){
+  const map=new Map();
+  if(!document||!Array.isArray(document.items))
+    throw new HttpError(409,'Documento historico sem funcionarios.','VERSION_INVALID_DOCUMENT');
+  for(const item of document.items){
+    if(!item||typeof item.employee_id!=='string'||!item.employee_id||map.has(item.employee_id))
+      throw new HttpError(409,'Funcionarios historicos duplicados.','VERSION_INVALID_DOCUMENT');
+    map.set(item.employee_id,item);
+  }
+  return map;
+}
+function payrollComparisonEventChanges32(before,after){
+  const a=payrollComparisonEventsIndex32(before?.events);
+  const b=payrollComparisonEventsIndex32(after?.events);
+  if(!a||!b)return {available:false,
+    reason:'Pelo menos uma das versoes nao arquivou os eventos. Nao e possivel identificar mudancas historicas por evento sem inventar dados.',
+    added:0,removed:0,changed:0,unchanged:0,items:[]};
+  const keys=[...new Set([...a.keys(),...b.keys()])].sort();
+  const items=[],summary={available:true,reason:null,added:0,removed:0,changed:0,unchanged:0};
+  for(const id of keys){
+    const x=a.get(id)||null,y=b.get(id)||null;
+    const value=payrollComparisonDiff32(x?.value_cents,y?.value_cents);
+    const changedFields=[];
+    for(const field of ['event_code','event_name','type','unit','inss','irrf','fgts','rule_version','status']){
+      if(x&&y&&(x[field]??null)!==(y[field]??null))changedFields.push(field);
+    }
+    if(x&&y&&value.status!=='SEM_ALTERACAO')changedFields.push('value_cents');
+    const state=!x?'INCLUIDO':!y?'EXCLUIDO':changedFields.length?'ALTERADO':'SEM_ALTERACAO';
+    if(state==='INCLUIDO')summary.added++;
+    else if(state==='EXCLUIDO')summary.removed++;
+    else if(state==='ALTERADO')summary.changed++;
+    else summary.unchanged++;
+    if(state!=='SEM_ALTERACAO')items.push({movement_id:id,state,
+      event_code_before:x?.event_code??null,event_code_after:y?.event_code??null,
+      event_name_before:x?.event_name??null,event_name_after:y?.event_name??null,
+      type_before:x?.type??null,type_after:y?.type??null,
+      fields_changed:changedFields,value,
+      before:x,after:y});
+  }
+  return {...summary,items};
+}
+function payrollComparisonIssueChanges32(before,after){
+  const codes=(x)=>new Set((Array.isArray(x?.issues)?x.issues:[]).map(i=>
+    String(i?.code||'')+'|'+String(i?.detail||'')));
+  const a=codes(before),b=codes(after);
+  return {added:[...b].filter(x=>!a.has(x)),removed:[...a].filter(x=>!b.has(x))};
+}
+function payrollComparisonTotals32(document){
+  const totals={};
+  for(const field of PAYROLL_COMPARISON_FIELDS_32){
+    let sum=0,missing=0;
+    for(const emp of document.items){
+      const v=payrollComparisonValue32(emp.amounts_cents?.[field]);
+      if(v===null)missing++;else sum+=v;
+      if(!Number.isSafeInteger(sum))
+        throw new HttpError(409,'Total historico excede precisao segura.','VERSION_AMOUNT_OVERFLOW');
+    }
+    totals[field]={total_cents:missing?null:sum,missing_employees:missing};
+  }
+  return totals;
+}
+function payrollCalculationCompareDocuments32(left,right){
+  const before=payrollComparisonEmployeeIndex32(left);
+  const after=payrollComparisonEmployeeIndex32(right);
+  const leftTotals=payrollComparisonTotals32(left),rightTotals=payrollComparisonTotals32(right);
+  const totals={};
+  let totalFieldsChanged=0;
+  for(const field of PAYROLL_COMPARISON_FIELDS_32){
+    const diff=payrollComparisonDiff32(leftTotals[field].total_cents,rightTotals[field].total_cents);
+    if(diff.status!=='SEM_ALTERACAO')totalFieldsChanged++;
+    totals[field]={...diff,left_missing_employees:leftTotals[field].missing_employees,
+      right_missing_employees:rightTotals[field].missing_employees};
+  }
+  const ids=[...new Set([...before.keys(),...after.keys()])].sort();
+  const employees=[];
+  const summary={employees_added:0,employees_removed:0,employees_changed:0,
+    employees_unchanged:0,amount_fields_changed:0,event_changes:0,
+    employees_with_unavailable_event_detail:0,total_fields_changed:totalFieldsChanged};
+  for(const id of ids){
+    const a=before.get(id)||null,b=after.get(id)||null;
+    const fields={};
+    let changed=0;
+    for(const field of PAYROLL_COMPARISON_FIELDS_32){
+      const d=payrollComparisonDiff32(a?.amounts_cents?.[field],b?.amounts_cents?.[field]);
+      if(a&&b&&d.status!=='SEM_ALTERACAO'){
+        changed++;summary.amount_fields_changed++;
+      }
+      if(d.status!=='SEM_ALTERACAO')fields[field]=d;
+    }
+    const events=payrollComparisonEventChanges32(a,b);
+    if(!events.available&&a&&b)summary.employees_with_unavailable_event_detail++;
+    if(events.available)summary.event_changes+=events.added+events.removed+events.changed;
+    const issues=payrollComparisonIssueChanges32(a,b);
+    const metadataChanged=!!a&&!!b&&(
+      a.employee_code!==b.employee_code||a.employee_name!==b.employee_name||
+      a.technical_state!==b.technical_state||a.calculation_status!==b.calculation_status||
+      issues.added.length>0||issues.removed.length>0);
+    const state=!a?'INCLUIDO':!b?'EXCLUIDO':
+      changed||metadataChanged||events.available&&(events.added+events.removed+events.changed)>0?
+      'ALTERADO':events.available?'SEM_ALTERACAO':'SEM_ALTERACAO_COM_RESSALVA';
+    if(state==='INCLUIDO')summary.employees_added++;
+    else if(state==='EXCLUIDO')summary.employees_removed++;
+    else if(state==='ALTERADO')summary.employees_changed++;
+    else summary.employees_unchanged++;
+    if(state!=='SEM_ALTERACAO')employees.push({employee_id:id,
+      employee_code_before:a?.employee_code??null,employee_code_after:b?.employee_code??null,
+      employee_name_before:a?.employee_name??null,employee_name_after:b?.employee_name??null,
+      state,calculation_status_before:a?.calculation_status??null,
+      calculation_status_after:b?.calculation_status??null,
+      technical_state_before:a?.technical_state??null,
+      technical_state_after:b?.technical_state??null,
+      changed_fields_count:changed,amounts_cents:fields,events,issues});
+  }
+  return {summary,totals_cents:totals,employees,
+    events_fully_comparable:summary.employees_with_unavailable_event_detail===0,
+    historical_limitation:summary.employees_with_unavailable_event_detail?
+      'Versoes da Etapa 31 anteriores ao v70 nao guardam os eventos individuais. Apenas valores consolidados sao comparaveis nesses registros.':null};
+}
+async function payrollCalculationVersionsCompare32(env,companyId,leftId,rightId){
+  if(!leftId||!rightId)throw new HttpError(400,
+    'Informe left_id e right_id das duas versoes.','VALIDATION_ERROR');
+  if(leftId===rightId)throw new HttpError(400,
+    'Selecione duas versoes diferentes.','VALIDATION_ERROR');
+  // Conferencia de hash, protocolo e escopo da empresa em AMBAS as versoes.
+  const [left,right]=await Promise.all([
+    payrollCalculationVersionDetail31(env,companyId,leftId),
+    payrollCalculationVersionDetail31(env,companyId,rightId)
+  ]);
+  if(left.version.competence_id!==right.version.competence_id||
+     left.version.payment_date!==right.version.payment_date)
+    throw new HttpError(400,
+      'Compare somente versoes da mesma competencia e data de pagamento.',
+      'VERSION_SCOPE_MISMATCH');
+  // Apresenta em ordem cronologica: antes e depois. O usuario pode passar IDs em qualquer ordem.
+  const older=left.version.version<right.version.version?left:right;
+  const newer=older===left?right:left;
+  const result=payrollCalculationCompareDocuments32(older.document,newer.document);
+  return {kind:'COMPARACAO_VERSOES_DEMONSTRATIVAS_ETAPA_32',
+    competence_id:older.version.competence_id,payment_date:older.version.payment_date,
+    previous_version:older.version,current_version:newer.version,
+    ...result,read_only:true,homologated:false,approved:false,net_pay:null,
+    ready_for_payroll:false,ready_for_payment:false,
+    ready_for_accounting:false,ready_for_closure:false,
+    message:'Comparacao informativa de demonstrativos nao homologados. Nenhum lancamento, pagamento ou fechamento foi executado.'};
+}
+
+// ===== SAGAS Folha Etapa 30: matriz de preparacao para homologacao =====
+// Somente leitura, nunca transforma ciencia tecnica em folha aprovada.
+// Toda regra ainda nao implementada deve permanecer visivelmente bloqueada.
+async function payrollHomologationReadiness30(env,companyId,runId){
+  // Inclui verificacao SHA-256, isolamento de empresa e confronto com dados atuais.
+  const reviewStatus=await payrollProcessingReviewStatus29(env,companyId,runId);
+  const run=reviewStatus.run||{};
+  const review=reviewStatus.review||null;
+  const employees=Number(run.employee_count||0);
+  const noTechnicalPending=reviewStatus.technical_complete===true;
+  const updated=reviewStatus.consistency==='ATUAL'&&reviewStatus.snapshot_current===true;
+  const periodOpen=reviewStatus.competence_status==='OPEN';
+  const acknowledged=!!review&&reviewStatus.technical_acknowledgment_current===true&&
+    review.fingerprint===run.fingerprint;
+  // A regra para futura aprovacao deve exigir pessoa independente da preparacao
+  // e da ciencia tecnica. Ainda nao existe cadastro/assinatura de homologadores.
+  const preparer=String(run.created_by||'');
+  const technicalReviewer=String(review?.reviewed_by||'');
+  const separateTechnicalReview=!!preparer&&!!technicalReviewer&&preparer!==technicalReviewer;
+  const gates=[];
+  const add=(code,title,status,detail,required_action,source)=>{
+    gates.push({code,title,status,detail,required_action,source});
+  };
+  add('INTEGRIDADE_PROTOCOLO','Integridade do protocolo','CONFERIDO',
+    'Fotografia arquivada validada por SHA-256; hash: '+String(run.fingerprint||''),
+    'Nenhuma acao enquanto o hash permanecer valido.','ETAPA_28');
+  add('ATUALIDADE_DADOS','Atualidade dos dados',updated?'CONFERIDO':'PENDENTE',
+    updated?'Dados atuais equivalentes aos do protocolo.':
+      'Estado: '+String(reviewStatus.consistency||'INDETERMINADO')+'.',
+    'Se desatualizado, registre um novo protocolo e realize a conferencia tecnica novamente.','ETAPA_29');
+  add('COMPETENCIA_ABERTA','Situacao da competencia',periodOpen?'CONFERIDO':'PENDENTE',
+    'Situacao: '+String(reviewStatus.competence_status||'NAO_LOCALIZADA')+'.',
+    'A competencia deve estar aberta para qualquer etapa preparatoria.','COMPETENCIA');
+  add('ENVELOPES_CONFERIDOS','Conferencia tecnica dos envelopes',noTechnicalPending?'CONFERIDO':'PENDENTE',
+    noTechnicalPending?'Todos os '+employees+' envelopes tecnicamente conferidos.':
+      String(run.pending_employee_count??'indefinido')+' envelopes com pendencias; total '+employees+'.',
+    'Corrija pendencias e gere um novo protocolo de conferencia.','ETAPA_27');
+  add('CIENCIA_DOCUMENTADA','Ciencia tecnica documentada',acknowledged?'CONFERIDO':'PENDENTE',
+    acknowledged?'Ciencia registrada em '+String(review.created_at||'data indisponivel')+'.':
+      review?'Existe ciencia historica, mas nao vigente sobre os dados atuais.':
+      'Nao ha ciencia tecnica registrada para este protocolo.',
+    'Depois de corrigir e arquivar a conferencia, registre ciencia tecnica.','ETAPA_29');
+  add('SEGREGACAO_CONFERENCIA','Segregacao entre preparacao e conferencia',
+    separateTechnicalReview?'CONFERIDO':'PENDENTE',
+    !review?'Ainda nao existe revisor tecnico.':separateTechnicalReview?
+      'Preparador e revisor tecnico sao pessoas distintas.':
+      'Mesmo usuario preparou o protocolo e registrou ciencia tecnica.',
+    'Para futura homologacao, exija revisao independente e aprovador distinto; nao reutilize ciencia de protocolo desatualizado.',
+    'GOVERNANCA');
+  for(const item of [
+    ['CALCULO_LIQUIDO','Calculo liquido definitivo',
+      'Implementar folha definitiva com tratamento integral de verbas e reconciliacao dos descontos.'],
+    ['VERBAS_ESPECIAIS','Tratamento de verbas especiais',
+      'Concluir as regras de ferias, 13o, rescisao e afastamentos pertinentes ao periodo.'],
+    ['HOMOLOGACAO_TRIBUTARIA','Validacao legal das bases e encargos',
+      'Homologar incidencias, INSS, IRRF, FGTS, deducoes e demais particularidades do empregado.'],
+    ['APROVACAO_INDEPENDENTE','Alcada formal de aprovacao',
+      'Criar permissao propria, atribuicao de responsavel independente e aprovacao versionada.'],
+    ['TRAVA_TRANSACIONAL','Protecao de concorrencia e versao dos dados',
+      'Garantir versao atomica das origens antes de permitir assinatura ou processamento definitivo.']
+  ]){
+    add(item[0],item[1],'NAO_IMPLEMENTADO',
+      'Requisito obrigatorio de homologacao nao concluido nesta etapa.',item[2],'IMPLEMENTACAO_FUTURA');
+  }
+  const pending=gates.filter(g=>g.status==='PENDENTE').length;
+  const notImplemented=gates.filter(g=>g.status==='NAO_IMPLEMENTADO').length;
+  const prepared=gates.filter(g=>g.status==='CONFERIDO').length;
+  const critical=gates.filter(g=>g.status!=='CONFERIDO').map(g=>({code:g.code,required_action:g.required_action,source:g.source}));
+  const responsibilities={
+    protocol_preparer:{user_id:run.created_by||null,created_at:run.created_at||null,
+      responsibility:'Registro da fotografia tecnica, sem aprovacao'},
+    technical_reviewer:{user_id:review?.reviewed_by||null,reviewed_at:review?.created_at||null,
+      responsibility:'Ciencia tecnica, nao homologacao'},
+    independent_approver:{user_id:null,assigned:false,
+      responsibility:'Aprovacao formal independente; fluxo NAO_IMPLEMENTADO'},
+    preparer_and_reviewer_distinct:separateTechnicalReview,
+    required_future_approver_distinct:true
+  };
+  return {kind:'MATRIZ_PRE_HOMOLOGACAO_ETAPA_30',run_id:run.id,
+    competence_id:run.competence_id,payment_date:run.payment_date,
+    fingerprint:run.fingerprint,protocol_state:run.state,
+    snapshot_consistency:reviewStatus.consistency,
+    technical_acknowledgment_current:acknowledged,
+    employee_count:employees,roles:responsibilities,gates,
+    summary:{verified:prepared,pending,not_implemented:notImplemented,total:gates.length},
+    next_actions:critical,read_only:true,preparation_status:
+      pending?'PENDENCIAS_TECNICAS':'CONTROLES_A_IMPLEMENTAR',
+    // BLOQUEIOS FIXOS: nenhuma modalidade deste relatorio autoriza homologacao.
+    approved:false,homologated:false,ready_for_homologation:false,
+    ready_for_payroll:false,net_pay:null,ready_for_payment:false,
+    ready_for_accounting:false,ready_for_closure:false,
+    message:'Matriz de requisitos; a ciencia tecnica nao constitui homologacao da folha.'};
+}
+
+// ===== SAGAS Folha Etapa 29: ciencia tecnica de protocolo atual, SEM homologacao =====
+// Distincao: ciencia da conferencia nao constitui folha aprovada, calculo liquido,
+// retencao, quitacao, fechamento, integracao nem assinatura digital.
+async function ensurePayrollProcessingReviewsSchema29(env){
+  await env.DB.batch([
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS payroll_processing_reviews (
+      id TEXT PRIMARY KEY,
+      company_id TEXT NOT NULL,
+      run_id TEXT NOT NULL REFERENCES payroll_processing_runs(id) ON DELETE RESTRICT,
+      review_kind TEXT NOT NULL CHECK(review_kind='CIENCIA_TECNICA'),
+      fingerprint TEXT NOT NULL,
+      reviewed_by TEXT NOT NULL,
+      notes TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(company_id,run_id,review_kind)
+    )`),
+    env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_payroll_reviews_company_run
+      ON payroll_processing_reviews(company_id,run_id,created_at DESC)`)
+  ]);
+}
+function payrollProcessingReviewMeta29(row){
+  if(!row)return null;
+  return {id:row.id,run_id:row.run_id,review_kind:row.review_kind,
+    reviewed_by:row.reviewed_by,created_at:row.created_at,notes:row.notes,
+    fingerprint:row.fingerprint,technical_acknowledgement:true,
+    homologated:false,approved:false,net_pay:null,ready_for_payment:false,
+    ready_for_accounting:false,ready_for_closure:false};
+}
+async function payrollProcessingReviewStatus29(env,companyId,runId){
+  // Detalhe valida empresa e SHA-256 antes de qualquer outra operacao.
+  const detail=await payrollProcessingRunDetail28(env,companyId,runId);
+  const run=detail.run;
+  const reviewRow=await env.DB.prepare(`SELECT * FROM payroll_processing_reviews
+    WHERE company_id=? AND run_id=? AND review_kind='CIENCIA_TECNICA'`)
+    .bind(companyId,runId).first();
+  const period=await env.DB.prepare(`SELECT id,status,competence FROM payroll_competences
+    WHERE company_id=? AND id=?`).bind(companyId,run.competence_id).first();
+  let liveFingerprint=null,consistency='INDETERMINADO',liveError=null;
+  if(period){
+    try{
+      const preview=await payrollProcessingControlPreview27(env,companyId,run.competence_id,run.payment_date);
+      const current=payrollProcessingSnapshot28(preview);
+      liveFingerprint=await payrollProcessingSnapshotHash28(current);
+      consistency=liveFingerprint===run.fingerprint?'ATUAL':'DESATUALIZADO';
+    }catch(err){liveError='Nao foi possivel conferir novamente os dados atuais da competencia.';}
+  }else liveError='Competencia original nao encontrada.';
+  const technicalComplete=run.state==='CONFERENCIA_TECNICA'&&
+    run.pending_employee_count===0&&run.employee_count>0&&
+    run.technical_employee_count===run.employee_count&&
+    detail.snapshot?.items?.every(e=>e.state==='CONFERENCIA_TECNICA'&&e.technical_pending_count===0);
+  const current=consistency==='ATUAL';
+  const open=period?.status==='OPEN';
+  const review=payrollProcessingReviewMeta29(reviewRow);
+  const acknowledgmentCurrent=!!review&&current&&review.fingerprint===run.fingerprint;
+  const canAcknowledge=technicalComplete&&current&&open&&!review;
+  const blockers=[];
+  if(!technicalComplete)blockers.push({code:'PENDENCIAS_TECNICAS',detail:'Os envelopes possuem pendencias tecnicas ou nao ha funcionarios.'});
+  if(!current)blockers.push({code:consistency==='DESATUALIZADO'?'PROTOCOLO_DESATUALIZADO':'CONFERENCIA_INDETERMINADA',
+    detail:liveError||'O protocolo nao corresponde mais aos dados atuais. Registre nova conferencia.'});
+  if(!open)blockers.push({code:'COMPETENCIA_NAO_ABERTA',detail:'Somente competencias abertas permitem registrar ciencia tecnica.'});
+  if(review)blockers.push({code:'CIENCIA_JA_REGISTRADA',detail:'Este protocolo ja possui ciencia tecnica; o registro e imutavel.'});
+  return {kind:'REVISAO_TECNICA_PROTOCOLO_ETAPA_29',run,review,
+    snapshot_current:current,consistency,competence_status:period?.status||null,
+    can_acknowledge:canAcknowledge,technical_complete:technicalComplete,
+    technical_acknowledgment_current:acknowledgmentCurrent,blockers,
+    approved:false,homologated:false,net_pay:null,ready_for_payment:false,
+    ready_for_accounting:false,ready_for_closure:false,
+    message:'Ciencia tecnica nao homologa calculo liquido, pagamento, fechamento ou contabilidade.'};
+}
+async function payrollProcessingReviewCreate29(env,request,auth,companyId,runId,body){
+  await requirePermission(env,auth.user.id,companyId,'payroll.manage');
+  if(body?.acknowledge!=='CIENCIA_TECNICA_SEM_HOMOLOGACAO')
+    throw new HttpError(400,'Confirme explicitamente a ciencia tecnica, sem homologacao.','VALIDATION_ERROR');
+  const notes=String(body?.notes??'').trim();
+  if(notes.length>1000)throw new HttpError(400,'Observacao com mais de 1000 caracteres.','VALIDATION_ERROR');
+  const status=await payrollProcessingReviewStatus29(env,companyId,runId);
+  if(status.review){
+    // Idempotencia nunca permite que uma ciencia antiga se torne vigente de novo.
+    if(!status.technical_acknowledgment_current)
+      throw new HttpError(409,'Ciencia historica desatualizada; registre nova conferencia.','STALE_TECHNICAL_REVIEW');
+    return {kind:'CIENCIA_TECNICA_ETAPA_29',created:false,review:status.review,
+      current:status.technical_acknowledgment_current,homologated:false,approved:false,
+      ready_for_payment:false,ready_for_accounting:false,ready_for_closure:false};
+  }
+  if(!status.can_acknowledge)
+    throw new HttpError(409,'Protocolo sem elegibilidade tecnica ou desatualizado.','TECHNICAL_REVIEW_BLOCKED');
+  const id=uuid();
+  // Persistencia atomica vinculada ao protocolo original e competencia ABERTA.
+  const insert=await env.DB.prepare(`INSERT INTO payroll_processing_reviews
+    (id,company_id,run_id,review_kind,fingerprint,reviewed_by,notes)
+    SELECT ?,r.company_id,r.id,'CIENCIA_TECNICA',r.fingerprint,?,?
+    FROM payroll_processing_runs r JOIN payroll_competences c
+      ON c.id=r.competence_id AND c.company_id=r.company_id
+    WHERE r.id=? AND r.company_id=? AND r.state='CONFERENCIA_TECNICA'
+      AND r.pending_count=0 AND r.technical_count=r.employees_count
+      AND r.employees_count>0 AND c.status='OPEN'
+    ON CONFLICT(company_id,run_id,review_kind) DO NOTHING`)
+    .bind(id,auth.user.id,notes,runId,companyId).run();
+  const row=await env.DB.prepare(`SELECT * FROM payroll_processing_reviews
+    WHERE company_id=? AND run_id=? AND review_kind='CIENCIA_TECNICA'`)
+    .bind(companyId,runId).first();
+  if(!row)throw new HttpError(409,'Competencia bloqueada ou ciencia tecnica nao registrada.','TECHNICAL_REVIEW_BLOCKED');
+  const created=Number(insert?.meta?.changes??insert?.changes??0)>0;
+  if(created)await audit(env,{companyId,userId:auth.user.id,action:'CREATE',
+    entity:'payroll_processing_reviews',entityId:row.id,
+    after:{run_id:runId,fingerprint:row.fingerprint,review_kind:'CIENCIA_TECNICA',notes},request});
+  return {kind:'CIENCIA_TECNICA_ETAPA_29',created,review:payrollProcessingReviewMeta29(row),
+    current:created||status.technical_acknowledgment_current,approved:false,homologated:false,
+    net_pay:null,ready_for_payment:false,ready_for_accounting:false,ready_for_closure:false,
+    message:'Ciencia registrada somente para conferencia tecnica. A folha nao esta homologada.'};
+}
+
+// ===== SAGAS Folha Etapa 28: protocolo persistente de conferencia tecnica =====
+// A gravacao e uma fotografia auditavel, NAO e fechamento, calculo definitivo,
+// homologacao, retencao, pagamento ou integracao financeira/contabil.
+async function ensurePayrollProcessingRunsSchema28(env){
+  await env.DB.batch([
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS payroll_processing_runs (
+      id TEXT PRIMARY KEY,
+      company_id TEXT NOT NULL,
+      competence_id TEXT NOT NULL REFERENCES payroll_competences(id) ON DELETE RESTRICT,
+      payment_date TEXT NOT NULL,
+      fingerprint TEXT NOT NULL,
+      state TEXT NOT NULL CHECK(state IN ('PENDENTE_TECNICO','CONFERENCIA_TECNICA')),
+      employees_count INTEGER NOT NULL CHECK(employees_count>=0),
+      pending_count INTEGER NOT NULL CHECK(pending_count>=0),
+      technical_count INTEGER NOT NULL CHECK(technical_count>=0),
+      snapshot_json TEXT NOT NULL,
+      created_by TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(company_id,competence_id,payment_date,fingerprint)
+    )`),
+    env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_payroll_runs_company_competence
+      ON payroll_processing_runs(company_id,competence_id,payment_date,created_at DESC)`)
+  ]);
+}
+function payrollProcessingSnapshot28(control){
+  if(!control||control.kind!=='CONTROLE_PROCESSAMENTO_COMPETENCIA_ETAPA_27'||
+     control.approved!==false||control.homologated!==false||
+     control.ready_for_payment!==false||control.ready_for_accounting!==false||
+     control.ready_for_closure!==false||control.ready_for_payroll!==false||
+     !Array.isArray(control.items))
+    throw new HttpError(409,'A conferencia de origem nao permite registrar um protocolo.','UNSAFE_PAYROLL_SOURCE');
+  const employees=control.items.map(e=>{
+    const c=e.processing_control||{};
+    if(!e.employee_id||!/^[0-9]{5}$/.test(String(e.employee_code||''))||
+       !['PENDENTE_TECNICO','CONFERENCIA_TECNICA'].includes(c.status)||
+       c.approved!==false||c.homologated!==false||c.ready_for_payment!==false||
+       c.ready_for_closure!==false||c.ready_for_accounting!==false||
+       !Array.isArray(c.checks)||!Array.isArray(c.next_actions))
+      throw new HttpError(409,'Envelope com informacoes incompletas para protocolo.','UNSAFE_PAYROLL_ITEM');
+    const cents=c.arithmetic_reference===null?null:payrollCompositionCents(c.arithmetic_reference);
+    if(c.arithmetic_reference!==null&&cents===null)
+      throw new HttpError(409,'Referencia aritmetica invalida para arquivar.','INVALID_REFERENCE');
+    return {employee_id:e.employee_id,employee_code:e.employee_code,employee_name:e.employee_name,
+      state:c.status,technical_pending_count:c.pending_technical_count,
+      implementation_blocker_count:c.implementation_blocker_count,
+      arithmetic_reference_cents:cents,validation_warnings:c.validation_warnings||[],
+      checks:c.checks,next_actions:c.next_actions,
+      homologated:false,approved:false,net_pay:null,ready_for_payment:false,
+      ready_for_accounting:false,ready_for_closure:false};
+  });
+  // Ordenacao estavel: mesma competencia/dados devem gerar o mesmo identificador.
+  employees.sort((a,b)=>a.employee_id.localeCompare(b.employee_id));
+  const pending=employees.filter(x=>x.state==='PENDENTE_TECNICO').length;
+  const technical=employees.length-pending;
+  if(pending!==control.pending_technical_employee_count||
+     technical!==control.technical_review_employee_count||
+     employees.length!==control.employee_count)
+    throw new HttpError(409,'Contagem dos envelopes divergente.','INCONSISTENT_PAYROLL_TOTALS');
+  return {kind:'PROTOCOLO_CONFERENCIA_ETAPA_28',competence:control.competence,
+    payment_date:control.payment_date,employee_count:employees.length,
+    pending_count:pending,technical_count:technical,items:employees,
+    homologated:false,approved:false,net_pay:null,ready_for_payment:false,
+    ready_for_accounting:false,ready_for_closure:false,
+    message:'Fotografia da conferencia tecnica. Pagamento, fechamento e contabilizacao indisponiveis.'};
+}
+async function payrollProcessingSnapshotHash28(snapshot){
+  // JSON contem apenas dados calculados no servidor. Protocolo possui versao fixa.
+  const bytes=new TextEncoder().encode(JSON.stringify(snapshot));
+  const digest=new Uint8Array(await crypto.subtle.digest('SHA-256',bytes));
+  return Array.from(digest,b=>b.toString(16).padStart(2,'0')).join('');
+}
+function payrollProcessingRunMeta28(row){
+  return {id:row.id,competence_id:row.competence_id,payment_date:row.payment_date,
+    fingerprint:row.fingerprint,state:row.state,employee_count:Number(row.employees_count),
+    pending_employee_count:Number(row.pending_count),technical_employee_count:Number(row.technical_count),
+    created_by:row.created_by,created_at:row.created_at,
+    approval_status:'NAO_HOMOLOGADO',payment_status:'BLOQUEADO',closure_status:'BLOQUEADO',
+    accounting_status:'BLOQUEADO',net_pay:null,homologated:false,approved:false,
+    ready_for_payment:false,ready_for_accounting:false,ready_for_closure:false};
+}
+async function payrollProcessingRunsList28(env,companyId,competenceId,paymentDate){
+  if(!competenceId)throw new HttpError(400,'Selecione uma competencia.','VALIDATION_ERROR');
+  // A empresa e verificada ANTES da leitura do historico.
+  const period=await env.DB.prepare(`SELECT id,competence FROM payroll_competences WHERE company_id=? AND id=?`)
+    .bind(companyId,competenceId).first();
+  if(!period)throw new HttpError(404,'Competencia nao encontrada.','NOT_FOUND');
+  if(paymentDate)payrollStrictDate(paymentDate,'data do pagamento');
+  const q=paymentDate?
+    env.DB.prepare(`SELECT id,competence_id,payment_date,fingerprint,state,employees_count,pending_count,
+      technical_count,created_by,created_at FROM payroll_processing_runs
+      WHERE company_id=? AND competence_id=? AND payment_date=?
+      ORDER BY created_at DESC,id DESC LIMIT 100`).bind(companyId,competenceId,paymentDate):
+    env.DB.prepare(`SELECT id,competence_id,payment_date,fingerprint,state,employees_count,pending_count,
+      technical_count,created_by,created_at FROM payroll_processing_runs
+      WHERE company_id=? AND competence_id=? ORDER BY created_at DESC,id DESC LIMIT 100`).bind(companyId,competenceId);
+  const r=await q.all();
+  return {kind:'HISTORICO_CONFERENCIAS_ETAPA_28',competence:period,
+    items:(r.results||[]).map(payrollProcessingRunMeta28),read_only:true,
+    homologated:false,ready_for_payment:false,ready_for_accounting:false,ready_for_closure:false};
+}
+async function payrollProcessingRunDetail28(env,companyId,id){
+  if(!id)throw new HttpError(400,'Protocolo nao informado.','VALIDATION_ERROR');
+  const row=await env.DB.prepare(`SELECT * FROM payroll_processing_runs WHERE company_id=? AND id=?`)
+    .bind(companyId,id).first();
+  if(!row)throw new HttpError(404,'Protocolo nao encontrado.','NOT_FOUND');
+  const payload=JSON.parse(row.snapshot_json);
+  const digest=await payrollProcessingSnapshotHash28(payload);
+  if(digest!==row.fingerprint)
+    throw new HttpError(409,'Integridade do protocolo comprometida.','PAYROLL_SNAPSHOT_INTEGRITY');
+  return {kind:'DETALHE_PROTOCOLO_ETAPA_28',run:payrollProcessingRunMeta28(row),snapshot:payload,
+    read_only:true,homologated:false,ready_for_payment:false,ready_for_accounting:false,ready_for_closure:false};
+}
+async function payrollProcessingRunCreate28(env,request,auth,companyId,body){
+  await requirePermission(env,auth.user.id,companyId,'payroll.manage');
+  const competenceId=String(body?.competence_id||'');
+  const paymentDate=String(body?.payment_date||'');
+  const period=await payrollReadOpenCompetence(env,companyId,competenceId);
+  payrollStrictDate(paymentDate,'data do pagamento');
+  const preview=await payrollProcessingControlPreview27(env,companyId,competenceId,paymentDate);
+  if(preview.competence?.id!==period.id)
+    throw new HttpError(409,'Competencia inconsistente.','INVALID_COMPETENCE');
+  const snapshot=payrollProcessingSnapshot28(preview);
+  const snapshotJson=JSON.stringify(snapshot);
+  if(snapshotJson.length>1500000)throw new HttpError(413,'Protocolo muito grande.','PAYROLL_SNAPSHOT_TOO_LARGE');
+  const fingerprint=await payrollProcessingSnapshotHash28(snapshot);
+  const state=snapshot.pending_count?'PENDENTE_TECNICO':'CONFERENCIA_TECNICA';
+  const id=uuid();
+  // Um comando atomico de INSERT, condicionado a competencia aberta.
+  // CONFLICT somente da chave de idempotencia, nao mascara outros erros.
+  const inserted=await env.DB.prepare(`INSERT INTO payroll_processing_runs
+    (id,company_id,competence_id,payment_date,fingerprint,state,employees_count,
+     pending_count,technical_count,snapshot_json,created_by)
+    SELECT ?,?,?,?,?,?,?,?,?,?,? FROM payroll_competences c
+    WHERE c.id=? AND c.company_id=? AND c.status='OPEN'
+    ON CONFLICT(company_id,competence_id,payment_date,fingerprint) DO NOTHING`)
+    .bind(id,companyId,competenceId,paymentDate,fingerprint,state,
+      snapshot.employee_count,snapshot.pending_count,snapshot.technical_count,snapshotJson,
+      auth.user.id,competenceId,companyId).run();
+  const row=await env.DB.prepare(`SELECT id,competence_id,payment_date,fingerprint,state,employees_count,pending_count,
+    technical_count,created_by,created_at FROM payroll_processing_runs
+    WHERE company_id=? AND competence_id=? AND payment_date=? AND fingerprint=?`)
+    .bind(companyId,competenceId,paymentDate,fingerprint).first();
+  if(!row)throw new HttpError(409,'Competencia bloqueada ou protocolo nao registrado.','PERIOD_LOCKED');
+  const created=Number(inserted?.meta?.changes??inserted?.changes??0)>0;
+  if(created)await audit(env,{companyId,userId:auth.user.id,action:'CREATE',
+    entity:'payroll_processing_runs',entityId:row.id,
+    after:{competence:period.competence,payment_date:paymentDate,state,fingerprint,
+      employee_count:snapshot.employee_count},request});
+  return {kind:'PROTOCOLO_PROCESSAMENTO_TECNICO_ETAPA_28',created,run:payrollProcessingRunMeta28(row),
+    snapshot,homologated:false,approved:false,ready_for_payment:false,
+    ready_for_accounting:false,ready_for_closure:false,
+    message:'Registro de conferencia criado. E proibido usar como folha liquida, aprovacao ou pagamento.'};
+}
+
+// ===== SAGAS Folha Etapa 27: controle de conferencia tecnica por competencia =====
+// O estado e derivado em tempo de consulta. NAO grava aprovacao, nao cria
+// lote e nao transforma simples conciliacao aritmetica em folha homologada.
+const PAYROLL_TECHNICAL_CHECKS_27=[
+  'IDENTIFICACAO','REMUNERACAO','EVENTOS','FALTAS_DSR',
+  'BASES_INCIDENTES','TABELAS_TRIBUTOS','CONCILIACAO','VERBAS_ESPECIAIS'
+];
+const PAYROLL_NOT_IMPLEMENTED_27=['HOMOLOGACAO_LEGAL','INTEGRACOES'];
+function payrollProcessingControlItem27(item){
+  const raw=item.final_validation||{};
+  const checks=Array.isArray(raw.checks)?raw.checks:[];
+  const seen=new Set();
+  const warnings=[];
+  const validStatuses=new Set(['CONFERENCIA','PENDENTE','NAO_IMPLEMENTADO']);
+  const normalized=[];
+  for(const c of checks){
+    const code=String(c?.code||'').trim();
+    const state=String(c?.status||'').trim();
+    if(!code||seen.has(code)||!validStatuses.has(state)){
+      warnings.push('DIAGNOSTICO_INCONSISTENTE');
+      continue;
+    }
+    seen.add(code);
+    normalized.push({code,title:String(c.title||code),status:state,
+      evidence:String(c.evidence||''),required_action:String(c.required_action||''),
+      source:String(c.source||''),issue_codes:Array.isArray(c.issue_codes)?c.issue_codes:[]});
+  }
+  const required=new Set([...PAYROLL_TECHNICAL_CHECKS_27,...PAYROLL_NOT_IMPLEMENTED_27]);
+  if(normalized.some(c=>!required.has(c.code) && c.status==='CONFERENCIA'))
+    warnings.push('AREA_NOVA_A_CONFERIR');
+  if(!/^\d{5}$/.test(String(item.employee_code||''))||!item.employee_id)
+    warnings.push('IDENTIFICACAO_INCOMPLETA');
+  for(const code of PAYROLL_TECHNICAL_CHECKS_27){
+    if(!seen.has(code)||normalized.find(c=>c.code===code)?.status!=='CONFERENCIA')
+      warnings.push('PENDENCIA_'+code);
+  }
+  for(const code of PAYROLL_NOT_IMPLEMENTED_27){
+    if(!seen.has(code)||normalized.find(c=>c.code===code)?.status!=='NAO_IMPLEMENTADO')
+      warnings.push('BLOQUEIO_'+code);
+  }
+  if(raw.status!=='CONFERENCIA_PRELIMINAR' && raw.status!=='PENDENTE')
+    warnings.push('ESTADO_ORIGEM_INVALIDO');
+  if(raw.status==='PENDENTE')warnings.push('ORIGEM_PENDENTE');
+  const unknown=normalized.filter(c=>!required.has(c.code));
+  if(unknown.length)warnings.push('OUTRAS_VERIFICACOES');
+  if(raw.homologated!==false || raw.approved!==false || raw.ready_for_payment!==false ||
+     raw.ready_for_accounting!==false || raw.ready_for_closure!==false)
+    warnings.push('SINALIZADORES_INSEGUROS');
+  const technicalPending=normalized.filter(c=>c.status==='PENDENTE' ||
+    (!PAYROLL_NOT_IMPLEMENTED_27.includes(c.code)&&c.status!=='CONFERENCIA'));
+  const implementation=normalized.filter(c=>c.status==='NAO_IMPLEMENTADO');
+  if(raw.technical_pending_count!==technicalPending.length ||
+     raw.implementation_blocker_count!==implementation.length)
+    warnings.push('CONTAGENS_INCONSISTENTES');
+  const preliminary=warnings.length===0&&technicalPending.length===0&&
+    raw.status==='CONFERENCIA_PRELIMINAR';
+  const canShowReference=preliminary && payrollCompositionCents(raw.arithmetic_reference)!==null;
+  if(preliminary && !canShowReference)warnings.push('REFERENCIA_ARITMETICA_INDISPONIVEL');
+  const technicalStatus=warnings.length?'PENDENTE_TECNICO':'CONFERENCIA_TECNICA';
+  const todo=normalized.filter(c=>c.status!=='CONFERENCIA').map(c=>({code:c.code,title:c.title,
+    status:c.status,required_action:c.required_action,source:c.source}));
+  if(warnings.length)todo.unshift({code:'VERIFICAR_DIAGNOSTICO',title:'Verificar consistencia da validacao',
+    status:'PENDENTE',required_action:'Abrir Validar pre-fechamento e corrigir inconsistencias da origem antes de prosseguir.',
+    source:'Folha / Validar pre-fechamento'});
+  const arithmetic=technicalStatus==='CONFERENCIA_TECNICA'&&canShowReference?raw.arithmetic_reference:null;
+  return {employee_id:item.employee_id,employee_code:item.employee_code||null,
+    employee_name:item.employee_name,
+    processing_control:{status:technicalStatus,technical_review_only:true,
+      pending_technical_count:technicalPending.length+ (warnings.length?1:0),
+      implementation_blocker_count:implementation.length,
+      unresolved_count:todo.length,validation_warnings:[...new Set(warnings)],
+      checks:normalized,next_actions:todo,arithmetic_reference:arithmetic,
+      approval_status:'HOMOLOGACAO_NAO_IMPLEMENTADA',payment_status:'BLOQUEADO',
+      accounting_status:'BLOQUEADO',closure_status:'BLOQUEADO',
+      not_approved:true,read_only:true,preview_only:true,homologated:false,approved:false,
+      net_pay:null,ready_for_payroll:false,ready_for_payment:false,
+      ready_for_accounting:false,ready_for_closure:false},
+    net_pay:null,ready_for_payroll:false,ready_for_payment:false,
+    ready_for_accounting:false,ready_for_closure:false};
+}
+async function payrollProcessingControlPreview27(env,companyId,competenceId,paymentDate){
+  const previous=await payrollFinalValidationPreview26(env,companyId,competenceId,paymentDate);
+  const items=previous.items.map(payrollProcessingControlItem27);
+  const pending=items.filter(x=>x.processing_control.status==='PENDENTE_TECNICO');
+  const preliminary=items.filter(x=>x.processing_control.status==='CONFERENCIA_TECNICA');
+  const areaSummary=[];
+  for(const item of items){
+    for(const c of item.processing_control.checks){
+      let area=areaSummary.find(x=>x.code===c.code);
+      if(!area){area={code:c.code,title:c.title,conferencia:0,pendente:0,nao_implementado:0};areaSummary.push(area)}
+      if(c.status==='CONFERENCIA')area.conferencia++;
+      else if(c.status==='PENDENTE')area.pendente++;
+      else area.nao_implementado++;
+    }
+  }
+  return {kind:'CONTROLE_PROCESSAMENTO_COMPETENCIA_ETAPA_27',competence:previous.competence,
+    payment_date:previous.payment_date,items,employee_count:items.length,
+    pending_technical_employee_count:pending.length,technical_review_employee_count:preliminary.length,
+    homologated_employee_count:0,approved_employee_count:0,
+    technical_issue_total:items.reduce((a,x)=>a+x.processing_control.pending_technical_count,0),
+    implementation_blocker_total:items.reduce((a,x)=>a+x.processing_control.implementation_blocker_count,0),
+    area_summary:areaSummary,processing_status:'FECHAMENTO_BLOQUEADO',
+    read_only:true,preview_only:true,homologated:false,approved:false,
+    net_pay:null,folha_liquida:null,ready_for_payroll:false,
+    ready_for_payment:false,ready_for_accounting:false,ready_for_closure:false,
+    message:'Controle tecnico dinamico: conferencia nao e homologacao. Nenhum envelope pode ser pago, fechado ou contabilizado.'};
+}
+
+// ===== SAGAS Folha Etapa 26: checklist de pre-homologacao (somente leitura) =====
+// A conformidade aritmetica e apenas uma evidencia; jamais autoriza por si
+// so a homologacao trabalhista/fiscal ou o processamento de pagamentos.
+function payrollFinalValidationItem26(item){
+  const previous=item.remuneration_reconciliation||{};
+  const problems=Array.isArray(previous.issues)?previous.issues:[];
+  const issueCodes=new Set(problems.map(x=>String(x.code||'').trim()));
+  const checks=[];
+  const add=(code,title,pattern,completed,evidence,needed,source)=>{
+    const matches=problems.filter(x=>pattern.test(String(x.code||'')));
+    const ok=!!completed&&matches.length===0;
+    checks.push({code,title,status:ok?'CONFERENCIA':'PENDENTE',
+      evidence:ok?evidence:(matches.length?matches.map(x=>String(x.code)+': '+String(x.detail||'')).join(' | ').slice(0,2000):evidence),
+      required_action:ok?'Conferir os documentos e confirmar a regra aplicavel.':needed,
+      source,issue_codes:matches.map(x=>x.code)});
+  };
+  const monetary=payrollCompositionCents;
+  const codeOk=/^\d{5}$/.test(String(item.employee_code||''))&&!!item.employee_id;
+  add('IDENTIFICACAO','Identificacao do funcionario',/IDENTIFICACAO|CODIGO_FUNCIONARIO/i,codeOk,
+    codeOk?'Codigo interno estavel '+String(item.employee_code)+'.':'Codigo humano ou identificador tecnico ausente.',
+    'Conferir codigo sequencial de cinco digitos e empresa do funcionario.',
+    'Cadastro de funcionarios');
+  add('REMUNERACAO','Historico salarial e remuneracao',/SALARIO|SUBTOTAL_FORA|ABATIMENTO_EXCEDE|_EXCEDE_LIMITE/i,
+    monetary(previous.salary_reference)!==null&&monetary(previous.gross_before_absence)!==null,
+    'Salario historico e bruto aritmetico identificados; ainda nao homologados.',
+    'Verificar salario historico, admissao, vigencia e proventos da competencia.',
+    'Cadastro de funcionarios / Historico salarial');
+  add('EVENTOS','Movimentos e formulas',/EVENTO|MOVIMENTO|LINHAS|INCIDENCIA_NAO_CONCILIADA|REGRA_DUPLICADA|TOTAL_PROVENTOS|TOTAL_DESCONTOS|SALARIO_DUPLICADO|DESCONTO_REPETIDO/i,
+    Array.isArray(previous.lines)&&previous.event_earnings!==null&&previous.event_deductions!==null,
+    (previous.lines||[]).length+' lancamento(s) rastreados com valores e regras.',
+    'Revisar eventos e lancamentos, origem do valor, versao da formula, incidencia e possiveis duplicidades.',
+    'Folha / Lancamentos / Regras de eventos');
+  add('FALTAS_DSR','Faltas, DSR e reflexos',/FALTAS|DSR|ABATIMENTO|OCORRENCIA/i,
+    monetary(previous.absence_reference)!==null&&monetary(previous.dsr_reference)!==null&&
+    monetary(previous.absence_dsr_reference)!==null,
+    'Faltas e repousos possuem referencias aritmeticas, sem efeito definitivo.',
+    'Rever justificativas de faltas, repouso por semana, calendario, feriados e norma coletiva.',
+    'Folha / Conferencia faltas/DSR');
+  add('BASES_INCIDENTES','Bases de INSS IRRF e FGTS',/BASE_|INCIDENCIA|FGTS_SEM_SEPARACAO/i,
+    monetary(previous.inss_simulated)!==null&&monetary(previous.irrf_simulated)!==null&&
+    monetary(previous.fgts_employer_simulated)!==null,
+    'Bases tiveram reconciliacao previa; incidencia legal requer confirmacao.',
+    'Validar incidencias de todas as verbas e comparar bases recompostas.',
+    'Folha / Recompor bases / Tributos recompostos');
+  add('TABELAS_TRIBUTOS','Tabelas, deducoes e descontos simulados',/INSS|IRRF|TRIBUTO|TABELAS|SOMA_|FGTS/i,
+    monetary(previous.inss_simulated)!==null&&monetary(previous.irrf_simulated)!==null&&
+    !!previous.inss_table_from&&!!previous.irrf_table_from,
+    'Tabelas indicadas: INSS '+String(previous.inss_table_from||'')+', IRRF '+String(previous.irrf_table_from||'')+'.',
+    'Validar competencia, pagamento, dependentes, multiplos vinculos e deducoes legais.',
+    'Folha / Tributos recompostos');
+  add('CONCILIACAO','Conferencia aritmetica do envelope',/DIVERGENTE|FORA_LIMITE|INCOMPLETO|EXCEDEM|PENDENTE|SUBTOTAL/i,
+    previous.status==='HIPOTESE_ARITMETICA_A_CONFERIR'&&
+    monetary(previous.arithmetic_balance_projection)!==null,
+    'Subtotal hipotetico fechado em centavos, sem constituir liquido.',
+    'Resolver os impedimentos e comparar cada valor da memoria de calculo.',
+    'Folha / Conciliar remuneracao / Memoria de calculo');
+  add('VERBAS_ESPECIAIS','Ferias, 13o, rescisao e outras verbas',/VERBA_ESPECIAL/i,
+    !issueCodes.has('VERBA_ESPECIAL'),
+    'Nenhuma verba especial detectada pelo rastreio de nomes dos eventos; confirmar manualmente.',
+    'Encaminhar ferias, 13o, rescisoes e afastamentos para rotinas proprias com bases especificas.',
+    'Folha / Eventos / Ocorrencias');
+  // Uma nova divergencia nunca pode ficar ignorada por ausencia de mapeamento.
+  const known=new Set(checks.flatMap(x=>x.issue_codes));
+  const unknown=problems.filter(x=>!known.has(x.code));
+  if(unknown.length)checks.push({code:'OUTROS_BLOQUEIOS',title:'Outras inconsistencias',status:'PENDENTE',
+    evidence:unknown.map(x=>String(x.code)+': '+String(x.detail||'')).join(' | ').slice(0,2000),
+    required_action:'Examinar os alertas da conciliacao e tratar cada origem antes de processar.',
+    source:'Folha / Conciliar remuneracao',issue_codes:unknown.map(x=>x.code)});
+  checks.push({code:'HOMOLOGACAO_LEGAL',title:'Revisao legal e homologacao',status:'NAO_IMPLEMENTADO',
+    evidence:'As simulacoes nao cobrem homologacao trabalhista e fiscal integral, nem normas coletivas ou multiplos vinculos.',
+    required_action:'Concluir regras de apuracao e instituir processo de homologacao autorizado antes de calcular o liquido.',
+    source:'Processamento da folha',issue_codes:[]});
+  checks.push({code:'INTEGRACOES',title:'Fechamento, pagamento e contabilizacao',status:'NAO_IMPLEMENTADO',
+    evidence:'Ainda nao existe autorizacao de geracao de contas a pagar, retencoes, contabilizacao ou fechamento a partir dessas simulacoes.',
+    required_action:'Implementar integracoes somente apos processamento e homologacao da folha.',
+    source:'Folha / Integracoes financeira e contabil',issue_codes:[]});
+  const pending=checks.filter(x=>x.status==='PENDENTE');
+  const unimplemented=checks.filter(x=>x.status==='NAO_IMPLEMENTADO');
+  const actions=pending.concat(unimplemented).map(x=>({code:x.code,title:x.title,
+    required_action:x.required_action,source:x.source,issue_codes:x.issue_codes}));
+  const status=pending.length?'PENDENTE':'CONFERENCIA_PRELIMINAR';
+  return {employee_id:item.employee_id,employee_code:item.employee_code||null,
+    employee_name:item.employee_name,final_validation:{status,
+      checks,required_actions:actions,technical_pending_count:pending.length,
+      implementation_blocker_count:unimplemented.length,
+      total_blocker_count:pending.length+unimplemented.length,
+      arithmetic_reference:status==='CONFERENCIA_PRELIMINAR'?previous.arithmetic_balance_projection:null,
+      reference_only:true,read_only:true,preview_only:true,homologated:false,approved:false,
+      net_pay:null,ready_for_payroll:false,ready_for_payment:false,
+      ready_for_accounting:false,ready_for_closure:false},
+    net_pay:null,folha_liquida:null,ready_for_payroll:false,ready_for_payment:false,
+    ready_for_accounting:false,ready_for_closure:false};
+}
+async function payrollFinalValidationPreview26(env,companyId,competenceId,paymentDate){
+  const previous=await payrollReconciledRemunerationPreview25(env,companyId,competenceId,paymentDate);
+  const items=previous.items.map(payrollFinalValidationItem26);
+  const summary=[];
+  for(const item of items){
+    for(const check of item.final_validation.checks){
+      let r=summary.find(x=>x.code===check.code);
+      if(!r){r={code:check.code,title:check.title,pendente:0,conferencia:0,nao_implementado:0};summary.push(r);}
+      if(check.status==='PENDENTE')r.pendente++;
+      else if(check.status==='CONFERENCIA')r.conferencia++;
+      else if(check.status==='NAO_IMPLEMENTADO')r.nao_implementado++;
+    }
+  }
+  return {kind:'VALIDACAO_PRE_FECHAMENTO_ETAPA_26',competence:previous.competence,
+    payment_date:previous.payment_date,items,employee_count:items.length,
+    pending_employee_count:items.filter(x=>x.final_validation.technical_pending_count>0).length,
+    preliminary_employee_count:items.filter(x=>x.final_validation.technical_pending_count===0).length,
+    technical_pending_total:items.reduce((n,x)=>n+x.final_validation.technical_pending_count,0),
+    implementation_blocker_total:items.reduce((n,x)=>n+x.final_validation.implementation_blocker_count,0),
+    validation_summary:summary,read_only:true,preview_only:true,homologated:false,
+    net_pay:null,folha_liquida:null,approved_employee_count:0,
+    ready_for_payroll:false,ready_for_payment:false,ready_for_accounting:false,
+    ready_for_closure:false,
+    message:'Validacao tecnica de pre-fechamento. Ausencia de divergencias matematicas NAO equivale a homologacao ou autorizacao de pagamento.'};
+}
+
+// ===== SAGAS Folha: Etapa 01 da integração operacional (sem cálculo) =====
+async function ensurePayrollOperationsSchema(env){
+  await env.DB.batch([
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS payroll_competences (
+      id TEXT PRIMARY KEY,company_id TEXT NOT NULL,competence TEXT NOT NULL
+      CHECK (length(competence)=7 AND substr(competence,5,1)='-' AND substr(competence,6,2) BETWEEN '01' AND '12'),
+      status TEXT NOT NULL DEFAULT 'OPEN' CHECK(status IN ('OPEN','LOCKED')),
+      created_by TEXT NOT NULL,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(company_id,competence))`),
+    env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_payroll_competences_company ON payroll_competences(company_id,competence)`),
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS payroll_movements (
+      id TEXT PRIMARY KEY,company_id TEXT NOT NULL,
+      competence_id TEXT NOT NULL REFERENCES payroll_competences(id) ON DELETE RESTRICT,
+      employee_id TEXT NOT NULL REFERENCES payroll_employees(id) ON DELETE RESTRICT,
+      event_id TEXT NOT NULL REFERENCES payroll_events(id) ON DELETE RESTRICT,
+      unit TEXT NOT NULL CHECK(unit IN ('VALOR','DIAS','HORAS','PERCENTUAL')),
+      amount_cents INTEGER,quantity_milli INTEGER,request_key TEXT NOT NULL,
+      created_by TEXT NOT NULL,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      CHECK ((unit='VALOR' AND amount_cents IS NOT NULL AND quantity_milli IS NULL AND amount_cents>=0)
+          OR (unit<>'VALOR' AND quantity_milli IS NOT NULL AND amount_cents IS NULL AND quantity_milli>=0)),
+      UNIQUE(company_id,request_key))`),
+    env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_payroll_movements_company_competence ON payroll_movements(company_id,competence_id,employee_id)`)
+  ]);
+}
+function payrollCompetence(value){
+  const s=String(value||'');
+  if(!/^\d{4}-(0[1-9]|1[0-2])$/.test(s)||Number(s.slice(0,4))<2000||Number(s.slice(0,4))>2100)
+    throw new HttpError(400,'Competência inválida. Use AAAA-MM.','VALIDATION_ERROR');
+  return s;
+}
+async function payrollCompetencesList(env,companyId){
+  const r=await env.DB.prepare(`SELECT id,competence,status,created_at FROM payroll_competences
+    WHERE company_id=? ORDER BY competence DESC`).bind(companyId).all();
+  return r.results||[];
+}
+async function payrollCompetenceCreate(env,request,auth,companyId,body){
+  await requirePermission(env,auth.user.id,companyId,'payroll.manage');
+  const competence=payrollCompetence(body.competence),id=uuid();
+  try{
+    await env.DB.prepare(`INSERT INTO payroll_competences (id,company_id,competence,created_by)
+      VALUES (?,?,?,?)`).bind(id,companyId,competence,auth.user.id).run();
+  }catch(err){
+    if(/UNIQUE constraint failed/i.test(String(err?.message||err)))
+      throw new HttpError(409,'Esta competência já existe.','DUPLICATE');
+    throw err;
+  }
+  await audit(env,{companyId,userId:auth.user.id,action:'CREATE',entity:'payroll_competences',entityId:id,after:{competence},request});
+  return {id,competence,status:'OPEN'};
+}
+async function payrollReadOpenCompetence(env,companyId,id){
+  const p=await env.DB.prepare(`SELECT id,competence,status FROM payroll_competences
+    WHERE company_id=? AND id=?`).bind(companyId,id).first();
+  if(!p)throw new HttpError(404,'Competência não encontrada.','NOT_FOUND');
+  if(p.status!=='OPEN')throw new HttpError(409,'Competência bloqueada para lançamentos.','PERIOD_LOCKED');
+  return p;
+}
+async function payrollMovementsList(env,companyId,competenceId){
+  if(!competenceId)throw new HttpError(400,'Selecione uma competência.','VALIDATION_ERROR');
+  const period=await env.DB.prepare(`SELECT id,competence,status FROM payroll_competences WHERE id=? AND company_id=?`).bind(competenceId,companyId).first();
+  if(!period)throw new HttpError(404,'Competência não encontrada.','NOT_FOUND');
+  const r=await env.DB.prepare(`SELECT m.id,m.competence_id,m.employee_id,m.event_id,m.unit,m.amount_cents,m.quantity_milli,
+      m.created_at,e.name AS employee_name,v.code AS event_code,v.name AS event_name,v.event_type
+    FROM payroll_movements m
+    JOIN payroll_employees e ON e.id=m.employee_id AND e.company_id=m.company_id
+    JOIN payroll_events v ON v.id=m.event_id AND v.company_id=m.company_id
+    WHERE m.company_id=? AND m.competence_id=? ORDER BY m.created_at DESC,m.id DESC LIMIT 1000`).bind(companyId,competenceId).all();
+  return {competence:period,items:(r.results||[]).map(m=>({...m,
+    value:m.unit==='VALOR'?centsToMoney(m.amount_cents):Number(m.quantity_milli)/1000}))};
+}
+// ===== Folha SAGAS — Etapa 02: prévia analítica somente de leitura =====
+// NÃO calcula salário-base, INSS, IRRF, FGTS ou líquido. Não gera obrigação nem contabilização.
+async function payrollMovementPreview(env,companyId,competenceId){
+  if(!competenceId)throw new HttpError(400,'Selecione uma competência.','VALIDATION_ERROR');
+  const period=await env.DB.prepare(`SELECT id,competence,status FROM payroll_competences
+    WHERE company_id=? AND id=?`).bind(companyId,competenceId).first();
+  if(!period)throw new HttpError(404,'Competência não encontrada na empresa.','NOT_FOUND');
+  // Garante que a conferência não deixe movimentações de fora por um LIMIT implícito.
+  const count=await env.DB.prepare(`SELECT COUNT(*) AS total FROM payroll_movements
+    WHERE company_id=? AND competence_id=?`).bind(companyId,competenceId).first();
+  if(Number(count?.total||0)>5000)
+    throw new HttpError(409,'A competência possui mais de 5.000 lançamentos. Use uma consulta paginada antes de conferir.','PREVIEW_LIMIT');
+  const result=await env.DB.prepare(`SELECT m.id,m.employee_id,m.event_id,m.unit,m.amount_cents,m.quantity_milli,
+      e.name AS employee_name,e.salary_cents,e.admission_date,e.active AS employee_active,
+      v.code AS event_code,v.name AS event_name,v.event_type
+    FROM payroll_movements m
+    JOIN payroll_employees e ON e.id=m.employee_id AND e.company_id=m.company_id
+    JOIN payroll_events v ON v.id=m.event_id AND v.company_id=m.company_id
+    WHERE m.company_id=? AND m.competence_id=?
+    ORDER BY e.name COLLATE NOCASE,v.code,m.id`).bind(companyId,competenceId).all();
+  const byEmployee=new Map();
+  let unsettled=0;
+  for(const row of result.results||[]){
+    let item=byEmployee.get(row.employee_id);
+    if(!item){
+      item={employee_id:row.employee_id,employee_name:row.employee_name,
+        salary_registered:centsToMoney(row.salary_cents),admission_date:row.admission_date,
+        event_proventos_cents:0,event_descontos_cents:0,event_informativos_cents:0,
+        pending_quantities:[],events:[],warnings:[]};
+      byEmployee.set(row.employee_id,item);
+      if(!row.employee_active)item.warnings.push('Cadastro de funcionário inativo: verificar vínculo na competência.');
+      if(row.admission_date>period.competence+'-01')item.warnings.push('Admissão durante ou depois da competência: exigir apuração proporcional.');
+    }
+    const amount=row.unit==='VALOR'?Number(row.amount_cents):null;
+    if(amount!==null && (!Number.isSafeInteger(amount)||amount<0))
+      throw new HttpError(409,'Registro monetário inválido na competência.','DATA_INVALID');
+    if(amount===null){
+      unsettled++;
+      item.pending_quantities.push({event_code:row.event_code,unit:row.unit,quantity:Number(row.quantity_milli)/1000});
+    }else{
+      if(row.event_type==='PROVENTO')item.event_proventos_cents+=amount;
+      else if(row.event_type==='DESCONTO')item.event_descontos_cents+=amount;
+      else if(row.event_type==='INFORMATIVO')item.event_informativos_cents+=amount;
+      else throw new HttpError(409,'Tipo de evento inválido na base.','DATA_INVALID');
+    }
+    item.events.push({id:row.id,event_code:row.event_code,event_name:row.event_name,
+      type:row.event_type,unit:row.unit,amount:amount===null?null:centsToMoney(amount),
+      quantity:amount===null?Number(row.quantity_milli)/1000:null});
+  }
+  const items=[];
+  for(const employee of byEmployee.values()){
+    for(const key of ['event_proventos_cents','event_descontos_cents','event_informativos_cents'])
+      if(!Number.isSafeInteger(employee[key]))throw new HttpError(409,'Total fora da faixa segura.','DATA_INVALID');
+    employee.event_proventos=centsToMoney(employee.event_proventos_cents);
+    employee.event_descontos=centsToMoney(employee.event_descontos_cents);
+    employee.event_informativos=centsToMoney(employee.event_informativos_cents);
+    delete employee.event_proventos_cents;delete employee.event_descontos_cents;delete employee.event_informativos_cents;
+    if(employee.pending_quantities.length)employee.warnings.push('Eventos em horas/dias/percentual dependem de fórmulas e não estão valorizados.');
+    employee.warnings.push('Salário-base exibido somente como referência, não somado aos eventos lançados.');
+    employee.warnings.push('INSS, IRRF, FGTS, férias, 13º e incidências ainda não foram apurados.');
+    items.push(employee);
+  }
+  return {competence:period,employees:items,movement_count:Number(count?.total||0),
+    unresolved_quantity_count:unsettled,ready_for_payment:false,ready_for_accounting:false,
+    payroll_net:null,kind:'EVENT_MOVEMENT_PREVIEW',
+    message:'Prévia somente dos eventos lançados em valor. NÃO é folha calculada, envelope ou líquido a pagar.'};
+}
+
+// Etapa 03 — prévia somente de leitura para salário mensal integral.
+// Não calcula remuneração proporcional, bases legais, INSS, IRRF, FGTS ou líquido.
+async function payrollSalaryPreview(env,companyId,competenceId){
+  const source=await payrollMovementPreview(env,companyId,competenceId);
+  const period=source.competence;
+  const [year,month]=period.competence.split('-').map(Number);
+  const lastDay=new Date(Date.UTC(year,month,0)).getUTCDate();
+  const firstDate=period.competence+'-01';
+  const lastDate=period.competence+'-'+String(lastDay).padStart(2,'0');
+  const empQuery=await env.DB.prepare(`SELECT id,name,salary_cents,admission_date,active
+    FROM payroll_employees WHERE company_id=? AND admission_date<=?
+    ORDER BY name COLLATE NOCASE,id LIMIT 2001`).bind(companyId,lastDate).all();
+  if((empQuery.results||[]).length>2000)throw new HttpError(409,'Prévia excede 2.000 funcionários. Consulte por lotes antes de calcular.','PREVIEW_LIMIT');
+  const historical=await payrollEmployeeHistoricalContext(env,companyId,firstDate,lastDate);
+  const movementsByEmployee=new Map(source.employees.map(e=>[e.employee_id,e]));
+  const items=[];
+  let fullMonthCount=0,unresolvedCount=0, salaryIncludedCents=0;
+  for(const emp of empQuery.results||[]){
+    // Funcionário hoje inativo entra em competência antiga somente com histórico funcional ATIVO.
+    if(!emp.active && historical.functional.get(emp.id)?.[0]?.situation!=='ATIVO')continue;
+    if(!Number.isSafeInteger(emp.salary_cents)||emp.salary_cents<0)
+      throw new HttpError(409,'Salário cadastrado inválido.','DATA_INVALID');
+    const mov=movementsByEmployee.get(emp.id);
+    const events=mov?.events||[];
+    const warnings=[];
+    const flags=[];
+    const midMonth=emp.admission_date>firstDate;
+    const pending=(mov?.pending_quantities||[]).length;
+    const duplicatedSalary=events.some(e=>e.type==='PROVENTO'&&e.unit==='VALOR'&&/^(sal[aá]rio(\s*-?\s*base|\s*mensal)?|vencimento\s*mensal)$/i.test(e.event_name.trim()));
+    if(midMonth){flags.push('ADMISSAO_NO_MES');warnings.push('Admissão durante a competência: proporcionalidade ainda não implementada.');}
+    if(pending){flags.push('FORMULA_PENDENTE');warnings.push('Eventos em horas, dias ou percentual ainda dependem de fórmulas.');}
+    if(duplicatedSalary){flags.push('SALARIO_EVENTO_DUPLICADO');warnings.push('Há evento de salário e salário cadastrado: conferir duplicidade antes de somar.');}
+    const proventos=mov?.event_proventos_cents!==undefined?mov.event_proventos_cents:Math.round((mov?.event_proventos||0)*100);
+    const descontos=mov?.event_descontos_cents!==undefined?mov.event_descontos_cents:Math.round((mov?.event_descontos||0)*100);
+    const valid=Number.isSafeInteger(proventos)&&Number.isSafeInteger(descontos)&&proventos>=0&&descontos>=0;
+    if(!valid)throw new HttpError(409,'Valores lançados inválidos.','DATA_INVALID');
+    const salaryRecord=historical.salary.get(emp.id)?.[0]||null;
+    const scheduleRecord=historical.schedule.get(emp.id)?.[0]||null;
+    const functionalRecord=historical.functional.get(emp.id)?.[0]||null;
+    const dependents=historical.dependents.get(emp.id)||[];
+    const occurrences=historical.occurrences.get(emp.id)||[];
+    const changes=[...(historical.changesSalary.get(emp.id)||[]),
+      ...(historical.changesSchedule.get(emp.id)||[]),...(historical.changesFunctional.get(emp.id)||[])];
+    if(!salaryRecord){flags.push('HISTORICO_SALARIAL_PENDENTE');warnings.push('Informe o salário com vigência nesta competência. O salário atual não será usado retroativamente.');}
+    if(changes.length){flags.push('MUDANCA_NA_COMPETENCIA');warnings.push('Há alteração salarial, de jornada ou funcional durante o mês; cálculo proporcional pendente.');}
+    if(occurrences.length){flags.push('OCORRENCIA_NA_COMPETENCIA');warnings.push('Há faltas, férias, licença ou afastamento no mês; efeitos precisam de cálculo específico.');}
+    if(functionalRecord&&functionalRecord.situation!=='ATIVO'){flags.push('SITUACAO_FUNCIONAL');warnings.push('Situação funcional diferente de ATIVO nesta competência.');}
+    if(!scheduleRecord){flags.push('JORNADA_NAO_INFORMADA');warnings.push('Jornada histórica não informada; fórmulas dependentes da jornada ficarão pendentes.');}
+    const eligibleDependents=dependents.filter(x=>Number(x.irrf_eligible)===1).length;
+    if(eligibleDependents)warnings.push('Existem dependentes cadastrados; o abatimento no IRRF ainda não está implementado.');
+    const salary=(!midMonth && salaryRecord && !changes.length && !occurrences.length &&
+      (!functionalRecord||functionalRecord.situation==='ATIVO'))?salaryRecord.salary_cents:null;
+    const subtotal=salary!==null&&!pending&&!duplicatedSalary?salary+proventos-descontos:null;
+    if(subtotal!==null&&!Number.isSafeInteger(subtotal))throw new HttpError(409,'Subtotal fora da faixa segura.','DATA_INVALID');
+    warnings.push('Confira ocorrências, admissões e situações funcionais antes de homologar a competência.');
+    warnings.push('Não foram calculados INSS, IRRF, FGTS, incidências, reflexos nem líquido.');
+    if(salary!==null){fullMonthCount++;salaryIncludedCents+=salary;}
+    if(subtotal===null)unresolvedCount++;
+    items.push({employee_id:emp.id,employee_name:emp.name,admission_date:emp.admission_date,
+      salary_registered:centsToMoney(emp.salary_cents),salary_historical_effective_from:salaryRecord?.effective_from||null,
+      salary_base_preview:salary===null?null:centsToMoney(salary),
+      weekly_hours:scheduleRecord?Number(scheduleRecord.weekly_hours_milli)/1000:null,
+      monthly_hours:scheduleRecord?Number(scheduleRecord.monthly_hours_milli)/1000:null,
+      eligible_dependents:eligibleDependents,occurrences_count:occurrences.length,
+      additional_proventos: centsToMoney(proventos),informed_discounts:centsToMoney(descontos),
+      subtotal_informative:subtotal===null?null:centsToMoney(subtotal),
+      pending_event_count:pending,flags,warnings,events});
+  }
+  const excluded=source.employees.filter(e=>!items.some(i=>i.employee_id===e.employee_id));
+  const warnings=[];
+  if(excluded.length)warnings.push('Existem lançamentos para funcionários não ativos nesta competência; confira os vínculos antes de calcular.');
+  return {kind:'SALARY_PREVIEW',competence:period,items,
+    active_employee_count:items.length,full_month_count:fullMonthCount,
+    unresolved_employee_count:unresolvedCount,excluded_movement_employee_count:excluded.length,
+    salary_full_month_reference_total:centsToMoney(salaryIncludedCents),warnings,
+    ready_for_payment:false,ready_for_accounting:false,ready_for_closure:false,
+    payroll_net:null,requires_homologation:true,
+    message:'Prévia informativa do salário cadastrado e dos lançamentos em valor; não é folha calculada nem líquido a pagar.'};
+}
+
+async function payrollMovementCreate(env,request,auth,companyId,body){
+  await requirePermission(env,auth.user.id,companyId,'payroll.manage');
+  const period=await payrollReadOpenCompetence(env,companyId,required(body.competence_id,'competência'));
+  const employee=await payrollReference(env,companyId,'employees',required(body.employee_id,'funcionário'),'Funcionário');
+  const event=await payrollReference(env,companyId,'events',required(body.event_id,'evento'),'Evento');
+  const unit=event.reference_unit;
+  const requestKey=String(required(body.request_key,'identificador da operação'));
+  if(!/^[a-zA-Z0-9_-]{16,100}$/.test(requestKey))throw new HttpError(400,'Identificador da operação inválido.','VALIDATION_ERROR');
+  let amountCents=null,quantityMilli=null;
+  if(unit==='VALOR'){
+    amountCents=moneyToCents(required(body.value,'valor'));
+    if(amountCents<0||amountCents>99999999999)throw new HttpError(400,'Valor fora do limite.','VALIDATION_ERROR');
+  }else{
+    const value=Number(body.value);
+    if(body.value===undefined||body.value===null||body.value===''||!Number.isFinite(value)||value<0||value>1000000||Math.abs(value*1000-Math.round(value*1000))>1e-6)
+      throw new HttpError(400,'Quantidade inválida; use no máximo três casas decimais.','VALIDATION_ERROR');
+    quantityMilli=Math.round(value*1000);
+  }
+  // A mesma chave de operação só pode representar o mesmo lançamento, inclusive em reconexão.
+  const existing=await env.DB.prepare(`SELECT id,competence_id,employee_id,event_id,unit,amount_cents,quantity_milli
+    FROM payroll_movements WHERE company_id=? AND request_key=?`).bind(companyId,requestKey).first();
+  function same(m){return m&&m.competence_id===period.id&&m.employee_id===employee.id&&m.event_id===event.id&&m.unit===unit&&m.amount_cents===amountCents&&m.quantity_milli===quantityMilli;}
+  if(existing){
+    if(!same(existing))throw new HttpError(409,'Identificador já usado em outra operação.','IDEMPOTENCY_CONFLICT');
+    return {id:existing.id,reused:true};
+  }
+  const id=uuid();
+  try{
+    await env.DB.prepare(`INSERT INTO payroll_movements
+      (id,company_id,competence_id,employee_id,event_id,unit,amount_cents,quantity_milli,request_key,created_by)
+      VALUES (?,?,?,?,?,?,?,?,?,?)`).bind(id,companyId,period.id,employee.id,event.id,unit,amountCents,quantityMilli,requestKey,auth.user.id).run();
+  }catch(err){
+    if(/UNIQUE constraint failed/i.test(String(err?.message||err))){
+      const retried=await env.DB.prepare(`SELECT id,competence_id,employee_id,event_id,unit,amount_cents,quantity_milli
+        FROM payroll_movements WHERE company_id=? AND request_key=?`).bind(companyId,requestKey).first();
+      if(same(retried))return {id:retried.id,reused:true};
+      throw new HttpError(409,'Operação duplicada.','IDEMPOTENCY_CONFLICT');
+    }
+    throw err;
+  }
+  await audit(env,{companyId,userId:auth.user.id,action:'CREATE',entity:'payroll_movements',entityId:id,
+    after:{competence:period.competence,employee_id:employee.id,event_id:event.id,unit,amount_cents:amountCents,quantity_milli:quantityMilli},request});
+  return {id,reused:false};
+}
+async function payrollMovementDelete(env,request,auth,companyId,id){
+  await requirePermission(env,auth.user.id,companyId,'payroll.manage');
+  const m=await env.DB.prepare(`SELECT id,competence_id,employee_id,event_id,unit,amount_cents,quantity_milli
+    FROM payroll_movements WHERE company_id=? AND id=?`).bind(companyId,id).first();
+  if(!m)throw new HttpError(404,'Lançamento não encontrado.','NOT_FOUND');
+  await payrollReadOpenCompetence(env,companyId,m.competence_id);
+  await env.DB.prepare(`DELETE FROM payroll_movements WHERE id=? AND company_id=?`).bind(id,companyId).run();
+  await audit(env,{companyId,userId:auth.user.id,action:'DELETE',entity:'payroll_movements',entityId:id,before:m,request});
   return {deleted:true,id};
 }
 
@@ -5715,6 +9599,9 @@ async function route(request, env) {
   // ou quando o sistema consulta as permissões, não em todas as chamadas do Worker.
   if(path.startsWith('/api/payroll/') || path==='/api/auth/permissions' || path==='/api/permissions'){
     await ensureSchemaRevision(env,'payroll',1,()=>ensurePayrollSchema(env));
+    await ensureSchemaRevision(env,'payroll-operations',1,()=>ensurePayrollOperationsSchema(env));
+    if(path==='/api/payroll/event-rules')
+    await ensureSchemaRevision(env,'payroll-event-rules',1,()=>ensurePayrollEventRulesSchema(env));
   }
 
   // v26: não executa migrações/CREATE TABLE de Compras em toda chamada do sistema.
@@ -5997,6 +9884,258 @@ async function route(request, env) {
   p=routeMatch(path,"/api/financial-payables/:id/cancel"); if(p&&method==="POST")return ok({payable:await cancelFinancialPayable(env,request,auth,companyId,p.id)});
   p=routeMatch(path,"/api/financial-payables/:id"); if(p&&method==="GET"){await requirePermission(env,auth.user.id,companyId,"financial.payable.read");return ok({payable:await getFinancialPayable(env,companyId,p.id)});}
 
+  // Etapa 32: comparar duas fotografias historicas sem atualizar a folha.
+  // Esta rota deve preceder o GET generico /:id.
+  if(method==='GET'&&path==='/api/payroll/calculation-versions/compare'){
+    await requirePermission(env,auth.user.id,companyId,'payroll.read');
+    await ensureSchemaRevision(env,'payroll-processing-runs',1,()=>ensurePayrollProcessingRunsSchema28(env));
+    await ensureSchemaRevision(env,'payroll-calculation-versions',1,()=>ensurePayrollCalculationVersionsSchema31(env));
+    return ok(await payrollCalculationVersionsCompare32(env,companyId,
+      url.searchParams.get('left_id'),url.searchParams.get('right_id')));
+  }
+  // Etapa 31: arquivo versionado e imutavel dos resultados apenas demonstrativos.
+  p=routeMatch(path,'/api/payroll/calculation-versions/:id');
+  if(p&&method==='GET'){
+    await requirePermission(env,auth.user.id,companyId,'payroll.read');
+    await ensureSchemaRevision(env,'payroll-processing-runs',1,()=>ensurePayrollProcessingRunsSchema28(env));
+    await ensureSchemaRevision(env,'payroll-calculation-versions',1,()=>ensurePayrollCalculationVersionsSchema31(env));
+    return ok(await payrollCalculationVersionDetail31(env,companyId,p.id));
+  }
+  if(path==='/api/payroll/calculation-versions'){
+    await ensureSchemaRevision(env,'payroll-processing-runs',1,()=>ensurePayrollProcessingRunsSchema28(env));
+    await ensureSchemaRevision(env,'payroll-calculation-versions',1,()=>ensurePayrollCalculationVersionsSchema31(env));
+    if(method==='GET'){
+      await requirePermission(env,auth.user.id,companyId,'payroll.read');
+      return ok(await payrollCalculationVersionsList31(env,companyId,
+        url.searchParams.get('competence_id'),url.searchParams.get('payment_date')));
+    }
+    if(method==='POST'){
+      await ensureSchemaRevision(env,'payroll-processing-reviews',1,()=>ensurePayrollProcessingReviewsSchema29(env));
+      return ok(await payrollCalculationVersionCreate31(env,request,auth,companyId,await readJson(request)),201);
+    }
+  }
+  // Etapa 30: requisitos para homologacao, sem autorizar operacoes financeiras.
+  p=routeMatch(path,'/api/payroll/processing-runs/:id/pre-homologation');
+  if(p&&method==='GET'){
+    await requirePermission(env,auth.user.id,companyId,'payroll.read');
+    await ensureSchemaRevision(env,'payroll-processing-runs',1,()=>ensurePayrollProcessingRunsSchema28(env));
+    await ensureSchemaRevision(env,'payroll-processing-reviews',1,()=>ensurePayrollProcessingReviewsSchema29(env));
+    return ok(await payrollHomologationReadiness30(env,companyId,p.id));
+  }
+  // Etapa 29: ciencia tecnica documentada, sem homologacao da folha.
+  p=routeMatch(path,'/api/payroll/processing-runs/:id/technical-review');
+  if(p&&(method==='GET'||method==='POST')){
+    await ensureSchemaRevision(env,'payroll-processing-runs',1,()=>ensurePayrollProcessingRunsSchema28(env));
+    await ensureSchemaRevision(env,'payroll-processing-reviews',1,()=>ensurePayrollProcessingReviewsSchema29(env));
+    if(method==='GET'){
+      await requirePermission(env,auth.user.id,companyId,'payroll.read');
+      return ok(await payrollProcessingReviewStatus29(env,companyId,p.id));
+    }
+    return ok(await payrollProcessingReviewCreate29(env,request,auth,companyId,p.id,await readJson(request)),201);
+  }
+  // Etapa 28: protocolos tecnicos persistentes, sem homologacao.
+  if(path==='/api/payroll/processing-runs'){
+    await ensureSchemaRevision(env,'payroll-processing-runs',1,()=>ensurePayrollProcessingRunsSchema28(env));
+    if(method==='GET'){
+      await requirePermission(env,auth.user.id,companyId,'payroll.read');
+      return ok(await payrollProcessingRunsList28(env,companyId,
+        url.searchParams.get('competence_id'),url.searchParams.get('payment_date')));
+    }
+    if(method==='POST')return ok(await payrollProcessingRunCreate28(env,request,auth,companyId,await readJson(request)),201);
+  }
+  p=routeMatch(path,'/api/payroll/processing-runs/:id');
+  if(p&&method==='GET'){
+    await ensureSchemaRevision(env,'payroll-processing-runs',1,()=>ensurePayrollProcessingRunsSchema28(env));
+    await requirePermission(env,auth.user.id,companyId,'payroll.read');
+    return ok(await payrollProcessingRunDetail28(env,companyId,p.id));
+  }
+  // Etapa 27: quadro de processamento por competencia (diagnostico somente leitura).
+  if(method==='GET'&&path==='/api/payroll/processing-control'){
+    await requirePermission(env,auth.user.id,companyId,'payroll.read');
+    await ensureSchemaRevision(env,'payroll-event-rules',1,()=>ensurePayrollEventRulesSchema(env));
+    return ok(await payrollProcessingControlPreview27(env,companyId,
+      url.searchParams.get('competence_id'),url.searchParams.get('payment_date')));
+  }
+  // Etapa 26: diagnostico tecnico de pre-fechamento (somente GET).
+  if(method==='GET'&&path==='/api/payroll/final-validation-preview'){
+    await requirePermission(env,auth.user.id,companyId,'payroll.read');
+    await ensureSchemaRevision(env,'payroll-event-rules',1,()=>ensurePayrollEventRulesSchema(env));
+    return ok(await payrollFinalValidationPreview26(env,companyId,
+      url.searchParams.get('competence_id'),url.searchParams.get('payment_date')));
+  }
+  // Etapa 25: conciliacao aritmetica de salario, eventos, faltas/DSR e tributos, somente GET.
+  if(method==='GET'&&path==='/api/payroll/remuneration-reconciliation'){
+    await requirePermission(env,auth.user.id,companyId,'payroll.read');
+    await ensureSchemaRevision(env,'payroll-event-rules',1,()=>ensurePayrollEventRulesSchema(env));
+    return ok(await payrollReconciledRemunerationPreview25(env,companyId,
+      url.searchParams.get('competence_id'),url.searchParams.get('payment_date')));
+  }
+  // Etapa 24: tributos hipoteticos sobre bases recompostas (sem gravacoes).
+  if(method==='GET'&&path==='/api/payroll/recomposed-tax-simulation'){
+    await requirePermission(env,auth.user.id,companyId,'payroll.read');
+    await ensureSchemaRevision(env,'payroll-event-rules',1,()=>ensurePayrollEventRulesSchema(env));
+    return ok(await payrollRecomposedTaxPreview24(env,companyId,url.searchParams.get('competence_id'),url.searchParams.get('payment_date')));
+  }
+  // Etapa 23: bases tributarias indicativas apos faltas/DSR conferidos.
+  if(method==='GET'&&path==='/api/payroll/tax-base-recomposition'){
+    await requirePermission(env,auth.user.id,companyId,'payroll.read');
+    await ensureSchemaRevision(env,'payroll-event-rules',1,()=>ensurePayrollEventRulesSchema(env));
+    return ok(await payrollTaxBaseRecompositionPreview23(env,companyId,url.searchParams.get('competence_id'),url.searchParams.get('payment_date')));
+  }
+  // Etapa 22: referencias monetarias das faltas e do DSR conferido.
+  if(method==='GET'&&path==='/api/payroll/absence-dsr-adjustment'){
+    await requirePermission(env,auth.user.id,companyId,'payroll.read');
+    await ensureSchemaRevision(env,'payroll-event-rules',1,()=>ensurePayrollEventRulesSchema(env));
+    return ok(await payrollAbsenceDsrPreview22(env,companyId,url.searchParams.get('competence_id'),url.searchParams.get('payment_date')));
+  }
+  // Etapa 21: saldo aritmetico com bloqueios trabalhistas e fiscais.
+  if(method==='GET'&&path==='/api/payroll/balance-scenario'){
+    await requirePermission(env,auth.user.id,companyId,'payroll.read');
+    await ensureSchemaRevision(env,'payroll-event-rules',1,()=>ensurePayrollEventRulesSchema(env));
+    return ok(await payrollBalanceScenarioPreview21(env,companyId,url.searchParams.get('competence_id'),url.searchParams.get('payment_date')));
+  }
+  // Etapa 20: memoria de calculo aritmetico e rastreabilidade sem mutacoes.
+  if(method==='GET'&&path==='/api/payroll/calculation-memory'){
+    await requirePermission(env,auth.user.id,companyId,'payroll.read');
+    await ensureSchemaRevision(env,'payroll-event-rules',1,()=>ensurePayrollEventRulesSchema(env));
+    return ok(await payrollCalculationMemoryPreview20(env,companyId,url.searchParams.get('competence_id'),url.searchParams.get('payment_date')));
+  }
+  // Etapa 19: conferência de salário, evento e incidência com IDs de origem.
+  if(method==='GET'&&path==='/api/payroll/remediation-map'){
+    await requirePermission(env,auth.user.id,companyId,'payroll.read');
+    await ensureSchemaRevision(env,'payroll-event-rules',1,()=>ensurePayrollEventRulesSchema(env));
+    return ok(await payrollRemediationPreview19(env,companyId,url.searchParams.get('competence_id'),url.searchParams.get('payment_date')));
+  }
+  // Etapa 18: diagnostico e checklist somente leitura para futura homologacao.
+  if(method==='GET'&&path==='/api/payroll/validation-map'){
+    await requirePermission(env,auth.user.id,companyId,'payroll.read');
+    await ensureSchemaRevision(env,'payroll-event-rules',1,()=>ensurePayrollEventRulesSchema(env));
+    return ok(await payrollValidationPreview18(env,companyId,url.searchParams.get('competence_id'),url.searchParams.get('payment_date')));
+  }
+  // Etapa 17: envelope consolidado de conferencia, estritamente somente leitura.
+  if(method==='GET'&&path==='/api/payroll/envelope-consolidation'){
+    await requirePermission(env,auth.user.id,companyId,'payroll.read');
+    await ensureSchemaRevision(env,'payroll-event-rules',1,()=>ensurePayrollEventRulesSchema(env));
+    return ok(await payrollConsolidationPreview17(env,companyId,url.searchParams.get('competence_id'),url.searchParams.get('payment_date')));
+  }
+  // Etapa 16: cenários monetários de INSS/IRRF/FGTS, bloqueados para processamento.
+  if(method==='GET'&&path==='/api/payroll/tax-simulation'){
+    await requirePermission(env,auth.user.id,companyId,'payroll.read');
+    await ensureSchemaRevision(env,'payroll-event-rules',1,()=>ensurePayrollEventRulesSchema(env));
+    return ok(await payrollTaxSimulationPreview16(env,companyId,url.searchParams.get('competence_id'),url.searchParams.get('payment_date')));
+  }
+  // Etapa 15: bases potenciais INSS/IRRF/FGTS, sem tributos homologados.
+  if(method==='GET'&&path==='/api/payroll/incidence-preview'){
+    await requirePermission(env,auth.user.id,companyId,'payroll.read');
+    await ensureSchemaRevision(env,'payroll-event-rules',1,()=>ensurePayrollEventRulesSchema(env));
+    return ok(await payrollIncidencePreview15(env,companyId,url.searchParams.get('competence_id'),url.searchParams.get('payment_date')));
+  }
+  // Etapa 14: composição informativa, sem fechar folha ou apurar líquido.
+  if(method==='GET'&&path==='/api/payroll/composition-preview'){
+    await requirePermission(env,auth.user.id,companyId,'payroll.read');
+    await ensureSchemaRevision(env,'payroll-event-rules',1,()=>ensurePayrollEventRulesSchema(env));
+    return ok(await payrollCompositionPreview(env,companyId,url.searchParams.get('competence_id'),url.searchParams.get('payment_date')));
+  }
+  // Etapa 13: conferência de DSR e afastamentos, sem efeitos na folha.
+  if(method==='GET'&&path==='/api/payroll/dsr-preview'){
+    await requirePermission(env,auth.user.id,companyId,'payroll.read');
+    await ensureSchemaRevision(env,'payroll-event-rules',1,()=>ensurePayrollEventRulesSchema(env));
+    return ok(await payrollDsrAndLeavePreview(env,companyId,url.searchParams.get('competence_id'),url.searchParams.get('payment_date')));
+  }
+  if(method==='PUT'&&path==='/api/payroll/dsr-review'){
+    return ok({item:await payrollDsrReviewSave(env,request,auth,companyId,await readJson(request))});
+  }
+  // Etapa 12: prévia remuneratória sem lançamento de desconto, DSR ou líquido.
+  if(method==='GET'&&path==='/api/payroll/remuneration-preview'){
+    await requirePermission(env,auth.user.id,companyId,'payroll.read');
+    await ensureSchemaRevision(env,'payroll-event-rules',1,()=>ensurePayrollEventRulesSchema(env));
+    return ok(await payrollRemunerationPreview(env,companyId,url.searchParams.get('competence_id'),url.searchParams.get('payment_date')));
+  }
+  // Etapa 11: envelope preliminar por funcionario e classificacao de ocorrencias.
+  if(method==='GET'&&path==='/api/payroll/envelope-preview'){
+    await requirePermission(env,auth.user.id,companyId,'payroll.read');
+    await ensureSchemaRevision(env,'payroll-event-rules',1,()=>ensurePayrollEventRulesSchema(env));
+    return ok(await payrollEnvelopePreview(env,companyId,url.searchParams.get('competence_id'),url.searchParams.get('payment_date')));
+  }
+  p=routeMatch(path,'/api/payroll/occurrence-review/:id');
+  if(p&&method==='PUT'){
+    return ok({item:await payrollOccurrenceReviewSave(env,request,auth,companyId,p.id,await readJson(request))});
+  }
+  // Etapa 10: demonstrativo de conferência; GET isolado por empresa e sem escrita.
+  if(method==='GET'&&path==='/api/payroll/conference-preview'){
+    await requirePermission(env,auth.user.id,companyId,'payroll.read');
+    await ensureSchemaRevision(env,'payroll-event-rules',1,()=>ensurePayrollEventRulesSchema(env));
+    return ok(await payrollConferencePreview(env,companyId,url.searchParams.get('competence_id'),url.searchParams.get('payment_date')));
+  }
+  // Etapa 09: proporcionalidade civil por histórico salarial/funcional, somente leitura.
+  if(method==='GET'&&path==='/api/payroll/labor-preview'){
+    await requirePermission(env,auth.user.id,companyId,'payroll.read');
+    return ok(await payrollLaborPreview(env,companyId,url.searchParams.get('competence_id')));
+  }
+  // Etapa 07: bases históricas 2020..2026; competência para INSS e pagamento para IRRF; somente GET.
+  if(method==='GET'&&path==='/api/payroll/tax-preview'){
+    await requirePermission(env,auth.user.id,companyId,'payroll.read');
+    await ensureSchemaRevision(env,'payroll-event-rules',1,()=>ensurePayrollEventRulesSchema(env));
+    return ok(await payrollTaxPreviewHistorical(env,companyId,url.searchParams.get('competence_id'),url.searchParams.get('payment_date')));
+  }
+  // Etapa 05: prévia aritmética somente leitura. Nunca publica cálculo de folha.
+  if(method==='GET'&&path==='/api/payroll/events-preview'){
+    await requirePermission(env,auth.user.id,companyId,'payroll.read');
+    await ensureSchemaRevision(env,'payroll-event-rules',1,()=>ensurePayrollEventRulesSchema(env));
+    return ok(await payrollEventCalculationPreview(env,companyId,url.searchParams.get('competence_id')));
+  }
+  // Configuração versionada; somente o avaliador aritmético restrito da simulação interpreta fórmulas.
+  if(path==='/api/payroll/event-rules'){
+    if(method==='GET'){
+      await requirePermission(env,auth.user.id,companyId,'payroll.read');
+      return ok(await payrollEventRulesList(env,companyId,required(url.searchParams.get('event_id'),'evento'),url.searchParams.get('competence')));
+    }
+    if(method==='POST')return ok({item:await payrollEventRuleCreate(env,request,auth,companyId,await readJson(request))},201);
+  }
+  // Prévia do salário-base, sempre somente leitura; sem cálculo de tributos ou quitação.
+  if(method==='GET'&&path==='/api/payroll/salary-preview'){
+    await requirePermission(env,auth.user.id,companyId,'payroll.read');
+    return ok(await payrollSalaryPreview(env,companyId,url.searchParams.get('competence_id')));
+  }
+  // Prévia de conferência: consulta autenticada e limitada à empresa ativa. Sem escrita.
+  if(method==='GET'&&path==='/api/payroll/movements-preview'){
+    await requirePermission(env,auth.user.id,companyId,'payroll.read');
+    return ok(await payrollMovementPreview(env,companyId,url.searchParams.get('competence_id')));
+  }
+  // Folha — operação inicial; sempre antes das rotas genéricas :kind.
+  if(path==='/api/payroll/competences'){
+    if(method==='GET'){
+      await requirePermission(env,auth.user.id,companyId,'payroll.read');
+      return ok({items:await payrollCompetencesList(env,companyId)});
+    }
+    if(method==='POST')return ok({item:await payrollCompetenceCreate(env,request,auth,companyId,await readJson(request))},201);
+  }
+  if(path==='/api/payroll/movements'){
+    if(method==='GET'){
+      await requirePermission(env,auth.user.id,companyId,'payroll.read');
+      return ok(await payrollMovementsList(env,companyId,url.searchParams.get('competence_id')));
+    }
+    if(method==='POST')return ok({item:await payrollMovementCreate(env,request,auth,companyId,await readJson(request))},201);
+  }
+  p=routeMatch(path,'/api/payroll/movements/:id');
+  if(p&&method==='DELETE')return ok(await payrollMovementDelete(env,request,auth,companyId,p.id));
+
+  // Etapa 08: histórico do funcionário, com vigência, isolamento e auditoria.
+  p=routeMatch(path,'/api/payroll/employee-records/:employeeId/:kind/:id');
+  if(p){
+    await ensureSchemaRevision(env,'payroll-employee-history',1,()=>ensurePayrollEmployeeRecordsSchema(env));
+    if(method==='PATCH')return ok({item:await payrollEmployeeRecordSave(env,request,auth,companyId,p.employeeId,p.kind,p.id,await readJson(request))});
+    if(method==='DELETE')return ok(await payrollEmployeeRecordDelete(env,request,auth,companyId,p.employeeId,p.kind,p.id));
+  }
+  p=routeMatch(path,'/api/payroll/employee-records/:employeeId/:kind');
+  if(p){
+    await ensureSchemaRevision(env,'payroll-employee-history',1,()=>ensurePayrollEmployeeRecordsSchema(env));
+    if(method==='GET'){
+      await requirePermission(env,auth.user.id,companyId,'payroll.read');
+      return ok({items:await payrollEmployeeRecordList(env,companyId,p.employeeId,p.kind)});
+    }
+    if(method==='POST')return ok({item:await payrollEmployeeRecordSave(env,request,auth,companyId,p.employeeId,p.kind,null,await readJson(request))},201);
+  }
   // Folha de Pagamento — apenas cadastros, sem rotinas de cálculo.
   p=routeMatch(path,'/api/payroll/:kind');
   if(p){
