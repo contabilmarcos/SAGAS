@@ -28,7 +28,23 @@ Não crie outro banco nem mude o UUID para um banco diferente.
    - `CLOUDFLARE_D1_DATABASE_ID`: UUID do banco D1 de produção já vinculado
 6. Na aba **Variables**, crie:
    - `CLOUDFLARE_D1_DATABASE_NAME`: nome real do mesmo banco D1
-   - `SAGAS_CLOUDFLARE_AUTO_DEPLOY`: **enabled** (apenas após conferir tudo)
+   - `SAGAS_CLOUDFLARE_AUTO_DEPLOY`: deixe ausente ou `disabled` durante a primeira verificação. Altere para **enabled** somente depois que a verificação manual passar.
+
+## Primeira verificação (sem publicar)
+
+1. No GitHub abra **Actions → SAGAS - Publicar Worker no Cloudflare**.
+2. Clique em **Run workflow** e escolha o modo **verificar**.
+3. Abra a execução e confirme que a etapa **Conferir Worker e banco D1 de produção sem modificar nada** passou.
+4. Só então vá para **Settings → Secrets and variables → Actions → Variables** e configure
+   `SAGAS_CLOUDFLARE_AUTO_DEPLOY` com `enabled`.
+5. Volte a **Actions → SAGAS - Publicar Worker no Cloudflare → Run workflow**,
+   escolha **publicar** e acompanhe a execução até o sucesso.
+6. Após o deploy, abra o SAGAS e confira login, empresa selecionada e uma consulta de folha.
+   Se houver qualquer erro, suspenda a variável de deploy antes de prosseguir.
+
+O modo `verificar` não publica nenhum código: confere os segredos e identifica o
+Worker existente e o mesmo UUID do banco D1 vinculado como `DB` no Cloudflare.
+A execução é bloqueada se detectar outro banco ou vínculos adicionais não previstos.
 
 ## Como funciona
 
