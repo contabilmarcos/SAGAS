@@ -10528,6 +10528,18 @@ async function route(request, env) {
   p=routeMatch(path,"/api/financial-payables/:id"); if(p&&method==="GET"){await requirePermission(env,auth.user.id,companyId,"financial.payable.read");const payable=await getFinancialPayable(env,companyId,p.id);if(payable.source_type==="PAYROLL_MONTHLY")await requirePermission(env,auth.user.id,companyId,"payroll.read");return ok({payable});}
 
   // Etapa 37: integracao somente por confirmacao explicita de folha mensal FECHADA.
+  if(method==='GET'&&path==='/api/payroll/accounting-natures'){
+    await requirePermission(env,auth.user.id,companyId,'payroll.read');
+    await ensureSchemaRevision(env,'purchasing',1,async()=>{
+      await ensurePurchasingSchema(env);await ensurePurchaseIntegrationSchema(env);await ensureRmPurchasingSchema(env);
+    });
+    return ok({natures:await listBudgetNatures(env,companyId)});
+  }
+  if(method==='GET'&&path==='/api/payroll/employee-cost-centers'){
+    await requirePermission(env,auth.user.id,companyId,'payroll.read');
+    const rows=await env.DB.prepare("SELECT id,code,name,active FROM cost_centers WHERE company_id=? ORDER BY code").bind(companyId).all();
+    return ok({cost_centers:rows.results||[]});
+  }
   const payroll37Deps={HttpError,requirePermission,audit,ensureSchemaRevision,
     payrollMonthlyRunDetail35,payrollMonthlyConference36,
     buildInternalPostedEntry,centsToMoney,nextPayableNumber,uuid};
