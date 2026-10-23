@@ -450,6 +450,7 @@ async function renderPayrollMovements(){
 <div class="sagas-payroll-process-group" role="group" aria-label="Pré-fechamento e protocolos">
         <div class="sagas-payroll-process-heading">Pré-fechamento e protocolos</div>
         <button type="button" id="pmvPrepare34" class="sagas-payroll-process-item" role="menuitem">Preparar folha mensal</button>
+        <button type="button" id="pmvCalc35" class="sagas-payroll-process-item" role="menuitem">Calcular folha mensal</button>
         <button type="button" id="pmvValidate26" class="sagas-payroll-process-item" role="menuitem">Validar pré-fechamento</button>
         <button type="button" id="pmvControl27" class="sagas-payroll-process-item" role="menuitem">Controle da competência</button>
         <button type="button" id="pmvRuns28" class="sagas-payroll-process-item" role="menuitem">Protocolos da folha</button>
@@ -518,6 +519,7 @@ async function renderPayrollMovements(){
   if($('#pmvControl27'))$('#pmvControl27').onclick=()=>payrollControlScreen27().catch(err=>toast(err.message,'error'));
   if($('#pmvRuns28'))$('#pmvRuns28').onclick=()=>payrollRunsScreen28().catch(err=>toast(err.message,'error'));
   if($('#pmvPrepare34'))$('#pmvPrepare34').onclick=()=>payrollPreparationScreen34().catch(err=>toast(err.message,'error'));
+  if($('#pmvCalc35'))$('#pmvCalc35').onclick=()=>payrollMonthlyCalcScreen35().catch(err=>toast(err.message,'error'));
   $$('[data-pmv-delete]').forEach(b=>b.onclick=()=>payrollMovementDelete(b.dataset.pmvDelete));
 }
 
@@ -576,6 +578,77 @@ function payrollPreparationEmployee34(index){
     payrollPreparationResults34(previous.data);
   };
   $('#prepGoEmp34').onclick=()=>{closeModal();nav('payroll-employees')};
+}
+
+// ===== SAGAS Folha Etapa 35: calcular, gravar e consultar folha mensal =====
+function payroll35Money(cents){return money(Number(cents||0)/100)}
+async function payrollMonthlyCalcScreen35(){
+  const competenceId=window.sagasPayrollCompetence;
+  if(!competenceId){toast('Selecione a competencia.','error');return}
+  const old=window.sagasPayrollCalculation35||{};
+  openModal('Calcular folha mensal','Etapa 35 · Calculo versionado, ainda sem homologacao ou autorizacao para pagamento.',
+    `<form id="payroll35Form" class="grid" style="align-items:end">
+      <label class="field"><span>Data prevista de pagamento</span><input type="date" name="payment_date" value="${esc(old.competenceId===competenceId?old.payment:'')}" required></label>
+      <div><button type="submit" class="btn primary">Calcular e gravar</button></div>
+    </form>
+    <p class="help">O calculo exige os cadastros conferidos na preparacao da folha. Situacoes especiais serao bloqueadas. Nao gera financeiro, contabilidade, holerites definitivos ou pagamento.</p>
+    <div class="toolbar"><button type="button" class="btn secondary sm" id="payroll35History">Processamentos anteriores</button></div>
+    <div id="payroll35Results"></div>`,true);
+  $('#payroll35Form').onsubmit=async e=>{
+    e.preventDefault();
+    const payment=e.target.elements.payment_date.value;
+    const button=e.target.querySelector('[type="submit"]');button.disabled=true;
+    $('#payroll35Results').innerHTML='<p class="help">Calculando e gravando a competencia...</p>';
+    try{
+      const data=await api('/api/payroll/monthly-runs',{method:'POST',body:{competence_id:competenceId,payment_date:payment}});
+      window.sagasPayrollCalculation35={competenceId,payment,data};
+      payrollMonthlyCalcResults35(data);
+      toast(data.reused?'Processamento existente recuperado.':'Folha mensal calculada e armazenada para conferencia.');
+    }catch(err){$('#payroll35Results').innerHTML='<p class="help">'+esc(err.message)+'</p>';toast(err.message,'error')}
+    finally{button.disabled=false}
+  };
+  $('#payroll35History').onclick=()=>payrollMonthlyHistory35(competenceId).catch(err=>toast(err.message,'error'));
+}
+function payrollMonthlyCalcResults35(data){
+  const target=$('#payroll35Results');if(!target)return;
+  const x=data.totals||{},r=data.run||{};
+  const rows=(data.envelopes||[]).map((e,i)=>`<tr><td class="code">${esc(e.employee_code||'—')}</td><td>${esc(e.employee_name)}</td><td>${payroll35Money(e.earnings_cents)}</td><td>${payroll35Money(e.deductions_cents)}</td><td><b>${payroll35Money(e.net_cents)}</b></td><td><button class="btn secondary sm" type="button" data-payroll35-detail="${i}">Ver eventos</button></td></tr>`).join('');
+  target.innerHTML=`<div class="section-title">Processamento ${esc(String(r.revision||'—'))} · ${esc(r.competence||'')}</div>
+    <p class="help">Situação: <b>Calculada — aguardando conferência</b>. ${Number(data.employee_count||0)} funcionário(s).</p>
+    <div class="table-wrap" style="max-height:340px;overflow:auto"><table class="table"><thead><tr><th>ID</th><th>Funcionário</th><th>Proventos</th><th>Descontos</th><th>Líquido</th><th>Ações</th></tr></thead><tbody>${rows||empty(6,'Nenhum envelope','Nenhum funcionario calculado.')}</tbody></table></div>
+    <p class="help"><b>Totais:</b> Proventos ${payroll35Money(x.earnings_cents)} · Descontos ${payroll35Money(x.deductions_cents)} · Líquido ${payroll35Money(x.net_cents)} · FGTS informativo ${payroll35Money(x.fgts_cents)}.</p>
+    <p class="help">Os valores ainda precisam de validação antes de uso financeiro e contábil.</p>`;
+  $$('[data-payroll35-detail]',target).forEach(btn=>btn.onclick=()=>payrollMonthlyDetail35(Number(btn.dataset.payroll35Detail)));
+}
+function payrollMonthlyDetail35(i){
+  const previous=window.sagasPayrollCalculation35;
+  const emp=previous?.data?.envelopes?.[i];if(!emp)return;
+  const rows=(emp.lines||[]).map(x=>`<tr><td class="code">${esc(x.event_code)}</td><td>${esc(x.event_name)}</td><td>${esc(x.line_type==='PROVENTO'?'Provento':x.line_type==='DESCONTO'?'Desconto':'Informativo')}</td><td>${payroll35Money(x.amount_cents)}</td></tr>`).join('');
+  openModal('Eventos calculados — '+emp.employee_name,'Funcionário '+(emp.employee_code||'—')+' · memória do processamento gravado.',
+    '<div class="table-wrap"><table class="table"><thead><tr><th>Código</th><th>Evento</th><th>Tipo</th><th>Valor</th></tr></thead><tbody>'+rows+'</tbody></table></div>'+
+    '<p class="help"><b>Proventos:</b> '+payroll35Money(emp.earnings_cents)+' · <b>Descontos:</b> '+payroll35Money(emp.deductions_cents)+' · <b>Líquido:</b> '+payroll35Money(emp.net_cents)+' · <b>FGTS:</b> '+payroll35Money(emp.fgts_cents)+' (não desconta do empregado).</p>'+
+    '<div class="form-actions"><button id="payroll35Back" type="button" class="btn secondary">Voltar</button></div>',true);
+  $('#payroll35Back').onclick=async()=>{
+    const saved=window.sagasPayrollCalculation35;
+    await payrollMonthlyCalcScreen35();
+    payrollMonthlyCalcResults35(saved.data);
+  };
+}
+async function payrollMonthlyHistory35(competenceId){
+  const d=await api('/api/payroll/monthly-runs?competence_id='+encodeURIComponent(competenceId));
+  const rows=(d.runs||[]).map(x=>`<tr><td>${esc(x.revision)}</td><td>${esc(x.payment_date)}</td><td>${esc(x.status)}</td><td>${dateBR(x.created_at)}</td><td><button class="btn secondary sm" type="button" data-payroll35-run="${esc(x.id)}">Abrir</button></td></tr>`).join('');
+  openModal('Folhas mensais calculadas','Histórico de versões armazenadas nesta competência.',
+    '<div class="table-wrap"><table class="table"><thead><tr><th>Revisão</th><th>Pagamento</th><th>Situação</th><th>Registrado</th><th>Ação</th></tr></thead><tbody>'+
+    (rows||empty(5,'Nenhum processamento','Calcule a folha para criar a primeira revisão.'))+'</tbody></table></div>'+ 
+    '<div class="form-actions"><button class="btn secondary" id="payroll35HistoryBack">Voltar</button></div>',true);
+  $$('[data-payroll35-run]', $('#modalBody')).forEach(btn=>btn.onclick=async()=>{
+    try{
+      const data=await api('/api/payroll/monthly-runs/'+encodeURIComponent(btn.dataset.payroll35Run));
+      window.sagasPayrollCalculation35={competenceId,payment:data.run.payment_date,data};
+      await payrollMonthlyCalcScreen35();payrollMonthlyCalcResults35(data);
+    }catch(err){toast(err.message,'error')}
+  });
+  $('#payroll35HistoryBack').onclick=()=>payrollMonthlyCalcScreen35().catch(err=>toast(err.message,'error'));
 }
 
 async function payrollMovementForm(competenceId){
