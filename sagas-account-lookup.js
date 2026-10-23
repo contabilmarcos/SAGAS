@@ -67,6 +67,8 @@
     btn.textContent='⌕';
     wrap.append(input,btn);
     select.classList.add('sagas-account-original');
+    select.tabIndex=-1;
+    select.setAttribute('aria-hidden','true');
     // Mantém o select original como fonte de verdade para FormData, .value,
     // select.required, regras de contabilização e validação em telas antigas.
     select.parentNode.insertBefore(wrap,select.nextSibling);
@@ -76,6 +78,13 @@
     input.addEventListener('click',open);
     input.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();open()}});
     select.addEventListener('change',()=>syncSelect(select));
+    // Se o campo contábil obrigatório ainda estiver vazio, abre a pesquisa em
+    // vez de tentar focar um select visualmente oculto.
+    select.addEventListener('invalid',event=>{
+      if(select.disabled)return;
+      event.preventDefault();
+      openLookup(select);
+    });
     syncSelect(select);
   }
   function scan(){
