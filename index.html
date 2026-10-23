@@ -414,6 +414,29 @@ async function renderPayrollMovements(){
   window.sagasPayrollCompetence=selected;
   const current=periods.find(p=>p.id===selected),data=await api('/api/payroll/movements?competence_id='+encodeURIComponent(selected));
   const manage=can('payroll.manage')&&current.status==='OPEN';
+  // Diferenciar eventos lançados manualmente dos eventos gerados na folha fechada.
+  let calculatedRun=null,calculatedIssue='';
+  if(current.status==='LOCKED'){
+    try{
+      const versions=(await api('/api/payroll/monthly-runs?competence_id='+encodeURIComponent(selected))).runs||[];
+      const latest=versions[0];
+      if(latest&&latest.status==='APPROVED')
+        calculatedRun=await api('/api/payroll/monthly-runs/'+encodeURIComponent(latest.id));
+      else calculatedIssue='Não há folha mensal fechada nesta competência.';
+    }catch(err){calculatedIssue='Não foi possível consultar os eventos calculados: '+err.message;}
+  }
+
+  const calculatedRows=(calculatedRun?.envelopes||[]).flatMap(emp=>
+    (emp.lines||[]).map(line=>'<tr><td>'+esc(emp.employee_code||'—')+' — '+esc(emp.employee_name)+'</td><td>'+esc(line.event_code)+' — '+esc(line.event_name)+'</td><td>'+esc(payrollTypeName(line.line_type))+'</td><td>'+money(Number(line.amount_cents)/100)+'</td></tr>')).join('');
+  const calculatedArea=current.status==='LOCKED'?
+    '<div class="section-title" style="margin-top:14px">Eventos da folha mensal fechada</div>'+
+    '<p class="muted" style="font-size:12px">Eventos registrados nos envelopes calculados; consulta sem alterar a folha fechada.</p>'+
+    (calculatedRun?
+      '<div class="toolbar"><button type="button" class="btn secondary sm" id="pmvViewProcessed">Abrir envelopes da folha fechada</button></div>'+
+      '<div class="table-wrap"><table class="table"><thead><tr><th>Funcionário</th><th>Evento</th><th>Tipo</th><th>Valor</th></tr></thead><tbody>'+
+      (calculatedRows||empty(4,'Sem eventos','Nenhum evento calculado no envelope.'))+'</tbody></table></div>'
+      :'<p class="help">'+esc(calculatedIssue||'Folha calculada não encontrada.')+'</p>')
+    :'';
   const rows=(data.items||[]).map(m=>`<tr><td>${esc(m.employee_name)}</td><td>${esc(m.event_code)} — ${esc(m.event_name)}</td><td>${esc(m.unit==='VALOR'?money(m.value):String(m.value).replace('.',',')+' '+payrollUnitName(m.unit))}</td><td>${dateBR(m.created_at)}</td><td>${manage?`<button class="btn danger sm" data-pmv-delete="${esc(m.id)}">Excluir</button>`:''}</td></tr>`).join('');
   $('#content').innerHTML=`<div class="toolbar sagas-payroll-toolbar"><select id="pmvPeriod" class="search" style="max-width:220px">${periods.map(p=>`<option value="${esc(p.id)}" ${p.id===selected?'selected':''}>${esc(p.competence.slice(5)+'/ '+p.competence.slice(0,4))} ${p.status==='OPEN'?'':'(bloqueada)'}</option>`).join('')}</select>
     ${manage?'<button id="pmvNew" type="button" class="btn primary">+ Novo lançamento</button>':''}
@@ -460,7 +483,7 @@ async function renderPayrollMovements(){
       </div>
     </div></div>
     <p class="muted" style="font-size:12px;margin-bottom:12px">Lançamentos registrados para processamento futuro. Esta tela não calcula salários, impostos ou valores líquidos.</p>
-    <div class="table-wrap"><table class="table"><thead><tr><th>Funcionário</th><th>Evento</th><th>Valor / Referência</th><th>Registrado</th><th>Ação</th></tr></thead><tbody>${rows||empty(5,'Nenhum lançamento','Use Novo lançamento para começar.')}</tbody></table></div>`;
+    <div class="table-wrap"><table class="table"><thead><tr><th>Funcionário</th><th>Evento</th><th>Valor / Referência</th><th>Registrado</th><th>Ação</th></tr></thead><tbody>${rows||empty(5,'Nenhum lançamento','Nenhum evento manual nesta competência.')}</tbody></table></div>${calculatedArea}`;
 
   // Processos da Folha: menu único, sem alterar os eventos originais dos botões.
   const pmvProcessTrigger=$('#pmvProcesses');
@@ -497,6 +520,12 @@ async function renderPayrollMovements(){
   });
 
   $('#pmvPeriod').onchange=e=>{window.sagasPayrollCompetence=e.target.value;renderPayrollMovements().catch(err=>toast(err.message,'error'))};
+  if(calculatedRun&&$('#pmvViewProcessed'))$('#pmvViewProcessed').onclick=async()=>{
+    window.sagasPayrollCalculation35={competenceId:selected,payment:calculatedRun.run.payment_date,data:calculatedRun};
+    try{await payrollMonthlyCalcScreen35();payrollMonthlyCalcResults35(calculatedRun);}
+    catch(err){toast(err.message,'error')}
+  };
+
   if($('#pmvNew'))$('#pmvNew').onclick=()=>payrollMovementForm(selected);
   if($('#pmvPreview'))$('#pmvPreview').onclick=()=>payrollMovementsPreview().catch(err=>toast(err.message,'error'));
   if($('#pmvSalaryPreview'))$('#pmvSalaryPreview').onclick=()=>payrollSalaryPreviewScreen().catch(err=>toast(err.message,'error'));

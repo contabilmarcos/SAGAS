@@ -1,6 +1,6 @@
 import { payrollFinance39 } from './sagas-payroll39.js';
 import { payrollEmployer40 } from './sagas-payroll-employer40.js';
-// SAGAS Worker v77 - Corrigir migracao da natureza contábil de eventos | cumulativo desde v49
+// SAGAS Worker v78 - Consulta patronal usa bases do envelope fechado | cumulativo desde v49
 // ===== utils.js =====
 function json(data, status = 200, extraHeaders = {}) {
   return new Response(JSON.stringify(data), {

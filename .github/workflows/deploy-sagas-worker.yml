@@ -6,6 +6,10 @@ on:
     paths:
       - 'SAGAS_worker.js'
       - 'sagas-payroll37.js'
+      - 'sagas-payroll38.js'
+      - 'sagas-payroll39.js'
+      - 'sagas-payroll-employer40.js'
+      - '.github/workflows/deploy-sagas-worker.yml'
   workflow_dispatch:
     inputs:
       mode:

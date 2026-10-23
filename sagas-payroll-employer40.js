@@ -51,6 +51,18 @@ function e40Calculate(inssBase,pisReference,s){
  const pis=s.pis_due==='SIM'?e40Money(pisReference,s.pis_bp,10000):0;
  return {cpp_cents:cpp,rat_cents:rat,thirds_cents:thirds,pis_cents:pis,total_cents:cpp+rat+thirds+pis};
 }
+// Bases tributarias da fotografia gravada no fechamento. Nunca reprocessar a folha LOCKED.
+// A etapa 35 registra 'Base <valor>' nas linhas automaticas de INSS e FGTS.
+function e40BaseGravada(envelope,code,d){
+  const lines=(envelope.lines||[]).filter(x=>x.event_code===code);
+  if(lines.length!==1)e40Fail(d,'Base historica do evento '+code+' nao encontrada para '+(envelope.employee_code||envelope.employee_name)+'.','BASE_HISTORICA_AUSENTE',409);
+  const m=/^Base (0|[1-9][0-9]*)(?:\.([0-9]{1,2}))?$/.exec(String(lines[0].reference_text||'').trim());
+  if(!m)e40Fail(d,'Referencia historica invalida no evento '+code+' de '+(envelope.employee_code||envelope.employee_name)+'.','BASE_HISTORICA_INVALIDA',409);
+  const base=Number(m[1])*100+Number((m[2]||'').padEnd(2,'0'));
+  if(!Number.isSafeInteger(base)||base<0||base>99999999999)e40Fail(d,'Valor de base historica fora do limite em '+code+'.','BASE_HISTORICA_INVALIDA',409);
+  return {base_cents:base,amount_cents:Number(lines[0].amount_cents)};
+}
+
 export async function payrollEmployer40(action,c){
  const {env,companyId,auth,request,body={},runId,d}=c;
  await d.requirePermission(env,auth.user.id,companyId,action==='save'?'payroll.manage':'payroll.read');
@@ -78,17 +90,21 @@ export async function payrollEmployer40(action,c){
   const review=await d.payrollMonthlyConference36(env,companyId,runId);
   if(run.status!=='APPROVED'||!review.approved||!review.review?.closed_at||review.problems?.length)
     e40Fail(d,'Somente a ultima revisao da folha conferida e fechada permite previa patronal.','PAYROLL_NOT_CLOSED',409);
-  const source=await d.payrollMonthlySource35(env,companyId,run.competence_id,run.payment_date);
-  if(source.fingerprint!==run.source_fingerprint)e40Fail(d,'Fontes alteradas. Recalcule a revisao da folha.','SOURCE_CHANGED',409);
-  const saved=new Map(detail.envelopes.map(x=>[x.employee_id,x]));
-  if(saved.size!==source.items.length)e40Fail(d,'Envelopes divergentes.','SOURCE_CHANGED',409);
-  const items=source.items.map(x=>{
-   const old=saved.get(x.employee_id);
-   if(!old||Number(old.earnings_cents)!==x.earnings_cents||Number(old.fgts_cents)!==x.fgts_cents)
-     e40Fail(d,'Envelope divergente: '+x.employee_name,'SOURCE_CHANGED',409);
-   return {employee_id:x.employee_id,employee_code:x.employee_code,employee_name:x.employee_name,
-    cost_center_id:old.cost_center_id,inss_base_cents:x.inss_base_cents,
-    pis_reference_base_cents:x.earnings_cents,...e40Calculate(x.inss_base_cents,x.earnings_cents,settings)};
+  // O fechamento validou e imobilizou a fotografia. As bases devem sair dos
+  // envelopes persistidos, pois o processamento novo exige competencia OPEN.
+  const items=detail.envelopes.map(envelope=>{
+    const inss=e40BaseGravada(envelope,'INSS_EMP',d);
+    const fgts=e40BaseGravada(envelope,'FGTS_PATRONAL',d);
+    if(inss.amount_cents!==Number(envelope.inss_cents)||
+       fgts.amount_cents!==Number(envelope.fgts_cents)||
+       e40Money(fgts.base_cents,800,10000)!==Number(envelope.fgts_cents))
+      e40Fail(d,'Valores do envelope nao conciliam para '+(envelope.employee_code||envelope.employee_name)+'.','ENVELOPE_DIVERGENTE',409);
+    const pisBase=Number(envelope.earnings_cents);
+    if(!Number.isSafeInteger(pisBase)||pisBase<0)e40Fail(d,'Proventos invalidos no envelope.','ENVELOPE_DIVERGENTE',409);
+    return {employee_id:envelope.employee_id,employee_code:envelope.employee_code,
+      employee_name:envelope.employee_name,cost_center_id:envelope.cost_center_id,
+      inss_base_cents:inss.base_cents,pis_reference_base_cents:pisBase,
+      ...e40Calculate(inss.base_cents,pisBase,settings)};
   });
   const totals={};for(const x of items)for(const k of ['inss_base_cents','pis_reference_base_cents','cpp_cents','rat_cents','thirds_cents','pis_cents','total_cents'])totals[k]=(totals[k]||0)+x[k];
   return {kind:'PATRONAL_PREVIA_41',read_only:true,ready_for_accounting:false,ready_for_payment:false,
