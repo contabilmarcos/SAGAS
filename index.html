@@ -3157,7 +3157,7 @@ function payrollEmployeeRecordDeletePrompt(employee,kind,item){
 async function payrollForm(page,item=null){
   const cfg=PAYROLL_UI[page],kind=cfg.kind;
   const data=kind==='employees'?await Promise.all([
-    payrollData('categories'),payrollData('departments'),payrollData('positions'),ccs()
+    payrollData('categories'),payrollData('departments'),payrollData('positions'),api('/api/payroll/employee-cost-centers').then(x=>x.cost_centers||[])
   ]):null;
   const sel=(name,arr,selected,optional=true)=>`<select name="${name}" ${optional?'':'required'}><option value="">${optional?'Não informado':'Selecione'}</option>${arr.filter(x=>x.active||x.id===selected).map(x=>`<option value="${esc(x.id)}" ${selected===x.id?'selected':''}>${esc(x.name)}</option>`).join('')}</select>`;
   const input=(name,value,requiredField=false)=>`<input name="${name}" value="${esc(value||'')}" ${requiredField?'required':''}>`;
