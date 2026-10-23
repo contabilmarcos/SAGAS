@@ -858,6 +858,64 @@ function payrollDsrReviewForm13(employee,week,paymentDate){
   };
 }
 
+// ===== SAGAS Folha Etapa 29: ciencia tecnica sem homologacao =====
+async function payrollRunReviewStatus29(runId,paymentDate){
+  const r=await api('/api/payroll/processing-runs/'+encodeURIComponent(runId)+'/technical-review');
+  const review=r.review||null;
+  const current=r.consistency==='ATUAL';
+  const comments=(r.blockers||[]).map(b=>'<p><b>'+esc(b.code)+':</b> '+esc(b.detail)+'</p>').join('');
+  const reviewText=review?
+    '<p><b>Ciência registrada:</b> '+esc(review.created_at||'—')+'</p>'+
+    '<p><b>Responsável:</b> '+esc(review.reviewed_by||'—')+'</p>'+
+    '<p><b>Observações:</b> '+esc(review.notes||'Sem observações')+'</p>':
+    '<p class="help">Este protocolo ainda não tem ciência técnica registrada.</p>';
+  const actions='<div class="form-actions"><button class="btn secondary" type="button" id="run29Back">Voltar ao protocolo</button>'+
+    (r.can_acknowledge&&can('payroll.manage')?
+    '<button class="btn primary" type="button" id="run29Acknowledge">Registrar ciência técnica</button>':'')+
+    '</div>';
+  openModal('Revisão técnica do protocolo '+String(runId).slice(0,8),
+    'Etapa 29 — atualidade do protocolo e ciência documentada, sem aprovação da folha.',
+    '<p><b>Dados atuais:</b> '+esc(current?'Correspondem ao protocolo':
+      r.consistency==='DESATUALIZADO'?'Diferem do protocolo':'Não foi possível conferir')+'</p>'+
+    '<p><b>Conferência dos envelopes:</b> '+esc(r.technical_complete?'Sem pendências técnicas':'Com pendências')+
+    ' · <b>Competência:</b> '+esc(r.competence_status||'Indisponível')+'</p>'+
+    '<p><b>Identificador SHA-256:</b> <code>'+esc(r.run?.fingerprint||'—')+'</code></p>'+
+    '<h4>Ciência técnica</h4>'+reviewText+
+    '<p><b>Situação da ciência:</b> '+esc(r.technical_acknowledgment_current?'Vigente':
+      review?'Histórica / desatualizada':'Não registrada')+'</p>'+
+    (comments?'<h4>Impedimentos</h4><div class="help">'+comments+'</div>':'')+
+    '<p class="help"><b>Esta ciência apenas documenta a conferência técnica.</b> Não homologa salário líquido, não autoriza descontos, pagamentos, encerramento ou contabilização. Após qualquer alteração, registre um novo protocolo.</p>'+
+    actions,true);
+  $('#run29Back').onclick=()=>payrollRunsDetail28(runId,paymentDate).catch(err=>toast(err.message,'error'));
+  if($('#run29Acknowledge'))$('#run29Acknowledge').onclick=()=>payrollRunReviewConfirm29(runId,paymentDate);
+}
+function payrollRunReviewConfirm29(runId,paymentDate){
+  if(!can('payroll.manage')){toast('Sem permissão para registrar ciência técnica.','error');return;}
+  openModal('Confirmar ciência técnica',
+    'Registro imutável do protocolo '+String(runId).slice(0,8)+'.',
+    '<form id="run29ConfirmForm">'+
+    '<label class="field"><span>Observação da conferência (opcional)</span>'+
+    '<textarea name="notes" maxlength="1000" rows="3" placeholder="Observações sobre a conferência técnica"></textarea></label>'+
+    '<label class="field"><input type="checkbox" name="acknowledge" required> Confirmo somente a conferência técnica. Entendo que isto não homologa a folha nem autoriza pagamento.</label>'+
+    '<div class="form-actions"><button type="button" class="btn secondary" id="run29Cancel">Cancelar</button>'+
+    '<button type="submit" class="btn primary">Registrar ciência</button></div></form>');
+  $('#run29Cancel').onclick=()=>payrollRunReviewStatus29(runId,paymentDate).catch(err=>toast(err.message,'error'));
+  const form=$('#run29ConfirmForm');
+  form.onsubmit=async ev=>{
+    ev.preventDefault();
+    if(!form.elements.acknowledge.checked){toast('Confirme a ciência técnica.','error');return;}
+    const button=form.querySelector('[type=submit]');button.disabled=true;
+    try{
+      const result=await api('/api/payroll/processing-runs/'+encodeURIComponent(runId)+'/technical-review',{
+        method:'POST',body:{acknowledge:'CIENCIA_TECNICA_SEM_HOMOLOGACAO',
+          notes:form.elements.notes.value||''}});
+      toast(result.created?'Ciência técnica registrada. Não constitui homologação.':
+        'A ciência deste protocolo já estava registrada.');
+      await payrollRunReviewStatus29(runId,paymentDate);
+    }catch(err){toast(err.message,'error');button.disabled=false;}
+  };
+}
+
 // ===== SAGAS Folha Etapa 28: protocolos persistentes de conferencia =====
 async function payrollRunsScreen28(){
   if(!window.sagasPayrollCompetence){toast('Selecione uma competência.','error');return;}
@@ -946,7 +1004,9 @@ async function payrollRunsDetail28(runId,paymentDate){
     '<th>Conferência</th><th>Pendências</th><th>Referência*</th><th>Ação</th></tr></thead><tbody>'+
     (rows||empty(6,'Sem funcionários','Não há envelopes neste protocolo.'))+'</tbody></table></div>'+
     '<p class="help">*A referência é apenas aritmética, nunca salário líquido. O histórico não é alterado por novos lançamentos.</p>'+
-    '<div class="form-actions"><button type="button" class="btn secondary" id="runs28Back">Voltar ao histórico</button></div>',true);
+    '<div class="form-actions"><button type="button" class="btn secondary" id="runs28Back">Voltar ao histórico</button>'+
+    '<button type="button" class="btn primary" id="run29Review">Revisão técnica</button></div>',true);
+  $('#run29Review').onclick=()=>payrollRunReviewStatus29(runId,paymentDate).catch(err=>toast(err.message,'error'));
   $('#runs28Back').onclick=()=>payrollRunsHistory28(paymentDate).catch(err=>toast(err.message,'error'));
   $$('[data-run28-emp]',$('#modalBody')).forEach(button=>button.onclick=()=>{
     const emp=items.find(x=>x.employee_id===button.dataset.run28Emp);
