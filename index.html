@@ -614,11 +614,21 @@ async function payrollMonthlyCalcScreen35(){
 function payrollMonthlyCalcResults35(data){
   const target=$('#payroll35Results');if(!target)return;
   const x=data.totals||{},r=data.run||{};
-  const rows=(data.envelopes||[]).map((e,i)=>`<tr><td class="code">${esc(e.employee_code||'—')}</td><td>${esc(e.employee_name)}</td><td>${payroll35Money(e.earnings_cents)}</td><td>${payroll35Money(e.deductions_cents)}</td><td><b>${payroll35Money(e.net_cents)}</b></td><td><button class="btn secondary sm" type="button" data-payroll35-detail="${i}">Ver eventos</button> <button class="btn secondary sm" type="button" data-payroll36-receipt="${i}">Holerite</button></td></tr>`).join('');
+  const rows=(data.envelopes||[]).map((e,i)=>`<tr><td class="code">${esc(e.employee_code||'—')}</td><td>${esc(e.employee_name)}</td><td>${esc(e.cost_center_code||'Não definido')}</td><td>${payroll35Money(e.earnings_cents)}</td><td>${payroll35Money(e.deductions_cents)}</td><td><b>${payroll35Money(e.net_cents)}</b></td><td><button class="btn secondary sm" type="button" data-payroll35-detail="${i}">Ver eventos</button> <button class="btn secondary sm" type="button" data-payroll36-receipt="${i}">Holerite</button></td></tr>`).join('');
+  const byCenter=new Map();
+  for(const emp of data.envelopes||[]){
+    const key=emp.cost_center_id||'SEM_CC';
+    const total=byCenter.get(key)||{code:emp.cost_center_code||'Sem centro de custo',gross:0,discount:0,net:0,employees:0};
+    total.employees++;total.gross+=Number(emp.earnings_cents||0);total.discount+=Number(emp.deductions_cents||0);total.net+=Number(emp.net_cents||0);
+    byCenter.set(key,total);
+  }
+  const centerRows=[...byCenter.values()].sort((a,b)=>a.code.localeCompare(b.code)).map(v=>`<tr><td>${esc(v.code)}</td><td>${v.employees}</td><td>${payroll35Money(v.gross)}</td><td>${payroll35Money(v.discount)}</td><td><b>${payroll35Money(v.net)}</b></td></tr>`).join('');
   target.innerHTML=`<div class="section-title">Processamento ${esc(String(r.revision||'—'))} · ${esc(r.competence||'')}</div>
     <p class="help">Situação: <b>${esc(payroll36Status(r.status))}</b>. ${Number(data.employee_count||0)} funcionário(s).</p>
-    <div class="table-wrap" style="max-height:340px;overflow:auto"><table class="table"><thead><tr><th>ID</th><th>Funcionário</th><th>Proventos</th><th>Descontos</th><th>Líquido</th><th>Ações</th></tr></thead><tbody>${rows||empty(6,'Nenhum envelope','Nenhum funcionario calculado.')}</tbody></table></div>
+    <div class="table-wrap" style="max-height:340px;overflow:auto"><table class="table"><thead><tr><th>ID</th><th>Funcionário</th><th>Centro de custo</th><th>Proventos</th><th>Descontos</th><th>Líquido</th><th>Ações</th></tr></thead><tbody>${rows||empty(7,'Nenhum envelope','Nenhum funcionario calculado.')}</tbody></table></div>
     <p class="help"><b>Totais:</b> Proventos ${payroll35Money(x.earnings_cents)} · Descontos ${payroll35Money(x.deductions_cents)} · Líquido ${payroll35Money(x.net_cents)} · FGTS informativo ${payroll35Money(x.fgts_cents)}.</p>
+    <div class="section-title">Totais por centro de custo</div>
+    <div class="table-wrap"><table class="table"><thead><tr><th>Centro de custo</th><th>Funcionários</th><th>Proventos</th><th>Descontos</th><th>Líquido</th></tr></thead><tbody>${centerRows}</tbody></table></div>
     <div class="toolbar"><button type="button" class="btn primary sm" id="payroll36Conference">Conferir / fechar folha</button></div>
     <p class="help">Conferencia interna e fechamento nao geram pagamentos nem contabilizacao. O holerite nao comprova deposito.</p>`;
   $$('[data-payroll35-detail]',target).forEach(btn=>btn.onclick=()=>payrollMonthlyDetail35(Number(btn.dataset.payroll35Detail)));
