@@ -5,20 +5,19 @@ async function payrollEventAccounting38(event,returnRunId=''){
   if(!event)return;
   const [r,a]=await Promise.all([
     api('/api/payroll/events/'+encodeURIComponent(event.id)+'/accounting'),
-    api('/api/accounts')
+    api('/api/budget-natures')
   ]);
   const settings=r.settings||{};
-  const accounts=(a.accounts||[]).filter(x=>x.analytic&&x.active);
-  const sel=(name,val)=>'<select name="'+name+'" required><option value="">Selecione a conta</option>'+
-    accounts.map(x=>'<option value="'+esc(x.id)+'" '+(x.id===val?'selected':'')+'>'+
-      esc(x.code||'')+' — '+esc(x.name||x.description||'')+'</option>').join('')+'</select>';
+  const natures=(a.natures||[]).filter(x=>x.active&&x.synthetic_analytic==='ANALYTIC');
+  const sel=(name,val)=>'<select name="'+name+'" required><option value="">Selecione uma natureza</option>'+
+    natures.map(x=>'<option value="'+esc(x.id)+'" '+(x.id===val?'selected':'')+'>'+
+      esc(x.code||'')+' — '+esc(x.description||'')+'</option>').join('')+'</select>';
   const kind=event.code==='FGTS_PATRONAL'?'Encargo patronal':payrollSystemCodes38.has(event.code)?'Evento automático':'Evento da folha';
   openModal('Contabilização — '+event.code+' · '+event.name,
-    kind+' · Configure débito e crédito deste evento, independentemente dos demais.',
+    kind+' · Configure a natureza que fornecerá os defaults contábeis para cada centro de custo.',
     '<form id="payrollEventAccountingForm38"><div class="grid">'+
-      '<label class="field"><span>Conta de débito</span>'+sel('debit_account_id',settings.debit_account_id)+'</label>'+
-      '<label class="field"><span>Conta de crédito</span>'+sel('credit_account_id',settings.credit_account_id)+'</label></div>'+
-      '<p class="help">Exemplo: salário — débito em despesa, crédito em salários a pagar; INSS — débito em salários a pagar, crédito em INSS a recolher. Não existe conta global obrigatória. Os lançamentos já realizados não serão alterados.</p>'+
+      '<label class="field full"><span>Natureza Orçamentária / Financeira</span>'+sel('nature_id',settings.nature_id)+'</label></div>'+
+      '<p class="help">Débito, crédito, percentual, filial, histórico e complemento vêm dos defaults da natureza. O centro de custo é o do funcionário, registrado no envelope da folha. Configure os lados D e C na natureza. As antigas contas fixas não serão utilizadas.</p>'+
       '<div class="form-actions"><button class="btn secondary" type="button" data-close>Cancelar</button><button class="btn primary" type="submit">Salvar contabilização</button></div></form>',true);
   $('[data-close]').onclick=()=>returnRunId?payrollFinanceModal38(returnRunId).catch(e=>toast(e.message,'error')):closeModal();
   $('#payrollEventAccountingForm38').onsubmit=async e=>{
@@ -26,7 +25,7 @@ async function payrollEventAccounting38(event,returnRunId=''){
     try{
       const data=Object.fromEntries(new FormData(e.target));
       await api('/api/payroll/events/'+encodeURIComponent(event.id)+'/accounting',{method:'POST',body:data});
-      toast('Contabilização do evento '+event.code+' salva.');
+      toast('Natureza do evento '+event.code+' salva.');
       if(returnRunId)await payrollFinanceModal38(returnRunId);
       else closeModal();
     }catch(err){toast(err.message,'error');btn.disabled=false;}
@@ -54,23 +53,23 @@ async function payrollFinanceModal38(runId=''){
   const errors=(data.problems||[]).map(p=>'<div class="help" style="color:#a33">'+esc(p.message)+'</div>').join('');
   const done=data.existing?'Integrada — lançamento '+esc(data.existing.journal_entry_id):'Ainda não integrada';
   const rows=(data.event_totals||[]).map(x=>
-    '<tr><td>'+esc(x.code)+' — '+esc(x.name)+'</td><td>'+fmt(x.amount_cents)+'</td><td>'+esc(x.type)+'</td></tr>').join('');
-  const missed=(data.problems||[]).filter(x=>x.code==='EVENTO_SEM_CONTA');
+    '<tr><td>'+esc(x.code)+' — '+esc(x.name)+'</td><td>'+esc(x.cost_center_code||'—')+'</td><td>'+esc(x.nature_code||'—')+'</td><td>'+fmt(x.amount_cents)+'</td></tr>').join('');
+  const missed=(data.problems||[]).filter(x=>x.code==='EVENTO_SEM_NATUREZA');
   const events=eventsAnswer.items||[];
   openModal('Integrar folha — Financeiro / Contábil',
     'Competência '+esc(data.run.competence)+' · '+done,
-    '<p class="help">As contas contábeis são configuradas no cadastro de CADA evento e encargo da folha. Aqui você seleciona somente o lote e confirma a integração.</p>'+
+    '<p class="help">Cada evento é vinculado a uma natureza, que fornece as contas conforme o centro de custo do funcionário. Aqui selecione somente o lote e confirme.</p>'+
     '<div class="grid three"><div class="field"><span>Proventos</span><b>'+fmt(data.totals.earnings_cents)+'</b></div>'+
     '<div class="field"><span>Descontos</span><b>'+fmt(data.totals.deductions_cents)+'</b></div>'+
     '<div class="field"><span>Salário líquido</span><b>'+fmt(data.totals.net_cents)+'</b></div></div>'+
     '<form id="payrollFinanceBatchForm38"><div class="grid"><label class="field"><span>Lote contábil</span><select required name="batch_id">'+options+'</select></label></div>'+
     '<div class="form-actions"><button class="btn secondary" type="button" data-close>Fechar</button><button class="btn primary" type="submit">Salvar lote</button></div></form>'+
-    (missed.length?'<h4>Eventos que precisam de contabilização</h4><div class="toolbar" style="flex-wrap:wrap">'+
+    (missed.length?'<h4>Eventos que precisam de natureza</h4><div class="toolbar" style="flex-wrap:wrap">'+
       events.filter(x=>missed.some(p=>p.message.includes(x.code+' — '))).map(x=>
         '<button type="button" class="btn secondary sm" data-payroll38-config="'+esc(x.id)+'">'+esc(x.code)+' — '+esc(x.name)+'</button>').join('')+'</div>':'')+
     errors+'<h4>Eventos contabilizados nesta folha</h4>'+
-    '<div class="table-wrap"><table class="table"><thead><tr><th>Evento</th><th>Valor</th><th>Tipo</th></tr></thead><tbody>'+
-    (rows||'<tr><td colspan="3">Configure as contas dos eventos com valores positivos.</td></tr>')+'</tbody></table></div>'+
+    '<div class="table-wrap"><table class="table"><thead><tr><th>Evento</th><th>Centro de custo</th><th>Natureza</th><th>Valor</th></tr></thead><tbody>'+
+    (rows||'<tr><td colspan="4">Configure naturezas e seus defaults por centro de custo.</td></tr>')+'</tbody></table></div>'+
     '<p class="help">A integração cria títulos apenas dos salários líquidos. Retenções e FGTS ficam como obrigações contábeis; não são emitidas guias fiscais automaticamente.</p>'+
     '<div class="form-actions"><button type="button" class="btn secondary" id="payroll38Refresh">Atualizar conferência</button>'+
     (data.existing?'<span class="badge green">Folha já integrada</span>':
@@ -87,7 +86,7 @@ async function payrollFinanceModal38(runId=''){
   $('#payroll38Refresh').onclick=()=>payrollFinanceModal38(selected).catch(e=>toast(e.message,'error'));
   const go=$('#payroll38Integrate');
   if(go)go.onclick=async()=>{
-    if(!confirm('Confirma gerar os títulos de salário líquido e contabilizar CADA evento no lote selecionado?'))return;
+    if(!confirm('Confirma gerar os títulos líquidos e contabilizar os eventos pelas naturezas e centros de custo configurados?'))return;
     go.disabled=true;
     try{
       const posted=await api('/api/payroll/monthly-runs/'+encodeURIComponent(selected)+'/integrate-finance',
