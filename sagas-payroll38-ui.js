@@ -5,7 +5,7 @@ async function payrollEventAccounting38(event,returnRunId=''){
   if(!event)return;
   const [r,a]=await Promise.all([
     api('/api/payroll/events/'+encodeURIComponent(event.id)+'/accounting'),
-    api('/api/budget-natures')
+    api('/api/payroll/accounting-natures')
   ]);
   const settings=r.settings||{};
   const natures=(a.natures||[]).filter(x=>x.active&&x.synthetic_analytic==='ANALYTIC');
