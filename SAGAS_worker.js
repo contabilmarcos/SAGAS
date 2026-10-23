@@ -1,4 +1,5 @@
-// SAGAS Worker v73 - Etapa 36: conferencia, holerites e fechamento da folha mensal | cumulativo desde v49
+import { payrollFinance37 } from './sagas-payroll37.js';
+// SAGAS Worker v74 - Etapa 37: integracao financeira e contabil da folha mensal | cumulativo desde v49
 // ===== utils.js =====
 function json(data, status = 200, extraHeaders = {}) {
   return new Response(JSON.stringify(data), {
@@ -4910,11 +4911,15 @@ async function nextPayableNumber(env,companyId){
 
 async function listFinancialPayables(env,companyId){
   const r=await env.DB.prepare(`
-    SELECT fp.*,s.code AS supplier_code,s.name AS supplier_name,rec.number AS receipt_number,o.number AS order_number,
+    SELECT fp.*,CASE WHEN fp.source_type='PAYROLL_MONTHLY' THEN COALESCE(printf('%05d',pen.number),'FOLHA') ELSE s.code END AS supplier_code,
+           CASE WHEN fp.source_type='PAYROLL_MONTHLY' THEN pe.name ELSE s.name END AS supplier_name,
+           rec.number AS receipt_number,o.number AS order_number,
            fca.code AS payment_cash_account_code,fca.name AS payment_cash_account_name,
            fae.number AS payment_event_number,fae.name AS payment_event_name
     FROM financial_payables fp
-    JOIN purchase_suppliers s ON s.id=fp.supplier_id
+    LEFT JOIN purchase_suppliers s ON s.id=fp.supplier_id AND s.id=fp.supplier_id
+    LEFT JOIN payroll_employees pe ON pe.id=fp.supplier_id AND pe.company_id=fp.company_id AND fp.source_type='PAYROLL_MONTHLY'
+    LEFT JOIN payroll_employee_numbers pen ON pen.employee_id=pe.id AND pen.company_id=fp.company_id
     LEFT JOIN purchase_receipts rec ON rec.id=fp.receipt_id
     LEFT JOIN purchase_orders o ON o.id=rec.order_id
     LEFT JOIN financial_cash_accounts fca ON fca.id=fp.payment_cash_account_id
@@ -4927,13 +4932,17 @@ async function listFinancialPayables(env,companyId){
 
 async function getFinancialPayable(env,companyId,id){
   const x=await env.DB.prepare(`
-    SELECT fp.*,s.code AS supplier_code,s.name AS supplier_name,s.tax_id,rec.number AS receipt_number,o.number AS order_number,
+    SELECT fp.*,CASE WHEN fp.source_type='PAYROLL_MONTHLY' THEN COALESCE(printf('%05d',pen.number),'FOLHA') ELSE s.code END AS supplier_code,
+           CASE WHEN fp.source_type='PAYROLL_MONTHLY' THEN pe.name ELSE s.name END AS supplier_name,
+           s.tax_id,rec.number AS receipt_number,o.number AS order_number,
            u.name AS created_by_name,pu.name AS paid_by_name,
            fca.code AS payment_cash_account_code,fca.name AS payment_cash_account_name,
            fae.number AS payment_event_number,fae.name AS payment_event_name,
            jb.code AS payment_batch_code
     FROM financial_payables fp
-    JOIN purchase_suppliers s ON s.id=fp.supplier_id
+    LEFT JOIN purchase_suppliers s ON s.id=fp.supplier_id AND s.id=fp.supplier_id
+    LEFT JOIN payroll_employees pe ON pe.id=fp.supplier_id AND pe.company_id=fp.company_id AND fp.source_type='PAYROLL_MONTHLY'
+    LEFT JOIN payroll_employee_numbers pen ON pen.employee_id=pe.id AND pen.company_id=fp.company_id
     LEFT JOIN purchase_receipts rec ON rec.id=fp.receipt_id
     LEFT JOIN purchase_orders o ON o.id=rec.order_id
     LEFT JOIN users u ON u.id=fp.created_by
@@ -4982,7 +4991,7 @@ async function buildFinancialPaymentAccountingLines(env,companyId,{eventId,cashA
   if(!cash.active) throw new HttpError(409,'A Conta/Caixa selecionada está inativa.','INACTIVE_CASH_ACCOUNT');
   const grossCents=Number(payable.balance_cents||0);
   const taxDigits=String(payable.tax_id||'').replace(/\D/g,'');
-  const supplierType=taxDigits.length===14?'PJ':taxDigits.length===11?'PF':'UNKNOWN';
+  const supplierType=payable.source_type==='PAYROLL_MONTHLY'?'PF':taxDigits.length===14?'PJ':taxDigits.length===11?'PF':'UNKNOWN';
   const interest=Number(interestCents||0);
   const cashCents=grossCents+interest-Number(discountCents||0)-Number(advanceCents||0);
   if(cashCents<0) throw new HttpError(400,'Desconto e adiantamento não podem superar o valor do título somado aos juros.','INVALID_PAYMENT_VALUES');
@@ -5022,10 +5031,14 @@ async function payFinancialPayable(env,request,auth,companyId,id,body){
   if(!cash.active) throw new HttpError(409,'A Conta/Caixa selecionada está inativa.','INACTIVE_CASH_ACCOUNT');
   const discountCents=moneyToCents(body.discount||0),advanceCents=moneyToCents(body.advance||0),interestCents=moneyToCents(body.interest||0);
   if(discountCents<0||advanceCents<0||interestCents<0) throw new HttpError(400,'Desconto, adiantamento e juros não podem ser negativos.','INVALID_PAYMENT_VALUES');
+  if(before.source_type==='PAYROLL_MONTHLY' && (discountCents||advanceCents||interestCents))
+    throw new HttpError(409,'Titulos de salarios liquidos nao aceitam juros, descontos ou adiantamentos nesta etapa.','PAYROLL_PAYMENT_RESTRICTED');
   const cashCents=Number(before.balance_cents||0)+interestCents-discountCents-advanceCents;
   if(cashCents<0) throw new HttpError(400,'Desconto e adiantamento não podem superar o valor do título somado aos juros.','INVALID_PAYMENT_VALUES');
 
   const eventId=cleanText(body.accounting_event_id,80)||null;
+  if(before.source_type==='PAYROLL_MONTHLY' && !eventId)
+    throw new HttpError(409,'Pagamento de folha exige Evento Contabil Financeiro de baixa para conciliar Salarios a Pagar e Banco.','PAYROLL_ACCOUNTING_EVENT_REQUIRED');
   const batchId=eventId?(cleanText(required(body.accounting_batch_id,'lote contábil'),80)):null;
   let built=null;
   if(eventId){
@@ -5053,6 +5066,7 @@ async function cancelFinancialPayable(env,request,auth,companyId,id){
   await requirePermission(env,auth.user.id,companyId,'financial.payable.manage');
   const before=await getFinancialPayable(env,companyId,id);
   if(before.status!=='OPEN') throw new HttpError(409,'Somente títulos em aberto podem ser cancelados.','INVALID_STATUS');
+  if(before.source_type==='PAYROLL_MONTHLY') throw new HttpError(409,'Titulos gerados pela folha nao podem ser cancelados isoladamente. Revise a integracao de origem.','PAYROLL_LINK_LOCKED');
   await env.DB.prepare(`UPDATE financial_payables SET status='CANCELLED',balance_cents=0,updated_at=CURRENT_TIMESTAMP WHERE id=? AND company_id=?`).bind(id,companyId).run();
   const after=await getFinancialPayable(env,companyId,id);
   await audit(env,{companyId,userId:auth.user.id,action:'CANCEL',entity:'financial_payable',entityId:id,before,after,request});
@@ -10461,6 +10475,38 @@ async function route(request, env) {
   p=routeMatch(path,"/api/financial-payables/:id/unpay"); if(p&&method==="POST")return ok({payable:await undoFinancialPayablePayment(env,request,auth,companyId,p.id)});
   p=routeMatch(path,"/api/financial-payables/:id/cancel"); if(p&&method==="POST")return ok({payable:await cancelFinancialPayable(env,request,auth,companyId,p.id)});
   p=routeMatch(path,"/api/financial-payables/:id"); if(p&&method==="GET"){await requirePermission(env,auth.user.id,companyId,"financial.payable.read");return ok({payable:await getFinancialPayable(env,companyId,p.id)});}
+
+  // Etapa 37: integracao somente por confirmacao explicita de folha mensal FECHADA.
+  const payroll37Deps={HttpError,requirePermission,audit,ensureSchemaRevision,
+    payrollMonthlyRunDetail35,payrollMonthlyConference36,
+    buildInternalPostedEntry,centsToMoney,nextPayableNumber,uuid};
+  const payroll37Call=(action,runId,body)=>payrollFinance37(action,{
+    env,companyId,auth,request,runId,body,d:payroll37Deps
+  });
+  if(path==='/api/payroll/monthly-finance/settings'){
+    await ensureSchemaRevision(env,'payroll-calculation-foundation',1,()=>ensurePayrollCalculationFoundation34(env));
+    if(method==='GET')return ok(await payroll37Call('settings'));
+    if(method==='POST')return ok(await payroll37Call('save',null,await readJson(request)));
+  }
+  p=routeMatch(path,'/api/payroll/monthly-runs/:id/finance-preview');
+  if(p&&method==='GET'){
+    await ensureSchemaRevision(env,'payroll-calculation-foundation',1,()=>ensurePayrollCalculationFoundation34(env));
+    await ensureSchemaRevision(env,'payroll-monthly-review',1,()=>ensurePayrollMonthlyReviewSchema36(env));
+    return ok(await payroll37Call('preview',p.id));
+  }
+  p=routeMatch(path,'/api/payroll/monthly-runs/:id/integrate-finance');
+  if(p&&method==='POST'){
+    await ensureSchemaRevision(env,'payroll-calculation-foundation',1,()=>ensurePayrollCalculationFoundation34(env));
+    await ensureSchemaRevision(env,'payroll-monthly-review',1,()=>ensurePayrollMonthlyReviewSchema36(env));
+    await ensureSchemaRevision(env,'purchasing',1,async()=>{
+      await ensurePurchasingSchema(env);await ensurePurchaseIntegrationSchema(env);await ensureRmPurchasingSchema(env);
+    });
+    await ensureSchemaRevision(env,'financial',1,async()=>{
+      await ensureFinancialAccountingEventSchema(env);await ensureFinancialCashAccountSchema(env);
+    });
+    await ensureSchemaRevision(env,'financial_payment_columns',1,()=>ensureFinancialCashAccountSchema(env));
+    return ok(await payroll37Call('integrate',p.id,await readJson(request)));
+  }
 
   // Etapa 34: preparar cadastros, eventos e tabelas para futuro calculo real.
   // A consulta instala somente tabelas novas vazias; nao gera folha nem lancamentos.
