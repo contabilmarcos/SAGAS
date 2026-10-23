@@ -858,6 +858,59 @@ function payrollDsrReviewForm13(employee,week,paymentDate){
   };
 }
 
+// ===== SAGAS Folha Etapa 30: matriz de preparacao para homologacao =====
+async function payrollRunReadiness30(runId,paymentDate){
+  const data=await api('/api/payroll/processing-runs/'+encodeURIComponent(runId)+'/pre-homologation');
+  const roles=data.roles||{},gates=data.gates||[],summary=data.summary||{};
+  const statusLabels={
+    CONFERIDO:'Conferido',
+    PENDENTE:'Pendente',
+    NAO_IMPLEMENTADO:'Não implementado'
+  };
+  const gateRows=gates.map(g=>
+    '<tr><td><b>'+esc(g.title||g.code)+'</b></td>'+
+    '<td>'+esc(statusLabels[g.status]||'Pendente')+'</td>'+
+    '<td>'+esc(g.detail||'—')+'</td>'+
+    '<td>'+esc(g.required_action||'—')+'</td></tr>').join('');
+  const pre=roles.protocol_preparer||{},
+    rev=roles.technical_reviewer||{},
+    app=roles.independent_approver||{};
+  const actorRows=[
+    ['Preparação do protocolo',pre.user_id||'Não registrado',pre.created_at||'—',
+      'Responsável pela fotografia técnica, sem aprovação'],
+    ['Ciência técnica',rev.user_id||'Não registrado',rev.reviewed_at||'—',
+      'Responsável por conferir, sem homologação'],
+    ['Aprovação independente',app.user_id||'Não atribuído','—',
+      'Etapa não implementada: atribuição e aprovação próprias']
+  ].map(x=>
+    '<tr><td>'+esc(x[0])+'</td><td>'+esc(x[1])+'</td><td>'+esc(x[2])+
+    '</td><td>'+esc(x[3])+'</td></tr>').join('');
+  const current=data.snapshot_consistency==='ATUAL';
+  openModal('Preparação da homologação — '+String(runId).slice(0,8),
+    'Etapa 30: análise de requisitos e responsabilidades, sem aprovação da folha.',
+    '<p><b>Protocolo:</b> '+esc(runId)+
+    ' · <b>Dados:</b> '+esc(current?'Atuais':data.snapshot_consistency==='DESATUALIZADO'?
+      'Desatualizados':'Não verificados')+
+    ' · <b>Ciência técnica:</b> '+esc(data.technical_acknowledgment_current?'Vigente':'Não vigente')+'</p>'+
+    '<p><b>Controles conferidos:</b> '+esc(summary.verified??0)+
+    ' · <b>Pendências:</b> '+esc(summary.pending??0)+
+    ' · <b>Não implementados:</b> '+esc(summary.not_implemented??0)+'</p>'+
+    '<h4>Responsabilidades</h4>'+
+    '<div class="table-wrap"><table class="table"><thead><tr><th>Etapa</th><th>Usuário (ID)</th>'+
+    '<th>Registro</th><th>Responsabilidade</th></tr></thead><tbody>'+
+    actorRows+'</tbody></table></div>'+
+    '<p class="help"><b>Separação entre preparador e revisor:</b> '+
+    esc(roles.preparer_and_reviewer_distinct?'Verificada':'Pendente')+
+    '. O aprovador formal deverá ser independente dos dois papéis.</p>'+
+    '<h4>Matriz de requisitos</h4>'+
+    '<div class="table-wrap"><table class="table"><thead><tr><th>Controle</th>'+
+    '<th>Situação</th><th>Evidência</th><th>Providência</th></tr></thead><tbody>'+
+    (gateRows||empty(4,'Sem verificações',''))+'</tbody></table></div>'+
+    '<p class="help"><b>Homologação indisponível.</b> Este relatório é apenas diagnóstico: não gera salário líquido, retenções efetivas, fechamento, pagamento ou contabilização.</p>'+
+    '<div class="form-actions"><button type="button" class="btn secondary" id="run30Back">Voltar à revisão técnica</button></div>',true);
+  $('#run30Back').onclick=()=>payrollRunReviewStatus29(runId,paymentDate).catch(err=>toast(err.message,'error'));
+}
+
 // ===== SAGAS Folha Etapa 29: ciencia tecnica sem homologacao =====
 async function payrollRunReviewStatus29(runId,paymentDate){
   const r=await api('/api/payroll/processing-runs/'+encodeURIComponent(runId)+'/technical-review');
@@ -869,7 +922,7 @@ async function payrollRunReviewStatus29(runId,paymentDate){
     '<p><b>Responsável:</b> '+esc(review.reviewed_by||'—')+'</p>'+
     '<p><b>Observações:</b> '+esc(review.notes||'Sem observações')+'</p>':
     '<p class="help">Este protocolo ainda não tem ciência técnica registrada.</p>';
-  const actions='<div class="form-actions"><button class="btn secondary" type="button" id="run29Back">Voltar ao protocolo</button>'+
+  const actions='<div class="form-actions"><button class="btn secondary" type="button" id="run29Back">Voltar ao protocolo</button>'+    '<button class="btn secondary" type="button" id="run30Matrix">Requisitos para homologação</button>'+
     (r.can_acknowledge&&can('payroll.manage')?
     '<button class="btn primary" type="button" id="run29Acknowledge">Registrar ciência técnica</button>':'')+
     '</div>';
@@ -888,6 +941,7 @@ async function payrollRunReviewStatus29(runId,paymentDate){
     actions,true);
   $('#run29Back').onclick=()=>payrollRunsDetail28(runId,paymentDate).catch(err=>toast(err.message,'error'));
   if($('#run29Acknowledge'))$('#run29Acknowledge').onclick=()=>payrollRunReviewConfirm29(runId,paymentDate);
+  $('#run30Matrix').onclick=()=>payrollRunReadiness30(runId,paymentDate).catch(err=>toast(err.message,'error'));
 }
 function payrollRunReviewConfirm29(runId,paymentDate){
   if(!can('payroll.manage')){toast('Sem permissão para registrar ciência técnica.','error');return;}
