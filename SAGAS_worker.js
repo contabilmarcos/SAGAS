@@ -1,5 +1,5 @@
-import { payrollFinance38 } from './sagas-payroll38.js';
-// SAGAS Worker v75 - Ajuste Etapa 37: contabilizacao por evento e encargos | cumulativo desde v49
+import { payrollFinance39 } from './sagas-payroll39.js';
+// SAGAS Worker v76 - Folha: natureza e centro de custo | cumulativo desde v49
 // ===== utils.js =====
 function json(data, status = 200, extraHeaders = {}) {
   return new Response(JSON.stringify(data), {
@@ -4316,11 +4316,15 @@ async function getBudgetNature(env,companyId,id){
 }
 
 async function validateDefaultPercentage(rows,label){
-  const bySide={D:0,C:0};
-  for(const x of rows) bySide[x.side]=(bySide[x.side]||0)+Number(x.percentage||0);
-  for(const side of ['D','C']){
-    if(bySide[side]&&Math.abs(bySide[side]-100)>0.0001)
-      throw new HttpError(400,`${label}: o percentual dos defaults de ${side==='D'?'débito':'crédito'} deve totalizar 100%.`,'INVALID_PERCENTAGE');
+  // Um conjunto de regras vale para um lado (D/C) em um centro de custo específico.
+  const groups=new Map();
+  for(const x of rows){
+    const key=x.side+'|'+(x.cost_center_id||'*');
+    groups.set(key,(groups.get(key)||0)+Number(x.percentage||0));
+  }
+  for(const [key,total] of groups){
+    if(Math.abs(total-100)>0.0001)
+      throw new HttpError(400,label+': os percentuais do grupo '+key+' devem totalizar 100%.','INVALID_PERCENTAGE');
   }
 }
 
@@ -5611,18 +5615,25 @@ function payrollKindTable(kind){
   return PAYROLL_TABLES[kind];
 }
 
+async function ensurePayrollCostCenter39(env){
+  await ensureTableColumn(env,'payroll_employees','cost_center_id','TEXT');
+  await ensureTableColumn(env,'payroll_calc_envelopes','cost_center_id','TEXT');
+}
 async function listPayroll(env,companyId,kind){
   const table=payrollKindTable(kind);
   let sql;
   if(kind==='employees'){
     await ensureSchemaRevision(env,'payroll-employee-numbers',1,()=>ensurePayrollEmployeeNumbersSchema(env));
+    await ensureSchemaRevision(env,'payroll-employee-cost-center39',1,()=>ensurePayrollCostCenter39(env));
     sql=`SELECT e.*,printf('%05d',n.number) AS employee_code,p.name AS position_name,
-    d.name AS department_name,c.name AS category_name
+    d.name AS department_name,c.name AS category_name,
+    cc.code AS cost_center_code,cc.name AS cost_center_name
     FROM payroll_employees e
     LEFT JOIN payroll_employee_numbers n ON n.employee_id=e.id AND n.company_id=e.company_id
     LEFT JOIN payroll_positions p ON p.id=e.position_id AND p.company_id=e.company_id
     LEFT JOIN payroll_departments d ON d.id=e.department_id AND d.company_id=e.company_id
     LEFT JOIN payroll_categories c ON c.id=e.category_id AND c.company_id=e.company_id
+    LEFT JOIN cost_centers cc ON cc.id=e.cost_center_id AND cc.company_id=e.company_id
     WHERE e.company_id=? ORDER BY e.name COLLATE NOCASE`;
   }
   else sql=`SELECT * FROM ${table} WHERE company_id=? ORDER BY ${kind==='events'?'code':'name'} COLLATE NOCASE`;
@@ -5682,9 +5693,11 @@ async function savePayroll(env,request,auth,companyId,kind,id,body){
     if(categoryId)await payrollReference(env,companyId,'categories',categoryId,'Categoria');
     if(departmentId)await payrollReference(env,companyId,'departments',departmentId,'Departamento');
     const admissionDate=isoDate(body.admission_date,'data de admissão');
-    // Salário vem SEMPRE do cadastro do cargo no momento do salvamento.
-    columns.push('position_id','category_id','department_id','salary_cents','admission_date');
-    values.push(position.id,categoryId,departmentId,position.salary_cents,admissionDate);
+    await ensureSchemaRevision(env,'payroll-employee-cost-center39',1,()=>ensurePayrollCostCenter39(env));
+    const cc=await validateCostCenterForEntry(env,companyId,required(body.cost_center_id,'centro de custo do funcionário'));
+    // Salário vem do cargo. Centro de custo analítico obrigatório para novos cadastros/edições.
+    columns.push('position_id','category_id','department_id','salary_cents','admission_date','cost_center_id');
+    values.push(position.id,categoryId,departmentId,position.salary_cents,admissionDate,cc.id);
   }else if(kind==='events'){
     const code=cleanText(required(body.code,'código do evento'),30).toUpperCase();
     if(['SALARIO_BASE','INSS_EMP','IRRF_EMP','FGTS_PATRONAL'].includes(code))
@@ -9424,6 +9437,12 @@ async function payrollMonthlyPreparation34(env,companyId,competenceId,paymentDat
     const occurrences=history.occurrences.get(emp.id)||[];
     const events=byEmployee.get(emp.id)||[];
     if(!/^\d{5}$/.test(String(emp.employee_code||'')))add('ID_FUNCIONARIO','Funcionario sem ID sequencial valido.');
+    if(!emp.cost_center_id||!emp.cost_center_code)
+      add('CENTRO_CUSTO','Cadastre um centro de custo analítico para este funcionário antes do cálculo.');
+    else {
+      try{await validateCostCenterForEntry(env,companyId,emp.cost_center_id)}
+      catch(_){add('CENTRO_CUSTO_INVALIDO','Centro de custo inativo, sintético ou de outra empresa.');}
+    }
     if(!emp.active && !functional)add('SITUACAO_INATIVA','Funcionario inativo sem historico funcional que comprove o vinculo na competencia.');
     if(!functional)add('HISTORICO_FUNCIONAL','Cadastre a situacao funcional com vigencia anterior ou igual ao inicio da competencia.');
     else if(functional.situation!=='ATIVO')add('SITUACAO_FUNCIONAL','Situacao funcional na competencia: '+functional.situation+'. Exige processamento especifico.');
@@ -9453,6 +9472,7 @@ async function payrollMonthlyPreparation34(env,companyId,competenceId,paymentDat
       note('DEPENDENTES','Revise a elegibilidade e comprovacao dos dependentes para o IRRF.');
     if(!events.length)note('SEM_EVENTOS','Sem lancamentos variaveis; considerar o salario do historico na etapa de calculo.');
     items.push({employee_id:emp.id,employee_code:emp.employee_code||null,
+      cost_center_id:emp.cost_center_id||null,cost_center_code:emp.cost_center_code||null,
       employee_name:emp.name,admission_date:emp.admission_date,
       salary_history:salary?centsToMoney(salary.salary_cents):null,
       monthly_hours:schedule?Number(schedule.monthly_hours_milli)/1000:null,
@@ -9609,6 +9629,7 @@ async function payrollMonthlySource35(env,companyId,competenceId,paymentDate){
       fgts_cents:items.reduce((a,x)=>a+x.fgts_cents,0)}};
 }
 async function payrollMonthlyRunDetail35(env,companyId,runId){
+  await ensureSchemaRevision(env,'payroll-employee-cost-center39',1,()=>ensurePayrollCostCenter39(env));
   const run=await env.DB.prepare(`SELECT r.id,r.competence_id,c.competence,r.payment_date,r.revision,r.status,
     r.source_fingerprint,r.created_at FROM payroll_calc_runs r
     JOIN payroll_competences c ON c.id=r.competence_id AND c.company_id=r.company_id
@@ -9627,7 +9648,7 @@ async function payrollMonthlyRunDetail35(env,companyId,runId){
       .bind(companyId,envp.id).all();
     envelopes.push({employee_id:envp.employee_id,
       employee_code:envp.employee_number==null?null:String(envp.employee_number).padStart(5,'0'),
-      employee_name:envp.employee_name,
+      employee_name:envp.employee_name,cost_center_id:envp.cost_center_id||null,
       earnings_cents:envp.earnings_cents,deductions_cents:envp.deductions_cents,
       net_cents:envp.net_cents,inss_cents:envp.inss_cents,irrf_cents:envp.irrf_cents,
       fgts_cents:envp.fgts_cents,lines:result.results||[]});
@@ -9678,10 +9699,10 @@ async function payrollMonthlyRunCreate35(env,request,auth,companyId,competenceId
   for(const emp of source.items){
     const envelopeId=uuid();
     statements.push(env.DB.prepare(`INSERT INTO payroll_calc_envelopes
-      (id,company_id,run_id,employee_id,earnings_cents,deductions_cents,net_cents,inss_cents,irrf_cents,fgts_cents)
-      VALUES (?,?,?,?,?,?,?,?,?,?)`)
+      (id,company_id,run_id,employee_id,earnings_cents,deductions_cents,net_cents,inss_cents,irrf_cents,fgts_cents,cost_center_id)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?)`)
       .bind(envelopeId,companyId,runId,emp.employee_id,emp.earnings_cents,emp.deductions_cents,emp.net_cents,
-        emp.inss_cents,emp.irrf_cents,emp.fgts_cents));
+        emp.inss_cents,emp.irrf_cents,emp.fgts_cents,emp.cost_center_id));
     for(let i=0;i<emp.lines.length;i++){
       const line=emp.lines[i];
       statements.push(env.DB.prepare(`INSERT INTO payroll_calc_lines
@@ -10496,7 +10517,7 @@ async function route(request, env) {
   const payroll37Deps={HttpError,requirePermission,audit,ensureSchemaRevision,
     payrollMonthlyRunDetail35,payrollMonthlyConference36,
     buildInternalPostedEntry,centsToMoney,nextPayableNumber,uuid};
-  const payroll37Call=(action,runId,body,eventId)=>payrollFinance38(action,{
+  const payroll37Call=(action,runId,body,eventId)=>payrollFinance39(action,{
     env,companyId,auth,request,runId,body,eventId,d:payroll37Deps
   });
   p=routeMatch(path,'/api/payroll/events/:id/accounting');
