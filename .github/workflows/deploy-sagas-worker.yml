@@ -1,0 +1,80 @@
+name: SAGAS - Publicar Worker no Cloudflare
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'SAGAS_worker.js'
+      - '.github/workflows/deploy-sagas-worker.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sagas-cloudflare-worker-production
+  cancel-in-progress: false
+
+jobs:
+  deploy-worker:
+    name: Validar e publicar sagas-api
+    # Mantém produção protegida até a ativação explícita pelo dono do repositório.
+    if: ${{ vars.SAGAS_CLOUDFLARE_AUTO_DEPLOY == 'enabled' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Baixar o código do SAGAS
+        uses: actions/checkout@v6
+
+      - name: Configurar Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Verificar sintaxe do Worker
+        run: node --check SAGAS_worker.js
+
+      - name: Validar configuração e gerar Wrangler temporário
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_D1_DATABASE_ID: ${{ secrets.CLOUDFLARE_D1_DATABASE_ID }}
+          CLOUDFLARE_D1_DATABASE_NAME: ${{ vars.CLOUDFLARE_D1_DATABASE_NAME }}
+        run: |
+          node --input-type=module <<'NODE'
+          import { writeFileSync } from 'node:fs';
+
+          function required(name) {
+            const value = String(process.env[name] || '').trim();
+            if (!value) throw new Error('Configuração ausente: ' + name + '. Cadastre em Settings > Secrets and variables > Actions.');
+            return value;
+          }
+
+          const account = required('CLOUDFLARE_ACCOUNT_ID');
+          required('CLOUDFLARE_API_TOKEN');
+          const databaseId = required('CLOUDFLARE_D1_DATABASE_ID');
+          const databaseName = required('CLOUDFLARE_D1_DATABASE_NAME');
+          if (!/^[0-9a-f]{32}$/i.test(account)) throw new Error('CLOUDFLARE_ACCOUNT_ID inválido.');
+          if (!/^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(databaseId)) throw new Error('CLOUDFLARE_D1_DATABASE_ID deve ser UUID do banco de produção existente.');
+          const config = {
+            name: 'sagas-api',
+            main: './SAGAS_worker.js',
+            compatibility_date: '2025-01-01',
+            workers_dev: true,
+            keep_vars: true,
+            d1_databases: [{
+              binding: 'DB',
+              database_name: databaseName,
+              database_id: databaseId
+            }]
+          };
+          writeFileSync('wrangler.sagas.deploy.json', JSON.stringify(config, null, 2) + '\n');
+          console.log('Configuração validada. Destino: Worker sagas-api; vínculo D1: DB. Não foram exibidas credenciais.');
+          NODE
+
+      - name: Publicar no Cloudflare
+        uses: cloudflare/wrangler-action@v4
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: deploy --config wrangler.sagas.deploy.json --keep-vars
