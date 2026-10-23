@@ -858,6 +858,121 @@ function payrollDsrReviewForm13(employee,week,paymentDate){
   };
 }
 
+// ===== SAGAS Folha Etapa 31: historico de versoes de calculo demonstrativo =====
+async function payrollCalculationVersions31(runId,paymentDate){
+  const cid=window.sagasPayrollCompetence;
+  if(!cid){toast('Selecione uma competência.','error');return;}
+  const data=await api('/api/payroll/calculation-versions?competence_id='+encodeURIComponent(cid)+
+    '&payment_date='+encodeURIComponent(paymentDate));
+  const items=data.items||[];
+  const rows=items.map(x=>
+    '<tr><td><b>v'+esc(x.version)+'</b></td>'+
+    '<td class="code">'+esc(String(x.run_id||'').slice(0,8))+'</td>'+
+    '<td>'+esc(x.created_at||'—')+'</td>'+
+    '<td>'+esc(x.created_by||'—')+'</td>'+
+    '<td>Não homologado</td>'+
+    '<td><button type="button" class="btn secondary sm" data-calc31-id="'+esc(x.id)+'">Detalhar</button></td></tr>').join('');
+  openModal('Versões dos demonstrativos — '+String(data.competence?.competence||''),
+    'Etapa 31: histórico imutável vinculado aos protocolos de conferência.',
+    '<p class="help">Competência com '+esc(items.length)+
+    ' versão(ões) na data '+esc(paymentDate)+
+    '. Cada versão mantém seu próprio SHA-256 e o identificador do protocolo de origem.</p>'+
+    '<div class="table-wrap"><table class="table"><thead><tr>'+
+    '<th>Versão</th><th>Protocolo</th><th>Criada em</th><th>Criada por</th><th>Estado</th><th>Ação</th></tr></thead><tbody>'+
+    (rows||empty(6,'Sem versões','Registre a primeira versão para arquivar os componentes demonstrativos.'))+
+    '</tbody></table></div>'+
+    '<p class="help"><b>Importante:</b> nenhuma versão constitui folha líquida definitiva, aprovação, retenção, pagamento, fechamento ou contabilização.</p>'+
+    '<div class="form-actions"><button class="btn secondary" type="button" id="calc31Back">Voltar ao protocolo</button>'+
+    (can('payroll.manage')?'<button class="btn primary" type="button" id="calc31New">Registrar versão deste protocolo</button>':'')+
+    '</div>',true);
+  $('#calc31Back').onclick=()=>payrollRunsDetail28(runId,paymentDate).catch(err=>toast(err.message,'error'));
+  if($('#calc31New'))$('#calc31New').onclick=()=>payrollCalculationVersionConfirm31(runId,paymentDate);
+  $$('[data-calc31-id]',$('#modalBody')).forEach(btn=>btn.onclick=()=>
+    payrollCalculationVersionDetail31(btn.dataset.calc31Id,runId,paymentDate).catch(err=>toast(err.message,'error')));
+}
+function payrollCalculationVersionConfirm31(runId,paymentDate){
+  if(!can('payroll.manage')){toast('Você não tem permissão de gerenciamento da folha.','error');return;}
+  openModal('Registrar versão demonstrativa',
+    'O protocolo deve estar atual, tecnicamente conferido e com ciência técnica vigente.',
+    '<p>Esta ação arquivará uma fotografia numerada das parcelas de remuneração e tributos <b>simulados</b>, vinculada ao protocolo '+esc(String(runId).slice(0,8))+'.</p>'+
+    '<p class="help">Se os dados mudaram, faça uma nova conferência e registre um novo protocolo. Nenhum valor de salário líquido será aprovado ou enviado para financeiro/contabilidade.</p>'+
+    '<label class="field"><input id="calc31Acknowledge" type="checkbox"> Entendo que o demonstrativo não é folha homologada.</label>'+
+    '<div class="form-actions"><button class="btn secondary" type="button" id="calc31Cancel">Cancelar</button>'+
+    '<button class="btn primary" type="button" id="calc31Create">Registrar versão</button></div>');
+  $('#calc31Cancel').onclick=()=>payrollCalculationVersions31(runId,paymentDate).catch(err=>toast(err.message,'error'));
+  $('#calc31Create').onclick=async()=>{
+    if(!$('#calc31Acknowledge').checked){toast('Confirme que o documento é somente demonstrativo.','error');return;}
+    const btn=$('#calc31Create');btn.disabled=true;
+    try{
+      const result=await api('/api/payroll/calculation-versions',{
+        method:'POST',body:{run_id:runId}});
+      toast(result.created?'Versão demonstrativa registrada.':'Este protocolo já possui uma versão registrada.');
+      await payrollCalculationVersions31(runId,paymentDate);
+    }catch(err){toast(err.message,'error');btn.disabled=false;}
+  };
+}
+async function payrollCalculationVersionDetail31(versionId,originRunId,paymentDate){
+  const result=await api('/api/payroll/calculation-versions/'+encodeURIComponent(versionId));
+  const v=result.version||{},d=result.document||{};
+  const money31=n=>typeof n==='number'&&Number.isSafeInteger(n)?money(n/100):'Pendente';
+  const rows=(d.items||[]).map(emp=>{
+    const a=emp.amounts_cents||{};
+    return '<tr><td class="code">'+esc(emp.employee_code||'—')+'</td>'+
+      '<td><b>'+esc(emp.employee_name||'—')+'</b></td>'+
+      '<td>'+money31(a.salary_reference)+'</td>'+
+      '<td>'+money31(a.event_earnings)+'</td>'+
+      '<td>'+money31(a.event_deductions)+'</td>'+
+      '<td>'+money31(a.absence_dsr_reference)+'</td>'+
+      '<td>'+money31(a.inss_simulated)+'</td>'+
+      '<td>'+money31(a.irrf_simulated)+'</td>'+
+      '<td>'+money31(a.arithmetic_balance_projection)+'</td>'+
+      '<td>'+esc(emp.calculation_status==='DEMONSTRATIVO_CONCILIADO'?'Demonstrativo conciliado':'Pendente')+'</td>'+
+      '<td><button class="btn secondary sm" type="button" data-calc31-emp="'+esc(emp.employee_id)+'">Detalhar</button></td></tr>';
+  }).join('');
+  openModal('Demonstrativo v'+String(v.version||'—'),
+    'Versão histórica; não representa folha líquida ou aprovação.',
+    '<p><b>Protocolo:</b> '+esc(String(v.run_id||'').slice(0,8))+
+    ' · <b>Funcionários:</b> '+esc(d.employee_count??0)+
+    ' · <b>Componentes pendentes:</b> '+esc(d.pending_count??0)+'</p>'+
+    '<p class="help">Documento SHA-256: <code>'+esc(v.fingerprint||'—')+'</code></p>'+
+    '<div class="table-wrap"><table class="table"><thead><tr><th>ID</th><th>Funcionário</th>'+
+    '<th>Salário*</th><th>Proventos*</th><th>Descontos*</th><th>Faltas+DSR*</th>'+
+    '<th>INSS*</th><th>IRRF*</th><th>Saldo*</th><th>Conferência</th><th>Ação</th></tr></thead><tbody>'+
+    (rows||empty(11,'Sem funcionários',''))+'</tbody></table></div>'+
+    '<p class="help">*Componentes apenas simulados. FGTS é patronal. Nenhum líquido homologado ou pagamento foi calculado.</p>'+
+    '<div class="form-actions"><button class="btn secondary" type="button" id="calc31DetailBack">Voltar às versões</button></div>',true);
+  $('#calc31DetailBack').onclick=()=>payrollCalculationVersions31(originRunId,paymentDate).catch(err=>toast(err.message,'error'));
+  $$('[data-calc31-emp]',$('#modalBody')).forEach(btn=>btn.onclick=()=>{
+    const employee=(d.items||[]).find(e=>e.employee_id===btn.dataset.calc31Emp);
+    if(employee)payrollCalculationVersionEmployee31(employee,v,originRunId,paymentDate);
+  });
+}
+function payrollCalculationVersionEmployee31(e,version,originRunId,paymentDate){
+  const a=e.amounts_cents||{},labels={
+    salary_reference:'Salário de referência',event_earnings:'Proventos dos eventos',
+    gross_before_absence:'Bruto antes de faltas',absence_reference:'Faltas simuladas',
+    dsr_reference:'DSR simulado',absence_dsr_reference:'Faltas + DSR',
+    balance_after_absence:'Saldo após faltas e DSR',event_deductions:'Descontos dos eventos',
+    balance_after_event_deductions:'Saldo antes dos tributos',inss_simulated:'INSS simulado',
+    irrf_simulated:'IRRF simulado',fgts_employer_simulated:'FGTS patronal simulado',
+    arithmetic_balance_projection:'Saldo aritmético hipotético (NÃO É LÍQUIDO)'
+  };
+  const money31=n=>typeof n==='number'&&Number.isSafeInteger(n)?money(n/100):'Pendente';
+  const rows=Object.entries(labels).map(([key,title])=>
+    '<tr><td>'+esc(title)+'</td><td>'+money31(a[key])+'</td></tr>').join('');
+  const issues=(e.issues||[]).map(x=>'<p>• '+esc(x.code)+': '+esc(x.detail)+'</p>').join('');
+  openModal('Versão '+String(version.version||'—')+' — '+e.employee_name,
+    'Funcionário '+(e.employee_code||'—')+' · memória de valores simulados.',
+    '<p><b>Situação:</b> '+esc(e.calculation_status||'PENDENTE')+
+    ' · <b>Referência técnica do protocolo:</b> '+money31(e.technical_reference_cents)+'</p>'+
+    '<div class="table-wrap"><table class="table"><thead><tr><th>Componente</th><th>Valor*</th></tr></thead><tbody>'+
+    rows+'</tbody></table></div>'+
+    '<h4>Pendências</h4><div class="help">'+(issues||'Sem divergência técnica detectada nesta fotografia.')+'</div>'+
+    '<p class="help"><b>*Não é holerite nem autorização para retenção, pagamento, fechamento ou contabilização.</b></p>'+
+    '<div class="form-actions"><button class="btn secondary" type="button" id="calc31EmpBack">Voltar à versão</button></div>',true);
+  $('#calc31EmpBack').onclick=()=>payrollCalculationVersionDetail31(version.id,originRunId,paymentDate).catch(err=>toast(err.message,'error'));
+}
+
 // ===== SAGAS Folha Etapa 30: matriz de preparacao para homologacao =====
 async function payrollRunReadiness30(runId,paymentDate){
   const data=await api('/api/payroll/processing-runs/'+encodeURIComponent(runId)+'/pre-homologation');
@@ -1059,7 +1174,8 @@ async function payrollRunsDetail28(runId,paymentDate){
     (rows||empty(6,'Sem funcionários','Não há envelopes neste protocolo.'))+'</tbody></table></div>'+
     '<p class="help">*A referência é apenas aritmética, nunca salário líquido. O histórico não é alterado por novos lançamentos.</p>'+
     '<div class="form-actions"><button type="button" class="btn secondary" id="runs28Back">Voltar ao histórico</button>'+
-    '<button type="button" class="btn primary" id="run29Review">Revisão técnica</button></div>',true);
+    '<button type="button" class="btn primary" id="run29Review">Revisão técnica</button>'+ '<button type="button" class="btn secondary" id="run31Versions">Versões do cálculo</button></div>',true);
+  $('#run31Versions').onclick=()=>payrollCalculationVersions31(runId,paymentDate).catch(err=>toast(err.message,'error'));
   $('#run29Review').onclick=()=>payrollRunReviewStatus29(runId,paymentDate).catch(err=>toast(err.message,'error'));
   $('#runs28Back').onclick=()=>payrollRunsHistory28(paymentDate).catch(err=>toast(err.message,'error'));
   $$('[data-run28-emp]',$('#modalBody')).forEach(button=>button.onclick=()=>{
