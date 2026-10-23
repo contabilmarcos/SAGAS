@@ -39,7 +39,9 @@ async function account38(env,companyId,id,d) {
 }
 export async function payrollFinance39(action,c) {
   const {env,companyId,request,auth,body={},runId,d}=c;
-  await d.ensureSchemaRevision(env,'payroll-event-accounting38',1,()=>schema38(env));
+  // v38 foi aplicado em produção antes da tabela de naturezas existir.
+  // Usar escopo novo garante a migração aditiva em D1 já atualizado.
+  await d.ensureSchemaRevision(env,'payroll-event-natures39',1,()=>schema38(env));
   if(action==='catalog'){
     await d.requirePermission(env,auth.user.id,companyId,'payroll.read');
     return {items:await catalog38(env,companyId,d)};
