@@ -4909,7 +4909,7 @@ async function nextPayableNumber(env,companyId){
   return prefix+String((Number(row?.max_no)||0)+1).padStart(6,'0');
 }
 
-async function listFinancialPayables(env,companyId){
+async function listFinancialPayables(env,companyId,allowPayroll=false){
   const r=await env.DB.prepare(`
     SELECT fp.*,CASE WHEN fp.source_type='PAYROLL_MONTHLY' THEN COALESCE(printf('%05d',pen.number),'FOLHA') ELSE s.code END AS supplier_code,
            CASE WHEN fp.source_type='PAYROLL_MONTHLY' THEN pe.name ELSE s.name END AS supplier_name,
@@ -4924,9 +4924,9 @@ async function listFinancialPayables(env,companyId){
     LEFT JOIN purchase_orders o ON o.id=rec.order_id
     LEFT JOIN financial_cash_accounts fca ON fca.id=fp.payment_cash_account_id
     LEFT JOIN financial_accounting_events fae ON fae.id=fp.payment_accounting_event_id
-    WHERE fp.company_id=?
+    WHERE fp.company_id=? AND (?=1 OR fp.source_type<>'PAYROLL_MONTHLY')
     ORDER BY CASE fp.status WHEN 'OPEN' THEN 0 WHEN 'PAID' THEN 1 ELSE 2 END,fp.due_date,fp.number
-  `).bind(companyId).all();
+  `).bind(companyId,allowPayroll?1:0).all();
   return (r.results||[]).map(x=>({...x,amount:centsToMoney(x.amount_cents),balance:centsToMoney(x.balance_cents)}));
 }
 
@@ -5024,6 +5024,7 @@ async function buildFinancialPaymentAccountingLines(env,companyId,{eventId,cashA
 async function payFinancialPayable(env,request,auth,companyId,id,body){
   await requirePermission(env,auth.user.id,companyId,'financial.payable.manage');
   const before=await getFinancialPayable(env,companyId,id);
+  if(before.source_type==='PAYROLL_MONTHLY')await requirePermission(env,auth.user.id,companyId,'payroll.manage');
   if(before.status!=='OPEN') throw new HttpError(409,'Somente títulos em aberto podem ser pagos.','INVALID_STATUS');
   const date=isoDate(body.payment_date||new Date().toISOString().slice(0,10),'data do pagamento');
   const cashAccountId=cleanText(required(body.cash_account_id,'Conta/Caixa'),80);
@@ -5076,6 +5077,7 @@ async function cancelFinancialPayable(env,request,auth,companyId,id){
 async function undoFinancialPayablePayment(env,request,auth,companyId,id){
   await requirePermission(env,auth.user.id,companyId,'financial.payable.manage');
   const before=await getFinancialPayable(env,companyId,id);
+  if(before.source_type==='PAYROLL_MONTHLY')await requirePermission(env,auth.user.id,companyId,'payroll.manage');
   if(before.status!=='PAID') throw new HttpError(409,'Somente títulos baixados podem ter a baixa desfeita.','INVALID_STATUS');
 
   const journalEntryId=before.payment_journal_entry_id||null;
@@ -10470,11 +10472,11 @@ async function route(request, env) {
   if(p&&method==="PATCH")return ok({event:await saveFinancialAccountingEvent(env,request,auth,companyId,p.id,await readJson(request))});
   if(p&&method==="DELETE")return ok(await deleteFinancialAccountingEvent(env,request,auth,companyId,p.id));
 
-  if(method==="GET"&&path==="/api/financial-payables"){await requirePermission(env,auth.user.id,companyId,"financial.payable.read");return ok({payables:await listFinancialPayables(env,companyId)});}
+  if(method==="GET"&&path==="/api/financial-payables"){await requirePermission(env,auth.user.id,companyId,"financial.payable.read");const allPermissions=await getEffectivePermissions(env,auth.user.id,companyId);return ok({payables:await listFinancialPayables(env,companyId,allPermissions.includes("payroll.read"))});}
   p=routeMatch(path,"/api/financial-payables/:id/pay"); if(p&&method==="POST")return ok({payable:await payFinancialPayable(env,request,auth,companyId,p.id,await readJson(request))});
   p=routeMatch(path,"/api/financial-payables/:id/unpay"); if(p&&method==="POST")return ok({payable:await undoFinancialPayablePayment(env,request,auth,companyId,p.id)});
   p=routeMatch(path,"/api/financial-payables/:id/cancel"); if(p&&method==="POST")return ok({payable:await cancelFinancialPayable(env,request,auth,companyId,p.id)});
-  p=routeMatch(path,"/api/financial-payables/:id"); if(p&&method==="GET"){await requirePermission(env,auth.user.id,companyId,"financial.payable.read");return ok({payable:await getFinancialPayable(env,companyId,p.id)});}
+  p=routeMatch(path,"/api/financial-payables/:id"); if(p&&method==="GET"){await requirePermission(env,auth.user.id,companyId,"financial.payable.read");const payable=await getFinancialPayable(env,companyId,p.id);if(payable.source_type==="PAYROLL_MONTHLY")await requirePermission(env,auth.user.id,companyId,"payroll.read");return ok({payable});}
 
   // Etapa 37: integracao somente por confirmacao explicita de folha mensal FECHADA.
   const payroll37Deps={HttpError,requirePermission,audit,ensureSchemaRevision,
