@@ -1,4 +1,5 @@
 import { payrollFinance39 } from './sagas-payroll39.js';
+import { payrollEmployer40 } from './sagas-payroll-employer40.js';
 // SAGAS Worker v77 - Corrigir migracao da natureza contábil de eventos | cumulativo desde v49
 // ===== utils.js =====
 function json(data, status = 200, extraHeaders = {}) {
@@ -10527,6 +10528,25 @@ async function route(request, env) {
   p=routeMatch(path,"/api/financial-payables/:id/cancel"); if(p&&method==="POST")return ok({payable:await cancelFinancialPayable(env,request,auth,companyId,p.id)});
   p=routeMatch(path,"/api/financial-payables/:id"); if(p&&method==="GET"){await requirePermission(env,auth.user.id,companyId,"financial.payable.read");const payable=await getFinancialPayable(env,companyId,p.id);if(payable.source_type==="PAYROLL_MONTHLY")await requirePermission(env,auth.user.id,companyId,"payroll.read");return ok({payable});}
 
+  // Etapas 40/41 - parametros patronais por empresa e previa somente de consulta.
+  if(path==='/api/payroll/employer/settings'){
+    if(method==='GET'||method==='POST')return ok(await payrollEmployer40(method==='GET'?'read':'save',{
+      env,companyId,auth,request,
+      body:method==='POST'?await readJson(request):{},
+      competence:url.searchParams.get('competence'),
+      d:{HttpError,requirePermission,ensureSchemaRevision,audit,uuid}
+    }));
+  }
+  p=routeMatch(path,'/api/payroll/monthly-runs/:id/employer-preview');
+  if(p&&method==='GET'){
+    await ensureSchemaRevision(env,'payroll-calculation-foundation',1,()=>ensurePayrollCalculationFoundation34(env));
+    await ensureSchemaRevision(env,'payroll-monthly-review',1,()=>ensurePayrollMonthlyReviewSchema36(env));
+    return ok(await payrollEmployer40('preview',{
+      env,companyId,auth,request,runId:p.id,
+      d:{HttpError,requirePermission,ensureSchemaRevision,audit,uuid,
+        payrollMonthlyRunDetail35,payrollMonthlyConference36,payrollMonthlySource35}
+    }));
+  }
   // Etapa 37: integracao somente por confirmacao explicita de folha mensal FECHADA.
   if(method==='GET'&&path==='/api/payroll/accounting-natures'){
     await requirePermission(env,auth.user.id,companyId,'payroll.read');

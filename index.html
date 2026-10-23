@@ -3011,7 +3011,8 @@ async function renderPayroll(page){
     rows=a.map(x=>`<tr><td><b>${esc(x.name)}</b></td><td>${x.active?'<span class="badge green">Ativo</span>':'<span class="badge gray">Inativo</span>'}</td><td>${actions(x)}</td></tr>`).join('');
   }
   tablePage({newLabel:manage?'Novo '+cfg.title:null,onNew:manage?()=>payrollForm(page):null,cols,rows:rows||null,emptyTitle:'Nenhum cadastro encontrado',emptyText:'Cadastre os dados em '+cfg.plural+'.',placeholder:'Pesquisar '+cfg.plural.toLowerCase()+'...'});
-  $$('[data-payroll-edit]').forEach(b=>b.onclick=()=>payrollForm(page,a.find(x=>x.id===b.dataset.payrollEdit)));
+  if(cfg.kind==='events'&&window.SAGAS_EMPLOYER40)window.SAGAS_EMPLOYER40.attach();
+  $('[data-payroll-edit]').forEach(b=>b.onclick=()=>payrollForm(page,a.find(x=>x.id===b.dataset.payrollEdit)));
   $$('[data-payroll-delete]').forEach(b=>b.onclick=()=>payrollDeleteForm(page,a.find(x=>x.id===b.dataset.payrollDelete)));
   $$('[data-payroll-event-rules]').forEach(b=>b.onclick=()=>payrollEventRulesForm(a.find(x=>x.id===b.dataset.payrollEventRules)).catch(err=>toast(err.message,'error')));
   $$('[data-payroll-accounting38]').forEach(b=>b.onclick=()=>payrollEventAccounting38(a.find(x=>x.id===b.dataset.payrollAccounting38)).catch(err=>toast(err.message,'error')));
@@ -7017,5 +7018,6 @@ setInterval(()=>checkSessionAccess(),180000);
 <script src="sagas-payroll37-ui.js"></script>
 <script src="sagas-payroll38-ui.js"></script>
 <script src="sagas-account-lookup.js"></script>
+<script src="sagas-payroll-employer40-ui.js"></script>
 </body>
 </html>
