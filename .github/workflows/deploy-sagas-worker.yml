@@ -72,6 +72,17 @@ jobs:
           console.log('Configuração validada. Destino: Worker sagas-api; vínculo D1: DB. Não foram exibidas credenciais.');
           NODE
 
+      - name: Confirmar que o Worker de produção já existe
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error --output /dev/null \
+            --header "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+            "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/scripts/sagas-api"
+          echo "Worker sagas-api existente confirmado. Prosseguindo com deploy no mesmo nome."
+
       - name: Publicar no Cloudflare
         uses: cloudflare/wrangler-action@v4
         with:
