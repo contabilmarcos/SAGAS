@@ -380,7 +380,7 @@ async function renderPayrollMovements(){
   const manage=can('payroll.manage')&&current.status==='OPEN';
   const rows=(data.items||[]).map(m=>`<tr><td>${esc(m.employee_name)}</td><td>${esc(m.event_code)} — ${esc(m.event_name)}</td><td>${esc(m.unit==='VALOR'?money(m.value):String(m.value).replace('.',',')+' '+payrollUnitName(m.unit))}</td><td>${dateBR(m.created_at)}</td><td>${manage?`<button class="btn danger sm" data-pmv-delete="${esc(m.id)}">Excluir</button>`:''}</td></tr>`).join('');
   $('#content').innerHTML=`<div class="toolbar"><select id="pmvPeriod" class="search" style="max-width:220px">${periods.map(p=>`<option value="${esc(p.id)}" ${p.id===selected?'selected':''}>${esc(p.competence.slice(5)+'/ '+p.competence.slice(0,4))} ${p.status==='OPEN'?'':'(bloqueada)'}</option>`).join('')}</select>
-    ${manage?'<button id="pmvNew" class="btn primary">+ Novo lançamento</button>':''}<button id="pmvPreview" class="btn secondary">Conferir lançamentos</button><button id="pmvSalaryPreview" class="btn secondary">Prévia do salário</button><button id="pmvFormulaPreview" class="btn secondary">Simular eventos</button><button id="pmvTaxScenario" class="btn secondary">Cenário tributário</button><button id="pmvLaborPreview" class="btn secondary">Conferir proporcionalidade</button><button id="pmvConference" class="btn secondary">Demonstrativo preliminar</button><button id="pmvEnvelope11" class="btn secondary">Envelopes preliminares</button><button id="pmvComposition14" class="btn secondary">Conferência da folha</button><button id="pmvIncidences15" class="btn secondary">Incidências INSS/IRRF/FGTS</button><button id="pmvTaxes16" class="btn secondary">Simulação de tributos</button><button id="pmvEnvelope17" class="btn secondary">Consolidar envelopes</button><button id="pmvValidate18" class="btn secondary">Validar envelopes</button><button id="pmvRemediation19" class="btn secondary">Corrigir pendências</button><button id="pmvMemory20" class="btn secondary">Memória de cálculo</button><button id="pmvBalance21" class="btn secondary">Projeção aritmética</button><button id="pmvAbsence22" class="btn secondary">Conferência faltas/DSR</button><button id="pmvBases23" class="btn secondary">Recompor bases (prévia)</button><button id="pmvCharges24" class="btn secondary">Tributos recompostos</button><button id="pmvReconcile25" class="btn secondary">Conciliar remuneração</button><button id="pmvValidate26" class="btn secondary">Validar pré-fechamento</button><button id="pmvControl27" class="btn secondary">Controle da competência</button></div>
+    ${manage?'<button id="pmvNew" class="btn primary">+ Novo lançamento</button>':''}<button id="pmvPreview" class="btn secondary">Conferir lançamentos</button><button id="pmvSalaryPreview" class="btn secondary">Prévia do salário</button><button id="pmvFormulaPreview" class="btn secondary">Simular eventos</button><button id="pmvTaxScenario" class="btn secondary">Cenário tributário</button><button id="pmvLaborPreview" class="btn secondary">Conferir proporcionalidade</button><button id="pmvConference" class="btn secondary">Demonstrativo preliminar</button><button id="pmvEnvelope11" class="btn secondary">Envelopes preliminares</button><button id="pmvComposition14" class="btn secondary">Conferência da folha</button><button id="pmvIncidences15" class="btn secondary">Incidências INSS/IRRF/FGTS</button><button id="pmvTaxes16" class="btn secondary">Simulação de tributos</button><button id="pmvEnvelope17" class="btn secondary">Consolidar envelopes</button><button id="pmvValidate18" class="btn secondary">Validar envelopes</button><button id="pmvRemediation19" class="btn secondary">Corrigir pendências</button><button id="pmvMemory20" class="btn secondary">Memória de cálculo</button><button id="pmvBalance21" class="btn secondary">Projeção aritmética</button><button id="pmvAbsence22" class="btn secondary">Conferência faltas/DSR</button><button id="pmvBases23" class="btn secondary">Recompor bases (prévia)</button><button id="pmvCharges24" class="btn secondary">Tributos recompostos</button><button id="pmvReconcile25" class="btn secondary">Conciliar remuneração</button><button id="pmvValidate26" class="btn secondary">Validar pré-fechamento</button><button id="pmvControl27" class="btn secondary">Controle da competência</button><button id="pmvRuns28" class="btn secondary">Protocolos da folha</button></div>
     <p class="muted" style="font-size:12px;margin-bottom:12px">Lançamentos registrados para processamento futuro. Esta tela não calcula salários, impostos ou valores líquidos.</p>
     <div class="table-wrap"><table class="table"><thead><tr><th>Funcionário</th><th>Evento</th><th>Valor / Referência</th><th>Registrado</th><th>Ação</th></tr></thead><tbody>${rows||empty(5,'Nenhum lançamento','Use Novo lançamento para começar.')}</tbody></table></div>`;
   $('#pmvPeriod').onchange=e=>{window.sagasPayrollCompetence=e.target.value;renderPayrollMovements().catch(err=>toast(err.message,'error'))};
@@ -406,6 +406,7 @@ async function renderPayrollMovements(){
   if($('#pmvReconcile25'))$('#pmvReconcile25').onclick=()=>payrollReconciliationScreen25().catch(err=>toast(err.message,'error'));
   if($('#pmvValidate26'))$('#pmvValidate26').onclick=()=>payrollPreClosingScreen26().catch(err=>toast(err.message,'error'));
   if($('#pmvControl27'))$('#pmvControl27').onclick=()=>payrollControlScreen27().catch(err=>toast(err.message,'error'));
+  if($('#pmvRuns28'))$('#pmvRuns28').onclick=()=>payrollRunsScreen28().catch(err=>toast(err.message,'error'));
   $$('[data-pmv-delete]').forEach(b=>b.onclick=()=>payrollMovementDelete(b.dataset.pmvDelete));
 }
 async function payrollMovementForm(competenceId){
@@ -855,6 +856,121 @@ function payrollDsrReviewForm13(employee,week,paymentDate){
       await payrollEnvelopePreviewResult11(paymentDate);
     }catch(err){toast(err.message,'error');btn.disabled=false;}
   };
+}
+
+// ===== SAGAS Folha Etapa 28: protocolos persistentes de conferencia =====
+async function payrollRunsScreen28(){
+  if(!window.sagasPayrollCompetence){toast('Selecione uma competência.','error');return;}
+  openModal('Protocolos da folha','Etapa 28 — histórico persistente de conferências técnicas por competência.',
+    '<form id="payrollRunsForm28"><label class="field"><span>Data prevista de pagamento (para conferir IRRF)</span>'+
+    '<input type="date" name="payment_date" min="2020-01-01" max="2026-12-31" required></label>'+
+    '<p class="help">O protocolo é um registro técnico de conferência, não uma folha processada, aprovada, fechada ou pronta para pagamento.</p>'+
+    '<div class="form-actions"><button type="button" class="btn secondary" id="runs28Cancel">Cancelar</button>'+
+    '<button type="submit" class="btn primary">Consultar histórico</button></div></form>');
+  $('#runs28Cancel').onclick=closeModal;
+  const form=$('#payrollRunsForm28');
+  form.onsubmit=async ev=>{
+    ev.preventDefault();
+    const button=form.querySelector('[type=submit]');button.disabled=true;
+    try{await payrollRunsHistory28(form.elements.payment_date.value);}
+    catch(err){toast(err.status===404?'Publique o Worker v66 no Cloudflare para usar os protocolos.':err.message,'error');button.disabled=false;}
+  };
+}
+async function payrollRunsHistory28(paymentDate){
+  const cid=window.sagasPayrollCompetence;
+  if(!cid){toast('Selecione uma competência.','error');return;}
+  const d=await api('/api/payroll/processing-runs?competence_id='+encodeURIComponent(cid)+
+    '&payment_date='+encodeURIComponent(paymentDate));
+  const items=d.items||[];
+  const rows=items.map(x=>
+    '<tr><td class="code">'+esc(x.id.slice(0,8))+'</td>'+
+    '<td>'+esc(x.created_at||'—')+'</td>'+
+    '<td>'+esc(x.state==='CONFERENCIA_TECNICA'?'Conferência técnica':'Pendente técnico')+'</td>'+
+    '<td>'+esc(x.employee_count??0)+'</td>'+
+    '<td>'+esc(x.pending_employee_count??0)+'</td>'+
+    '<td>Não homologado</td>'+
+    '<td><button class="btn secondary sm" type="button" data-run28-id="'+esc(x.id)+'">Detalhar</button></td></tr>').join('');
+  openModal('Protocolos — '+String(d.competence?.competence||''),
+    'Registros históricos de conferência para a data '+paymentDate+'.',
+    '<p class="help">Protocolos encontrados: '+esc(items.length)+' · Arquivos históricos não são atualizados quando cadastros ou lançamentos mudam.</p>'+
+    '<div class="table-wrap"><table class="table"><thead><tr><th>Protocolo</th><th>Registrado em</th>'+
+    '<th>Conferência</th><th>Funcionários</th><th>Pendentes</th><th>Homologação</th><th>Ação</th></tr></thead><tbody>'+
+    (rows||empty(7,'Nenhum protocolo','Use Registrar conferência atual para salvar a primeira fotografia técnica.'))+
+    '</tbody></table></div>'+
+    '<p class="help"><b>Não registra pagamentos, impostos, contabilização ou salário líquido.</b></p>'+
+    '<div class="form-actions"><button type="button" class="btn secondary" id="runs28Close">Fechar</button>'+
+    (can('payroll.manage')?'<button type="button" class="btn primary" id="runs28Create">Registrar conferência atual</button>':'')+
+    '</div>',true);
+  $('#runs28Close').onclick=closeModal;
+  if($('#runs28Create'))$('#runs28Create').onclick=()=>payrollRunsConfirm28(paymentDate);
+  $$('[data-run28-id]',$('#modalBody')).forEach(button=>button.onclick=()=>
+    payrollRunsDetail28(button.dataset.run28Id,paymentDate).catch(err=>toast(err.message,'error')));
+}
+function payrollRunsConfirm28(paymentDate){
+  if(!can('payroll.manage')){toast('Sem permissão para registrar conferências.','error');return;}
+  openModal('Registrar conferência técnica','Confirme o registro persistente de um diagnóstico da competência.',
+    '<p>O sistema recalculará a conferência técnica usando os lançamentos atuais e salvará uma fotografia histórica.</p>'+
+    '<p class="help">A gravação não homologa a folha, não calcula salário líquido, não desconta INSS/IRRF e não gera pagamentos ou contabilidade. Repetir sem alterações mantém o mesmo protocolo.</p>'+
+    '<div class="form-actions"><button class="btn secondary" type="button" id="runs28Abort">Cancelar</button>'+
+    '<button class="btn primary" type="button" id="runs28Confirm">Registrar conferência</button></div>');
+  $('#runs28Abort').onclick=()=>payrollRunsHistory28(paymentDate).catch(err=>toast(err.message,'error'));
+  $('#runs28Confirm').onclick=async()=>{
+    const btn=$('#runs28Confirm');btn.disabled=true;
+    try{
+      const r=await api('/api/payroll/processing-runs',{method:'POST',
+        body:{competence_id:window.sagasPayrollCompetence,payment_date:paymentDate}});
+      toast(r.created?'Protocolo de conferência registrado.':'Conferência sem mudanças: protocolo anterior preservado.');
+      await payrollRunsHistory28(paymentDate);
+    }catch(err){toast(err.message,'error');btn.disabled=false;}
+  };
+}
+async function payrollRunsDetail28(runId,paymentDate){
+  const d=await api('/api/payroll/processing-runs/'+encodeURIComponent(runId));
+  const snapshot=d.snapshot||{},run=d.run||{};
+  const items=snapshot.items||[];
+  const money28=c=>typeof c==='number'&&Number.isSafeInteger(c)?money(c/100):'Indisponível';
+  const rows=items.map(x=>
+    '<tr><td class="code">'+esc(x.employee_code||'—')+'</td>'+
+    '<td><b>'+esc(x.employee_name||'—')+'</b></td>'+
+    '<td>'+esc(x.state==='CONFERENCIA_TECNICA'?'Conferência técnica':'Pendente técnico')+'</td>'+
+    '<td>'+esc(x.technical_pending_count??'—')+'</td>'+
+    '<td>'+money28(x.arithmetic_reference_cents)+'</td>'+
+    '<td><button type="button" class="btn secondary sm" data-run28-emp="'+esc(x.employee_id)+'">Detalhar</button></td></tr>').join('');
+  openModal('Protocolo '+String(run.id||'').slice(0,8),
+    'Fotografia histórica registrada em '+(run.created_at||'—')+'.',
+    '<p><b>Funcionários:</b> '+esc(snapshot.employee_count??0)+
+    ' · <b>Pendentes:</b> '+esc(snapshot.pending_count??0)+
+    ' · <b>Em conferência técnica:</b> '+esc(snapshot.technical_count??0)+'</p>'+
+    '<p class="help">Integridade SHA-256 verificada pelo servidor. Homologação e integrações: bloqueadas.</p>'+
+    '<div class="table-wrap"><table class="table"><thead><tr><th>ID</th><th>Funcionário</th>'+
+    '<th>Conferência</th><th>Pendências</th><th>Referência*</th><th>Ação</th></tr></thead><tbody>'+
+    (rows||empty(6,'Sem funcionários','Não há envelopes neste protocolo.'))+'</tbody></table></div>'+
+    '<p class="help">*A referência é apenas aritmética, nunca salário líquido. O histórico não é alterado por novos lançamentos.</p>'+
+    '<div class="form-actions"><button type="button" class="btn secondary" id="runs28Back">Voltar ao histórico</button></div>',true);
+  $('#runs28Back').onclick=()=>payrollRunsHistory28(paymentDate).catch(err=>toast(err.message,'error'));
+  $$('[data-run28-emp]',$('#modalBody')).forEach(button=>button.onclick=()=>{
+    const emp=items.find(x=>x.employee_id===button.dataset.run28Emp);
+    if(emp)payrollRunsEmployee28(emp,runId,paymentDate);
+  });
+}
+function payrollRunsEmployee28(emp,runId,paymentDate){
+  const checks=(emp.checks||[]).map(c=>'<tr><td>'+esc(c.title||c.code)+'</td>'+
+    '<td>'+esc(c.status||'PENDENTE')+'</td>'+
+    '<td>'+esc(c.evidence||'—')+'</td>'+
+    '<td>'+esc(c.required_action||'—')+'</td></tr>').join('');
+  const actions=(emp.next_actions||[]).map(x=>'<p><b>'+esc(x.title||x.code)+':</b> '+
+    esc(x.required_action||'—')+'</p>').join('');
+  openModal('Conferência registrada — '+emp.employee_name,
+    'ID '+(emp.employee_code||'—')+' · registro histórico sem homologação.',
+    '<p><b>Situação:</b> '+esc(emp.state||'PENDENTE_TECNICO')+
+    ' · <b>Pendências:</b> '+esc(emp.technical_pending_count??0)+'</p>'+
+    '<div class="table-wrap"><table class="table"><thead><tr><th>Área</th><th>Status</th>'+
+    '<th>Evidência</th><th>Providência</th></tr></thead><tbody>'+
+    (checks||empty(4,'Sem verificações',''))+'</tbody></table></div>'+
+    '<h4>Próximas ações</h4><div class="help">'+(actions||'Sem pendência técnica registrada. Homologação continua indisponível.')+'</div>'+
+    '<p class="help">Este documento é apenas um protocolo de conferência.</p>'+
+    '<div class="form-actions"><button class="btn secondary" type="button" id="runs28EmpBack">Voltar ao protocolo</button></div>',true);
+  $('#runs28EmpBack').onclick=()=>payrollRunsDetail28(runId,paymentDate).catch(err=>toast(err.message,'error'));
 }
 
 // ===== SAGAS Folha Etapa 27: controle de conferencia tecnica por competencia =====
