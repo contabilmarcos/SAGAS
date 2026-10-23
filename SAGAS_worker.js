@@ -4701,9 +4701,17 @@ async function buildRmAccountingLines(env,companyId,{eventId,receiptItems,itemsS
         if(rule.account_origin==='NATURE'){
           if(!x.oi.budget_nature_id) throw new HttpError(409,`O item ${x.oi.description} não possui Natureza Orçamentária/Financeira.`,'NATURE_NOT_CONFIGURED');
           const defaults=await getNatureDefaults(env,companyId,x.oi.budget_nature_id,rule.side);
-          if(!defaults.length) throw new HttpError(409,`A Natureza do item ${x.oi.description} não possui default contábil de ${rule.side==='D'?'débito':'crédito'}.`,'NATURE_DEFAULT_NOT_CONFIGURED');
-          for(const d of defaults){
-            const amount=centsPercent(ruleAmount,Number(d.percentage||100));
+          const itemCc=rule.cost_center_id||x.oi.cost_center_id||null;
+          const exact=itemCc?defaults.filter(v=>v.cost_center_id===itemCc):[];
+          const applicable=exact.length?exact:defaults.filter(v=>!v.cost_center_id);
+          if(!applicable.length) throw new HttpError(409,`A Natureza do item ${x.oi.description} não possui default de ${rule.side==='D'?'débito':'crédito'} para o centro de custo informado.`,'NATURE_DEFAULT_NOT_CONFIGURED');
+          const pctTotal=applicable.reduce((n,v)=>n+Number(v.percentage||0),0);
+          if(Math.abs(pctTotal-100)>0.0001) throw new HttpError(409,'Percentuais dos defaults da natureza não conciliam para o centro de custo.','INVALID_PERCENTAGE');
+          let allocated=0;
+          for(let di=0;di<applicable.length;di++){
+            const d=applicable[di];
+            const amount=di===applicable.length-1?ruleAmount-allocated:centsPercent(ruleAmount,Number(d.percentage||100));
+            allocated+=amount;
             if(amount<=0)continue;
             lines.push({
               side:rule.side,account_id:d.account_id,amount:centsToMoney(amount),
