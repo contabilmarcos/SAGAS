@@ -126,6 +126,41 @@ html,body{width:100%;height:100%;overflow:hidden;font-family:"Segoe UI",Tahoma,A
 #content .sagas-rm-grid .sagas-auto-filter-row th{top:27px;position:sticky;z-index:2;background:#eaf2fa}
 #content .sagas-auto-filter-row input[type="date"]{min-width:116px}
 </style>
+<style id="sagas-payroll-comparison-v33">
+/* Etapa 33 · complemento pontual aos modais do módulo de folha. */
+.sagas-calc-compare33{border-top:1px solid #cbd3d7;border-bottom:1px solid #cbd3d7;padding:11px 0;margin:12px 0;background:#fff}
+.sagas-calc-compare33-title{color:#086f90;font-weight:700;margin-bottom:7px;font-size:11px}
+.sagas-calc-compare33-form{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr) auto;gap:9px;align-items:end}
+.sagas-calc-compare33-form .field{min-width:0}
+.sagas-calc-compare33-form select{width:100%;max-width:100%}
+.sagas-calc-compare33-form button{white-space:nowrap}
+.sagas-calc-compare33-summary{font-size:11px;margin:8px 0 12px;line-height:1.6}
+.sagas-calc-compare33-label{font-size:11px;margin:14px 0 7px;font-weight:700;color:#176f83}
+.sagas-calc-compare33-warning{border-left:3px solid #b88a1c;padding:8px 11px;background:#fff8e8;color:#68501d;margin:10px 0;line-height:1.5}
+.sagas-calc-compare33 .table-wrap{max-height:260px;overflow:auto;flex:none!important;border:1px solid #d5dce0!important}
+.sagas-calc-compare33 .table{min-width:740px}
+.sagas-calc-compare33 .table td{white-space:normal!important;vertical-align:top}
+.sagas-calc-compare33 .sagas-amount-negative{color:#b33f37}
+.sagas-calc-compare33 .sagas-amount-positive{color:#167454}
+@media(max-width:700px){.sagas-calc-compare33-form{grid-template-columns:minmax(0,1fr)}.sagas-calc-compare33-form button{justify-self:start}}
+</style>
+
+<style id="sagas-payroll-process-dropdown-v34">
+/* Folha > Lançamentos: as ações do processamento ficam em um único menu. */
+#app .toolbar.sagas-payroll-toolbar{height:auto;min-height:38px;overflow:visible;flex-wrap:wrap;gap:7px;padding:5px 8px;align-content:center}
+#app .toolbar.sagas-payroll-toolbar #pmvPeriod{width:190px;max-width:220px;flex:0 1 190px;order:0}
+#app .toolbar.sagas-payroll-toolbar #pmvNew{white-space:nowrap}
+.sagas-payroll-process-wrap{position:relative;display:inline-flex;align-items:center;flex:0 0 auto}
+#app .sagas-payroll-process-toggle{display:inline-flex;align-items:center;gap:12px;white-space:nowrap;min-height:27px;font-weight:600;color:#116981;border:1px solid #b6c6cf;background:#fff;padding:4px 10px}
+#app .sagas-payroll-process-toggle:hover,#app .sagas-payroll-process-toggle[aria-expanded="true"]{background:#eaf3f7;border-color:#6ea9ba;color:#076680}
+.sagas-payroll-process-menu{display:none;position:absolute;left:0;top:calc(100% + 5px);width:305px;max-width:calc(100vw - 25px);max-height:min(590px,calc(100vh - 215px));overflow-y:auto;overscroll-behavior:contain;background:#fff;border:1px solid #aebec8;box-shadow:0 12px 28px rgba(29,52,69,.20);z-index:120;padding:5px 0 7px;scrollbar-width:thin}
+.sagas-payroll-process-menu.show{display:block}
+.sagas-payroll-process-group+.sagas-payroll-process-group{border-top:1px solid #e3e9ed;padding-top:5px;margin-top:5px}
+.sagas-payroll-process-heading{font:700 10px 'Segoe UI',Tahoma,Arial,sans-serif;color:#67808d;letter-spacing:.025em;text-transform:uppercase;padding:7px 13px 5px;user-select:none}
+#app .sagas-payroll-process-menu .sagas-payroll-process-item{display:block;width:100%;min-height:30px;padding:7px 13px;border:0;border-radius:0;background:#fff;color:#263c49;text-align:left;white-space:normal;cursor:pointer;font:400 11px 'Segoe UI',Tahoma,Arial,sans-serif;line-height:1.35}
+#app .sagas-payroll-process-menu .sagas-payroll-process-item:hover,#app .sagas-payroll-process-menu .sagas-payroll-process-item:focus-visible{background:#e5f2f7;color:#076981;outline:none}
+@media(max-width:650px){#app .toolbar.sagas-payroll-toolbar #pmvPeriod{flex-basis:100%;width:100%;max-width:100%!important}.sagas-payroll-process-menu{left:auto;right:0;max-height:calc(100vh - 240px)}}
+</style>
 </head>
 <body>
   <div id="toasts"></div>
@@ -379,10 +414,84 @@ async function renderPayrollMovements(){
   const current=periods.find(p=>p.id===selected),data=await api('/api/payroll/movements?competence_id='+encodeURIComponent(selected));
   const manage=can('payroll.manage')&&current.status==='OPEN';
   const rows=(data.items||[]).map(m=>`<tr><td>${esc(m.employee_name)}</td><td>${esc(m.event_code)} — ${esc(m.event_name)}</td><td>${esc(m.unit==='VALOR'?money(m.value):String(m.value).replace('.',',')+' '+payrollUnitName(m.unit))}</td><td>${dateBR(m.created_at)}</td><td>${manage?`<button class="btn danger sm" data-pmv-delete="${esc(m.id)}">Excluir</button>`:''}</td></tr>`).join('');
-  $('#content').innerHTML=`<div class="toolbar"><select id="pmvPeriod" class="search" style="max-width:220px">${periods.map(p=>`<option value="${esc(p.id)}" ${p.id===selected?'selected':''}>${esc(p.competence.slice(5)+'/ '+p.competence.slice(0,4))} ${p.status==='OPEN'?'':'(bloqueada)'}</option>`).join('')}</select>
-    ${manage?'<button id="pmvNew" class="btn primary">+ Novo lançamento</button>':''}<button id="pmvPreview" class="btn secondary">Conferir lançamentos</button><button id="pmvSalaryPreview" class="btn secondary">Prévia do salário</button><button id="pmvFormulaPreview" class="btn secondary">Simular eventos</button><button id="pmvTaxScenario" class="btn secondary">Cenário tributário</button><button id="pmvLaborPreview" class="btn secondary">Conferir proporcionalidade</button><button id="pmvConference" class="btn secondary">Demonstrativo preliminar</button><button id="pmvEnvelope11" class="btn secondary">Envelopes preliminares</button><button id="pmvComposition14" class="btn secondary">Conferência da folha</button><button id="pmvIncidences15" class="btn secondary">Incidências INSS/IRRF/FGTS</button><button id="pmvTaxes16" class="btn secondary">Simulação de tributos</button><button id="pmvEnvelope17" class="btn secondary">Consolidar envelopes</button><button id="pmvValidate18" class="btn secondary">Validar envelopes</button><button id="pmvRemediation19" class="btn secondary">Corrigir pendências</button><button id="pmvMemory20" class="btn secondary">Memória de cálculo</button><button id="pmvBalance21" class="btn secondary">Projeção aritmética</button><button id="pmvAbsence22" class="btn secondary">Conferência faltas/DSR</button><button id="pmvBases23" class="btn secondary">Recompor bases (prévia)</button><button id="pmvCharges24" class="btn secondary">Tributos recompostos</button><button id="pmvReconcile25" class="btn secondary">Conciliar remuneração</button><button id="pmvValidate26" class="btn secondary">Validar pré-fechamento</button><button id="pmvControl27" class="btn secondary">Controle da competência</button><button id="pmvRuns28" class="btn secondary">Protocolos da folha</button></div>
+  $('#content').innerHTML=`<div class="toolbar sagas-payroll-toolbar"><select id="pmvPeriod" class="search" style="max-width:220px">${periods.map(p=>`<option value="${esc(p.id)}" ${p.id===selected?'selected':''}>${esc(p.competence.slice(5)+'/ '+p.competence.slice(0,4))} ${p.status==='OPEN'?'':'(bloqueada)'}</option>`).join('')}</select>
+    ${manage?'<button id="pmvNew" type="button" class="btn primary">+ Novo lançamento</button>':''}
+    <div class="sagas-payroll-process-wrap">
+      <button id="pmvProcesses" type="button" class="btn secondary sagas-payroll-process-toggle" aria-haspopup="true" aria-expanded="false" aria-controls="pmvProcessMenu">⚙ Processos <span aria-hidden="true">▾</span></button>
+      <div id="pmvProcessMenu" class="sagas-payroll-process-menu" role="menu" aria-label="Processos da folha">
+      <div class="sagas-payroll-process-group" role="group" aria-label="Consultas e prévias">
+        <div class="sagas-payroll-process-heading">Consultas e prévias</div>
+        <button type="button" id="pmvPreview" class="sagas-payroll-process-item" role="menuitem">Conferir lançamentos</button>
+        <button type="button" id="pmvSalaryPreview" class="sagas-payroll-process-item" role="menuitem">Prévia do salário</button>
+        <button type="button" id="pmvFormulaPreview" class="sagas-payroll-process-item" role="menuitem">Simular eventos</button>
+        <button type="button" id="pmvTaxScenario" class="sagas-payroll-process-item" role="menuitem">Cenário tributário</button>
+        <button type="button" id="pmvLaborPreview" class="sagas-payroll-process-item" role="menuitem">Conferir proporcionalidade</button>
+        <button type="button" id="pmvConference" class="sagas-payroll-process-item" role="menuitem">Demonstrativo preliminar</button>
+        <button type="button" id="pmvEnvelope11" class="sagas-payroll-process-item" role="menuitem">Envelopes preliminares</button>
+        <button type="button" id="pmvComposition14" class="sagas-payroll-process-item" role="menuitem">Conferência da folha</button>
+      </div>
+<div class="sagas-payroll-process-group" role="group" aria-label="Tributos e envelopes">
+        <div class="sagas-payroll-process-heading">Tributos e envelopes</div>
+        <button type="button" id="pmvIncidences15" class="sagas-payroll-process-item" role="menuitem">Incidências INSS/IRRF/FGTS</button>
+        <button type="button" id="pmvTaxes16" class="sagas-payroll-process-item" role="menuitem">Simulação de tributos</button>
+        <button type="button" id="pmvEnvelope17" class="sagas-payroll-process-item" role="menuitem">Consolidar envelopes</button>
+        <button type="button" id="pmvValidate18" class="sagas-payroll-process-item" role="menuitem">Validar envelopes</button>
+        <button type="button" id="pmvRemediation19" class="sagas-payroll-process-item" role="menuitem">Corrigir pendências</button>
+      </div>
+<div class="sagas-payroll-process-group" role="group" aria-label="Cálculos e conferências">
+        <div class="sagas-payroll-process-heading">Cálculos e conferências</div>
+        <button type="button" id="pmvMemory20" class="sagas-payroll-process-item" role="menuitem">Memória de cálculo</button>
+        <button type="button" id="pmvBalance21" class="sagas-payroll-process-item" role="menuitem">Projeção aritmética</button>
+        <button type="button" id="pmvAbsence22" class="sagas-payroll-process-item" role="menuitem">Conferência faltas/DSR</button>
+        <button type="button" id="pmvBases23" class="sagas-payroll-process-item" role="menuitem">Recompor bases (prévia)</button>
+        <button type="button" id="pmvCharges24" class="sagas-payroll-process-item" role="menuitem">Tributos recompostos</button>
+        <button type="button" id="pmvReconcile25" class="sagas-payroll-process-item" role="menuitem">Conciliar remuneração</button>
+      </div>
+<div class="sagas-payroll-process-group" role="group" aria-label="Pré-fechamento e protocolos">
+        <div class="sagas-payroll-process-heading">Pré-fechamento e protocolos</div>
+        <button type="button" id="pmvValidate26" class="sagas-payroll-process-item" role="menuitem">Validar pré-fechamento</button>
+        <button type="button" id="pmvControl27" class="sagas-payroll-process-item" role="menuitem">Controle da competência</button>
+        <button type="button" id="pmvRuns28" class="sagas-payroll-process-item" role="menuitem">Protocolos da folha</button>
+      </div>
+      </div>
+    </div></div>
     <p class="muted" style="font-size:12px;margin-bottom:12px">Lançamentos registrados para processamento futuro. Esta tela não calcula salários, impostos ou valores líquidos.</p>
     <div class="table-wrap"><table class="table"><thead><tr><th>Funcionário</th><th>Evento</th><th>Valor / Referência</th><th>Registrado</th><th>Ação</th></tr></thead><tbody>${rows||empty(5,'Nenhum lançamento','Use Novo lançamento para começar.')}</tbody></table></div>`;
+
+  // Processos da Folha: menu único, sem alterar os eventos originais dos botões.
+  const pmvProcessTrigger=$('#pmvProcesses');
+  const pmvProcessMenu=$('#pmvProcessMenu');
+  function closePmvProcessMenu(returnFocus=false){
+    pmvProcessMenu.classList.remove('show');
+    pmvProcessTrigger.setAttribute('aria-expanded','false');
+    if(returnFocus)pmvProcessTrigger.focus();
+  }
+  pmvProcessTrigger.onclick=()=>{
+    const open=!pmvProcessMenu.classList.contains('show');
+    pmvProcessMenu.classList.toggle('show',open);
+    pmvProcessTrigger.setAttribute('aria-expanded',String(open));
+  };
+  pmvProcessTrigger.onkeydown=e=>{
+    if(e.key==='ArrowDown'){
+      e.preventDefault();
+      pmvProcessMenu.classList.add('show');
+      pmvProcessTrigger.setAttribute('aria-expanded','true');
+      pmvProcessMenu.querySelector('[role="menuitem"]')?.focus();
+    }
+  };
+  pmvProcessMenu.addEventListener('click',e=>{
+    if(e.target.closest('[role="menuitem"]'))closePmvProcessMenu();
+  });
+  pmvProcessMenu.addEventListener('keydown',e=>{
+    const buttons=[...pmvProcessMenu.querySelectorAll('[role="menuitem"]')];
+    const i=buttons.indexOf(document.activeElement);
+    if(e.key==='Escape'){e.preventDefault();closePmvProcessMenu(true);return;}
+    if(!['ArrowUp','ArrowDown','Home','End'].includes(e.key))return;
+    e.preventDefault();
+    const next=e.key==='Home'?0:e.key==='End'?buttons.length-1:e.key==='ArrowUp'?(i-1+buttons.length)%buttons.length:(i+1)%buttons.length;
+    buttons[next]?.focus();
+  });
+
   $('#pmvPeriod').onchange=e=>{window.sagasPayrollCompetence=e.target.value;renderPayrollMovements().catch(err=>toast(err.message,'error'))};
   if($('#pmvNew'))$('#pmvNew').onclick=()=>payrollMovementForm(selected);
   if($('#pmvPreview'))$('#pmvPreview').onclick=()=>payrollMovementsPreview().catch(err=>toast(err.message,'error'));
@@ -446,6 +555,23 @@ function payrollMovementDelete(id){
     catch(err){toast(err.message,'error')}
   };
 }
+
+// Fecha o menu Processos ao clicar fora dele ou apertar Esc.
+document.addEventListener('pointerdown',event=>{
+  const wrap=document.querySelector('.sagas-payroll-process-wrap');
+  if(!wrap||wrap.contains(event.target))return;
+  const menu=wrap.querySelector('#pmvProcessMenu');
+  const trigger=wrap.querySelector('#pmvProcesses');
+  if(menu?.classList.contains('show')){
+    menu.classList.remove('show');
+    trigger?.setAttribute('aria-expanded','false');
+  }
+});
+document.addEventListener('keydown',event=>{
+  if(event.key!=='Escape')return;
+  const menu=document.querySelector('#pmvProcessMenu.show');
+  if(menu){menu.classList.remove('show');const trigger=document.querySelector('#pmvProcesses');trigger?.setAttribute('aria-expanded','false');trigger?.focus();}
+});
 
 // ===== Folha SAGAS Etapa 02: conferência de lançamentos, SEM folha calculada =====
 async function payrollMovementsPreview(){
@@ -858,13 +984,16 @@ function payrollDsrReviewForm13(employee,week,paymentDate){
   };
 }
 
-// ===== SAGAS Folha Etapa 31: historico de versoes de calculo demonstrativo =====
+// ===== SAGAS Folha Etapas 31 e 33: versoes e comparacao historica =====
 async function payrollCalculationVersions31(runId,paymentDate){
   const cid=window.sagasPayrollCompetence;
   if(!cid){toast('Selecione uma competência.','error');return;}
   const data=await api('/api/payroll/calculation-versions?competence_id='+encodeURIComponent(cid)+
     '&payment_date='+encodeURIComponent(paymentDate));
   const items=data.items||[];
+  const compareAvailable=items.length>=2;
+  const versionOptions=items.map(x=>'<option value="'+esc(x.id)+'">v'+esc(x.version)+
+    ' — '+esc(dateTimeBR(x.created_at))+' (protocolo '+esc(String(x.run_id||'').slice(0,8))+')</option>').join('');
   const rows=items.map(x=>
     '<tr><td><b>v'+esc(x.version)+'</b></td>'+
     '<td class="code">'+esc(String(x.run_id||'').slice(0,8))+'</td>'+
@@ -882,11 +1011,34 @@ async function payrollCalculationVersions31(runId,paymentDate){
     (rows||empty(6,'Sem versões','Registre a primeira versão para arquivar os componentes demonstrativos.'))+
     '</tbody></table></div>'+
     '<p class="help"><b>Importante:</b> nenhuma versão constitui folha líquida definitiva, aprovação, retenção, pagamento, fechamento ou contabilização.</p>'+
+    '<div class="sagas-calc-compare33"><div class="sagas-calc-compare33-title">Comparação de versões</div>'+
+    (compareAvailable?
+      '<div class="sagas-calc-compare33-form">'+
+        '<label class="field"><span>Versão anterior</span><select id="calc33Previous">'+versionOptions+'</select></label>'+
+        '<label class="field"><span>Versão atual</span><select id="calc33Current">'+versionOptions+'</select></label>'+
+        '<button id="calc33Compare" type="button" class="btn primary">Comparar versões</button>'+
+      '</div>':
+      '<p class="help">Registre pelo menos duas versões da mesma competência e data de pagamento para comparar.</p>')+
+    '</div>'+
     '<div class="form-actions"><button class="btn secondary" type="button" id="calc31Back">Voltar ao protocolo</button>'+
     (can('payroll.manage')?'<button class="btn primary" type="button" id="calc31New">Registrar versão deste protocolo</button>':'')+
     '</div>',true);
   $('#calc31Back').onclick=()=>payrollRunsDetail28(runId,paymentDate).catch(err=>toast(err.message,'error'));
   if($('#calc31New'))$('#calc31New').onclick=()=>payrollCalculationVersionConfirm31(runId,paymentDate);
+  if(compareAvailable){
+    const prior=$('#calc33Previous'),latest=$('#calc33Current'),btn=$('#calc33Compare');
+    // A API lista as versões decrescentemente; escolher as duas mais recentes por padrão.
+    prior.value=items[1].id;
+    latest.value=items[0].id;
+    const update=()=>{btn.disabled=!prior.value||!latest.value||prior.value===latest.value;};
+    prior.onchange=update;latest.onchange=update;update();
+    btn.onclick=async()=>{
+      if(btn.disabled)return;
+      btn.disabled=true;
+      try{await payrollCalculationCompareRequest33(prior.value,latest.value,runId,paymentDate);}
+      catch(err){toast(err.message,'error');if(btn.isConnected)update();}
+    };
+  }
   $$('[data-calc31-id]',$('#modalBody')).forEach(btn=>btn.onclick=()=>
     payrollCalculationVersionDetail31(btn.dataset.calc31Id,runId,paymentDate).catch(err=>toast(err.message,'error')));
 }
@@ -971,6 +1123,151 @@ function payrollCalculationVersionEmployee31(e,version,originRunId,paymentDate){
     '<p class="help"><b>*Não é holerite nem autorização para retenção, pagamento, fechamento ou contabilização.</b></p>'+
     '<div class="form-actions"><button class="btn secondary" type="button" id="calc31EmpBack">Voltar à versão</button></div>',true);
   $('#calc31EmpBack').onclick=()=>payrollCalculationVersionDetail31(version.id,originRunId,paymentDate).catch(err=>toast(err.message,'error'));
+}
+
+// ===== SAGAS Folha Etapa 33: interface de comparacao historica da API v70 =====
+const PAYROLL_COMPARISON_LABELS_33={
+  salary_reference:'Salário de referência',event_earnings:'Proventos dos eventos',
+  gross_before_absence:'Bruto antes de faltas',absence_reference:'Faltas simuladas',
+  dsr_reference:'DSR simulado',absence_dsr_reference:'Faltas + DSR',
+  balance_after_absence:'Saldo após faltas e DSR',event_deductions:'Descontos dos eventos',
+  balance_after_event_deductions:'Saldo antes dos tributos',inss_simulated:'INSS simulado',
+  irrf_simulated:'IRRF simulado',fgts_employer_simulated:'FGTS patronal simulado',
+  arithmetic_balance_projection:'Saldo aritmético hipotético (NÃO É LÍQUIDO)'
+};
+function payrollCompareMoney33(cents){
+  return typeof cents==='number'&&Number.isSafeInteger(cents)?money(cents/100):'Indisponível';
+}
+function payrollCompareDelta33(cents){
+  return typeof cents==='number'&&Number.isSafeInteger(cents)?
+    (cents>0?'+':'')+money(cents/100):'—';
+}
+function payrollCompareState33(state){
+  return ({INCLUIDO:'Incluído',EXCLUIDO:'Excluído',ALTERADO:'Alterado',SEM_ALTERACAO:'Sem alteração',
+    SEM_ALTERACAO_COM_RESSALVA:'Sem diferença conhecida*',AGORA_DISPONIVEL:'Agora disponível',
+    AGORA_INDISPONIVEL:'Agora indisponível'})[state]||state||'—';
+}
+function payrollCompareDeltaCell33(item){
+  const val=item?.delta_cents;
+  const status=item?.status;
+  const style=typeof val==='number'&&val!==0?
+    ' class="'+(val<0?'sagas-amount-negative':'sagas-amount-positive')+'"':'';
+  return '<td'+style+'>'+esc(payrollCompareDelta33(val))+'</td><td>'+esc(payrollCompareState33(status))+'</td>';
+}
+function payrollCompareEmployeeName33(e){
+  const name=e.employee_name_after||e.employee_name_before||'Funcionário';
+  const code=e.employee_code_after||e.employee_code_before||'—';
+  return {name,code};
+}
+async function payrollCalculationCompareRequest33(previousId,currentId,runId,paymentDate){
+  if(!previousId||!currentId||previousId===currentId){
+    toast('Escolha duas versões diferentes.','error');return;
+  }
+  const data=await api('/api/payroll/calculation-versions/compare?left_id='+
+    encodeURIComponent(previousId)+'&right_id='+encodeURIComponent(currentId));
+  if(data.kind!=='COMPARACAO_VERSOES_DEMONSTRATIVAS_ETAPA_32'||!data.read_only){
+    throw Error('A API não retornou uma comparação histórica válida. Confirme a versão v70 do Worker.');
+  }
+  payrollCalculationCompareView33(data,runId,paymentDate);
+}
+function payrollCalculationCompareView33(data,runId,paymentDate){
+  const old=data.previous_version||{},now=data.current_version||{},sum=data.summary||{};
+  const totals=data.totals_cents||{};
+  const rows=Object.entries(PAYROLL_COMPARISON_LABELS_33).map(([field,label])=>{
+    const d=totals[field]||{};
+    return '<tr><td>'+esc(label)+'</td><td>'+payrollCompareMoney33(d.before_cents)+'</td>'+
+      '<td>'+payrollCompareMoney33(d.after_cents)+'</td>'+payrollCompareDeltaCell33(d)+'</tr>';
+  }).join('');
+  const people=(data.employees||[]).map((e,i)=>{
+    const info=payrollCompareEmployeeName33(e),evt=e.events||{};
+    const eventsText=evt.available?
+      String(Number(evt.added||0)+Number(evt.removed||0)+Number(evt.changed||0)):'Não disponível';
+    return '<tr><td class="code">'+esc(info.code)+'</td><td><b>'+esc(info.name)+'</b></td>'+
+      '<td>'+esc(payrollCompareState33(e.state))+'</td><td>'+esc(e.changed_fields_count??0)+'</td>'+
+      '<td>'+esc(eventsText)+'</td><td><button class="btn secondary sm" type="button" data-calc33-employee="'+i+'">Detalhar</button></td></tr>';
+  }).join('');
+  const statement='Comparação informativa de versões arquivadas: não é holerite, nem folha homologada. '+
+    'O saldo aritmético projetado não representa líquido devido. FGTS patronal não é desconto do empregado.';
+  openModal('Comparar demonstrativos — v'+String(old.version||'—')+' × v'+String(now.version||'—'),
+    'Etapa 33 · documentos históricos vinculados aos protocolos, somente leitura.',
+    '<div class="sagas-calc-compare33">'+
+    '<p><b>Data de pagamento:</b> '+esc(data.payment_date?dateBR(data.payment_date):'—')+
+    ' · <b>Protocolo anterior:</b> '+esc(String(old.run_id||'').slice(0,8))+
+    ' · <b>Protocolo atual:</b> '+esc(String(now.run_id||'').slice(0,8))+'</p>'+
+    '<p class="sagas-calc-compare33-summary"><b>Funcionários:</b> '+
+      esc(sum.employees_added||0)+' incluídos; '+esc(sum.employees_removed||0)+' excluídos; '+
+      esc(sum.employees_changed||0)+' alterados; '+esc(sum.employees_unchanged||0)+' sem alteração conhecida. '+
+    '<b>Alterações de eventos identificadas:</b> '+esc(sum.event_changes||0)+
+    ' · <b>Componentes com mudança:</b> '+esc(sum.total_fields_changed||0)+'.</p>'+
+    (data.events_fully_comparable?'':
+      '<div class="sagas-calc-compare33-warning"><b>Histórico parcial:</b> '+
+        esc(data.historical_limitation||'Pelo menos uma versão não possui eventos históricos arquivados.')+
+        ' Não se pode interpretar eventos ausentes como eventos iguais.</div>')+
+    '<div class="sagas-calc-compare33-label">Valores consolidados simulados</div>'+
+    '<div class="table-wrap"><table class="table"><thead><tr><th>Componente</th><th>Anterior</th>'+ 
+    '<th>Atual</th><th>Diferença</th><th>Situação</th></tr></thead><tbody>'+rows+'</tbody></table></div>'+
+    '<div class="sagas-calc-compare33-label">Funcionários com alteração ou ressalva</div>'+
+    '<div class="table-wrap"><table class="table"><thead><tr><th>ID</th><th>Funcionário</th>'+ 
+    '<th>Situação</th><th>Componentes</th><th>Eventos</th><th>Ação</th></tr></thead><tbody>'+ 
+    (people||empty(6,'Sem diferenças','Nenhuma mudança foi identificada nas informações comparáveis.'))+
+    '</tbody></table></div>'+
+    '<p class="help">*Sem diferença conhecida não prova igualdade de eventos quando faltam arquivos históricos. '+
+      esc(statement)+'</p>'+
+    '<div class="form-actions"><button class="btn secondary" type="button" id="calc33BackVersions">Voltar às versões</button></div>'+
+    '</div>',true);
+  $('#calc33BackVersions').onclick=()=>payrollCalculationVersions31(runId,paymentDate).catch(err=>toast(err.message,'error'));
+  $$('[data-calc33-employee]',$('#modalBody')).forEach(btn=>btn.onclick=()=>{
+    const e=(data.employees||[])[Number(btn.dataset.calc33Employee)];
+    if(e)payrollCalculationCompareEmployee33(e,data,runId,paymentDate);
+  });
+}
+function payrollCalculationCompareEmployee33(e,data,runId,paymentDate){
+  const info=payrollCompareEmployeeName33(e),f=e.amounts_cents||{},events=e.events||{},issues=e.issues||{};
+  const values=Object.entries(PAYROLL_COMPARISON_LABELS_33)
+    .filter(([key])=>f[key]&&f[key].status!=='SEM_ALTERACAO')
+    .map(([key,label])=>{
+      const d=f[key];
+      return '<tr><td>'+esc(label)+'</td><td>'+payrollCompareMoney33(d.before_cents)+'</td>'+
+        '<td>'+payrollCompareMoney33(d.after_cents)+'</td>'+payrollCompareDeltaCell33(d)+'</tr>';
+    }).join('');
+  const eventRows=events.available?(events.items||[]).map(ev=>{
+    const name=ev.event_name_after||ev.event_name_before||'Evento';
+    const code=ev.event_code_after||ev.event_code_before||'—';
+    return '<tr><td class="code">'+esc(code)+'</td><td>'+esc(name)+'</td>'+
+      '<td>'+esc(payrollCompareState33(ev.state))+'</td>'+
+      '<td>'+payrollCompareMoney33(ev.value?.before_cents)+'</td><td>'+payrollCompareMoney33(ev.value?.after_cents)+'</td>'+
+      payrollCompareDeltaCell33(ev.value||{})+
+      '<td>'+esc((ev.fields_changed||[]).join(', ')||'—')+'</td></tr>';
+  }).join(''):'';
+  const issueRows=[...(issues.added||[]).map(x=>'<p><b>Nova pendência:</b> '+esc(x)+'</p>'),
+    ...(issues.removed||[]).map(x=>'<p><b>Pendência eliminada:</b> '+esc(x)+'</p>')].join('');
+  openModal('Comparação — '+info.name,
+    'Funcionário '+info.code+' · v'+String(data.previous_version?.version||'—')+
+    ' versus v'+String(data.current_version?.version||'—')+' · somente leitura.',
+    '<div class="sagas-calc-compare33">'+
+    '<p><b>Situação:</b> '+esc(payrollCompareState33(e.state))+
+      ' · <b>Componentes alterados:</b> '+esc(e.changed_fields_count??0)+'</p>'+
+    '<div class="sagas-calc-compare33-label">Diferenças de valores simulados</div>'+
+    '<div class="table-wrap"><table class="table"><thead><tr><th>Componente</th><th>Anterior</th>'+ 
+    '<th>Atual</th><th>Diferença</th><th>Situação</th></tr></thead><tbody>'+ 
+    (values||empty(5,'Sem mudança nos componentes','Não há valores consolidados alterados para este funcionário.'))+
+    '</tbody></table></div>'+
+    '<div class="sagas-calc-compare33-label">Eventos dos lançamentos</div>'+
+    (events.available?
+      '<p class="help">'+esc(events.added||0)+' incluído(s), '+esc(events.removed||0)+
+      ' excluído(s), '+esc(events.changed||0)+' alterado(s).</p>'+
+      '<div class="table-wrap"><table class="table"><thead><tr><th>Código</th><th>Evento</th>'+ 
+      '<th>Alteração</th><th>Anterior</th><th>Atual</th><th>Diferença</th><th>Situação do valor</th><th>Campos alterados</th>'+ 
+      '</tr></thead><tbody>'+ 
+      (eventRows||empty(8,'Sem mudança de eventos','Os registros arquivados de eventos não apresentam diferenças.'))+
+      '</tbody></table></div>':
+      '<div class="sagas-calc-compare33-warning">'+
+      esc(events.reason||'O histórico não permite comparar eventos individuais entre essas versões.')+'</div>')+
+    (issueRows?'<div class="sagas-calc-compare33-label">Pendências técnicas alteradas</div>'+issueRows:'')+
+    '<p class="help"><b>Informações históricas, não homologadas.</b> Este comparativo não produz holerite, salário líquido, pagamento ou contabilização.</p>'+
+    '<div class="form-actions"><button class="btn secondary" type="button" id="calc33BackCompare">Voltar à comparação</button></div>'+
+    '</div>',true);
+  $('#calc33BackCompare').onclick=()=>payrollCalculationCompareView33(data,runId,paymentDate);
 }
 
 // ===== SAGAS Folha Etapa 30: matriz de preparacao para homologacao =====
