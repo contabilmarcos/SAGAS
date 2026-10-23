@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - 'SAGAS_worker.js'
+      - 'sagas-payroll37.js'
   workflow_dispatch:
     inputs:
       mode:
