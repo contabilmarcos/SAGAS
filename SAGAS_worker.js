@@ -5617,6 +5617,8 @@ function payrollKindTable(kind){
 
 async function ensurePayrollCostCenter39(env){
   await ensureTableColumn(env,'payroll_employees','cost_center_id','TEXT');
+}
+async function ensurePayrollEnvelopeCostCenter39(env){
   await ensureTableColumn(env,'payroll_calc_envelopes','cost_center_id','TEXT');
 }
 async function listPayroll(env,companyId,kind){
@@ -9560,7 +9562,7 @@ function payrollMonthlyEmployeeCalc35(employee, movements, rules, dependents, co
   lines.push({event_id:null,event_code:'FGTS_PATRONAL',event_name:'FGTS do empregador',line_type:'INFORMATIVO',
     amount_cents:tax.fgts_cents,reference_text:'Base '+centsToMoney(baseFgts),rule_version:competence});
   return {employee_id:employee.employee_id,employee_code:employee.employee_code,employee_name:employee.employee_name,
-    earnings_cents:earnings,deductions_cents:discounts,net_cents:earnings-discounts,
+    cost_center_id:employee.cost_center_id||null,earnings_cents:earnings,deductions_cents:discounts,net_cents:earnings-discounts,
     inss_cents:tax.inss_cents,irrf_cents:tax.irrf_cents,fgts_cents:tax.fgts_cents,
     inss_base_cents:baseInss,irrf_gross_cents:baseIrrf,irrf_base_cents:tax.irrf_base_cents,
     fgts_base_cents:baseFgts,dependent_count:dependents,lines};
@@ -9629,7 +9631,7 @@ async function payrollMonthlySource35(env,companyId,competenceId,paymentDate){
       fgts_cents:items.reduce((a,x)=>a+x.fgts_cents,0)}};
 }
 async function payrollMonthlyRunDetail35(env,companyId,runId){
-  await ensureSchemaRevision(env,'payroll-employee-cost-center39',1,()=>ensurePayrollCostCenter39(env));
+  await ensureSchemaRevision(env,'payroll-envelope-cost-center39',1,()=>ensurePayrollEnvelopeCostCenter39(env));
   const run=await env.DB.prepare(`SELECT r.id,r.competence_id,c.competence,r.payment_date,r.revision,r.status,
     r.source_fingerprint,r.created_at FROM payroll_calc_runs r
     JOIN payroll_competences c ON c.id=r.competence_id AND c.company_id=r.company_id
@@ -9678,6 +9680,7 @@ async function payrollMonthlyRunCreate35(env,request,auth,companyId,competenceId
   await ensureSchemaRevision(env,'payroll-event-rules',1,()=>ensurePayrollEventRulesSchema(env));
   await ensureSchemaRevision(env,'payroll-employee-history',1,()=>ensurePayrollEmployeeRecordsSchema(env));
   await ensureSchemaRevision(env,'payroll-calculation-foundation',1,()=>ensurePayrollCalculationFoundation34(env));
+  await ensureSchemaRevision(env,'payroll-envelope-cost-center39',1,()=>ensurePayrollEnvelopeCostCenter39(env));
   const source=await payrollMonthlySource35(env,companyId,competenceId,date);
   const previous=await env.DB.prepare(`SELECT id,revision,source_fingerprint,payment_date,status
     FROM payroll_calc_runs WHERE company_id=? AND competence_id=? AND process_kind='MONTHLY'
