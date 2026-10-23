@@ -449,6 +449,7 @@ async function renderPayrollMovements(){
       </div>
 <div class="sagas-payroll-process-group" role="group" aria-label="Pré-fechamento e protocolos">
         <div class="sagas-payroll-process-heading">Pré-fechamento e protocolos</div>
+        <button type="button" id="pmvPrepare34" class="sagas-payroll-process-item" role="menuitem">Preparar folha mensal</button>
         <button type="button" id="pmvValidate26" class="sagas-payroll-process-item" role="menuitem">Validar pré-fechamento</button>
         <button type="button" id="pmvControl27" class="sagas-payroll-process-item" role="menuitem">Controle da competência</button>
         <button type="button" id="pmvRuns28" class="sagas-payroll-process-item" role="menuitem">Protocolos da folha</button>
@@ -516,8 +517,67 @@ async function renderPayrollMovements(){
   if($('#pmvValidate26'))$('#pmvValidate26').onclick=()=>payrollPreClosingScreen26().catch(err=>toast(err.message,'error'));
   if($('#pmvControl27'))$('#pmvControl27').onclick=()=>payrollControlScreen27().catch(err=>toast(err.message,'error'));
   if($('#pmvRuns28'))$('#pmvRuns28').onclick=()=>payrollRunsScreen28().catch(err=>toast(err.message,'error'));
+  if($('#pmvPrepare34'))$('#pmvPrepare34').onclick=()=>payrollPreparationScreen34().catch(err=>toast(err.message,'error'));
   $$('[data-pmv-delete]').forEach(b=>b.onclick=()=>payrollMovementDelete(b.dataset.pmvDelete));
 }
+
+// ===== SAGAS Folha Etapa 34: preparo operacional, sem calculo ou fechamento =====
+function payrollPreparationDate34(){
+  const today=new Date();
+  return `${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,'0')}-${String(today.getDate()).padStart(2,'0')}`;
+}
+async function payrollPreparationScreen34(date=''){
+  const compId=window.sagasPayrollCompetence;
+  if(!compId){toast('Selecione uma competencia.','error');return;}
+  const lastDate=date||'';
+  openModal('Preparar folha mensal','Etapa 34 · Verificar cadastros antes do calculo mensal.',
+    `<form id="payrollPrepForm34" class="grid" style="align-items:end">
+      <label class="field"><span>Data prevista de pagamento (para IRRF)</span><input name="payment_date" type="date" value="${esc(lastDate)}" required></label>
+      <div><button class="btn primary" type="submit">Verificar preparacao</button></div>
+    </form><p class="help">A verificacao nao calcula nem grava salarios liquidos, encargos, financeiro ou contabilidade. O calculo definitivo sera implementado na etapa 35.</p>
+    <div id="payrollPrepResults34"></div>`,true);
+  $('#payrollPrepForm34').onsubmit=async e=>{
+    e.preventDefault();
+    const payment=e.target.elements.payment_date.value;
+    const target=$('#payrollPrepResults34');
+    target.innerHTML='<div class="empty">Conferindo cadastros e parametros...</div>';
+    const button=e.target.querySelector('button[type="submit"]');button.disabled=true;
+    try{
+      const data=await api('/api/payroll/monthly-preparation?competence_id='+encodeURIComponent(compId)+'&payment_date='+encodeURIComponent(payment));
+      window.sagasPayrollPreparation34={competenceId:compId,payment,data};
+      payrollPreparationResults34(data);
+    }catch(err){target.innerHTML='<p class="help">'+esc(err.message)+'</p>';toast(err.message,'error')}
+    finally{button.disabled=false}
+  };
+}
+function payrollPreparationResults34(d){
+  const results=$('#payrollPrepResults34');if(!results)return;
+  const alerts=(d.global_blockers||[]).map(x=>'<div style="padding:6px 8px;margin:3px 0;border:1px solid #dfc5b8">'+esc(x.message)+'</div>').join('');
+  const rows=(d.employees||[]).map((e,i)=>'<tr><td class="code">'+esc(e.employee_code||'—')+'</td><td>'+esc(e.employee_name)+'</td><td>'+esc(e.salary_history===null?'—':money(e.salary_history))+'</td><td>'+esc(e.monthly_hours===null?'—':e.monthly_hours+' h')+'</td><td>'+(e.blocker_count?'<span class="badge yellow">'+e.blocker_count+' pendência(s)</span>':'<span class="badge green">Cadastros completos</span>')+'</td><td><button type="button" class="btn secondary sm" data-payroll-prep-detail="'+i+'">Detalhes</button></td></tr>').join('');
+  results.innerHTML='<div class="section-title">Resultado da verificação</div>'+alerts+
+    '<p class="help">'+Number(d.employee_count||0)+' funcionário(s) · '+Number(d.complete_employee_count||0)+' com cadastros completos · '+Number(d.pending_employee_count||0)+' com pendências. A folha definitiva ainda não está liberada.</p>'+
+    '<div class="table-wrap" style="max-height:330px;overflow:auto"><table class="table"><thead><tr><th>ID</th><th>Funcionário</th><th>Salário histórico</th><th>Jornada mensal</th><th>Cadastro</th><th>Ação</th></tr></thead><tbody>'+ (rows||empty(6,'Nenhum funcionário','Verifique a empresa e competência selecionadas.'))+'</tbody></table></div>'+
+    '<div class="form-actions"><button type="button" class="btn secondary" id="prepEmployees34">Abrir cadastro de funcionários</button></div>';
+  $$('[data-payroll-prep-detail]',results).forEach(btn=>btn.onclick=()=>payrollPreparationEmployee34(Number(btn.dataset.payrollPrepDetail)));
+  $('#prepEmployees34').onclick=()=>{closeModal();nav('payroll-employees')};
+}
+function payrollPreparationEmployee34(index){
+  const session=window.sagasPayrollPreparation34;
+  const emp=session?.data?.employees?.[index];if(!emp)return;
+  const notes=[...(emp.blockers||[]),...(emp.warnings||[])];
+  const rows=notes.map(x=>'<tr><td>'+esc(x.level==='BLOCKER'?'Pendência':'Observação')+'</td><td>'+esc(x.message)+'</td></tr>').join('');
+  openModal('Preparação — '+emp.employee_name,'Funcionário '+(emp.employee_code||'—')+' · somente conferência dos cadastros.',
+    '<div class="table-wrap"><table class="table"><thead><tr><th>Situação</th><th>Verificação</th></tr></thead><tbody>'+
+    (rows||'<tr><td colspan="2">Cadastros completos para o cenário mensal padrão. Ainda não é folha calculada.</td></tr>')+
+    '</tbody></table></div><div class="form-actions"><button id="prepBack34" class="btn secondary">Voltar à lista</button><button id="prepGoEmp34" class="btn primary">Abrir funcionários</button></div>',true);
+  $('#prepBack34').onclick=async()=>{
+    const previous=window.sagasPayrollPreparation34;
+    await payrollPreparationScreen34(previous.payment);
+    payrollPreparationResults34(previous.data);
+  };
+  $('#prepGoEmp34').onclick=()=>{closeModal();nav('payroll-employees')};
+}
+
 async function payrollMovementForm(competenceId){
   const [employees,events]=await Promise.all([payrollData('employees',true),payrollData('events',true)]);
   const activeEmployees=employees.filter(e=>e.active),activeEvents=events.filter(e=>e.active);
