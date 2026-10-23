@@ -380,7 +380,7 @@ async function renderPayrollMovements(){
   const manage=can('payroll.manage')&&current.status==='OPEN';
   const rows=(data.items||[]).map(m=>`<tr><td>${esc(m.employee_name)}</td><td>${esc(m.event_code)} — ${esc(m.event_name)}</td><td>${esc(m.unit==='VALOR'?money(m.value):String(m.value).replace('.',',')+' '+payrollUnitName(m.unit))}</td><td>${dateBR(m.created_at)}</td><td>${manage?`<button class="btn danger sm" data-pmv-delete="${esc(m.id)}">Excluir</button>`:''}</td></tr>`).join('');
   $('#content').innerHTML=`<div class="toolbar"><select id="pmvPeriod" class="search" style="max-width:220px">${periods.map(p=>`<option value="${esc(p.id)}" ${p.id===selected?'selected':''}>${esc(p.competence.slice(5)+'/ '+p.competence.slice(0,4))} ${p.status==='OPEN'?'':'(bloqueada)'}</option>`).join('')}</select>
-    ${manage?'<button id="pmvNew" class="btn primary">+ Novo lançamento</button>':''}<button id="pmvPreview" class="btn secondary">Conferir lançamentos</button><button id="pmvSalaryPreview" class="btn secondary">Prévia do salário</button><button id="pmvFormulaPreview" class="btn secondary">Simular eventos</button><button id="pmvTaxScenario" class="btn secondary">Cenário tributário</button><button id="pmvLaborPreview" class="btn secondary">Conferir proporcionalidade</button><button id="pmvConference" class="btn secondary">Demonstrativo preliminar</button><button id="pmvEnvelope11" class="btn secondary">Envelopes preliminares</button><button id="pmvComposition14" class="btn secondary">Conferência da folha</button><button id="pmvIncidences15" class="btn secondary">Incidências INSS/IRRF/FGTS</button><button id="pmvTaxes16" class="btn secondary">Simulação de tributos</button><button id="pmvEnvelope17" class="btn secondary">Consolidar envelopes</button><button id="pmvValidate18" class="btn secondary">Validar envelopes</button><button id="pmvRemediation19" class="btn secondary">Corrigir pendências</button><button id="pmvMemory20" class="btn secondary">Memória de cálculo</button><button id="pmvBalance21" class="btn secondary">Projeção aritmética</button><button id="pmvAbsence22" class="btn secondary">Conferência faltas/DSR</button><button id="pmvBases23" class="btn secondary">Recompor bases (prévia)</button><button id="pmvCharges24" class="btn secondary">Tributos recompostos</button><button id="pmvReconcile25" class="btn secondary">Conciliar remuneração</button></div>
+    ${manage?'<button id="pmvNew" class="btn primary">+ Novo lançamento</button>':''}<button id="pmvPreview" class="btn secondary">Conferir lançamentos</button><button id="pmvSalaryPreview" class="btn secondary">Prévia do salário</button><button id="pmvFormulaPreview" class="btn secondary">Simular eventos</button><button id="pmvTaxScenario" class="btn secondary">Cenário tributário</button><button id="pmvLaborPreview" class="btn secondary">Conferir proporcionalidade</button><button id="pmvConference" class="btn secondary">Demonstrativo preliminar</button><button id="pmvEnvelope11" class="btn secondary">Envelopes preliminares</button><button id="pmvComposition14" class="btn secondary">Conferência da folha</button><button id="pmvIncidences15" class="btn secondary">Incidências INSS/IRRF/FGTS</button><button id="pmvTaxes16" class="btn secondary">Simulação de tributos</button><button id="pmvEnvelope17" class="btn secondary">Consolidar envelopes</button><button id="pmvValidate18" class="btn secondary">Validar envelopes</button><button id="pmvRemediation19" class="btn secondary">Corrigir pendências</button><button id="pmvMemory20" class="btn secondary">Memória de cálculo</button><button id="pmvBalance21" class="btn secondary">Projeção aritmética</button><button id="pmvAbsence22" class="btn secondary">Conferência faltas/DSR</button><button id="pmvBases23" class="btn secondary">Recompor bases (prévia)</button><button id="pmvCharges24" class="btn secondary">Tributos recompostos</button><button id="pmvReconcile25" class="btn secondary">Conciliar remuneração</button><button id="pmvValidate26" class="btn secondary">Validar pré-fechamento</button></div>
     <p class="muted" style="font-size:12px;margin-bottom:12px">Lançamentos registrados para processamento futuro. Esta tela não calcula salários, impostos ou valores líquidos.</p>
     <div class="table-wrap"><table class="table"><thead><tr><th>Funcionário</th><th>Evento</th><th>Valor / Referência</th><th>Registrado</th><th>Ação</th></tr></thead><tbody>${rows||empty(5,'Nenhum lançamento','Use Novo lançamento para começar.')}</tbody></table></div>`;
   $('#pmvPeriod').onchange=e=>{window.sagasPayrollCompetence=e.target.value;renderPayrollMovements().catch(err=>toast(err.message,'error'))};
@@ -404,6 +404,7 @@ async function renderPayrollMovements(){
   if($('#pmvBases23'))$('#pmvBases23').onclick=()=>payrollTaxBasesScreen23().catch(err=>toast(err.message,'error'));
   if($('#pmvCharges24'))$('#pmvCharges24').onclick=()=>payrollChargesScreen24().catch(err=>toast(err.message,'error'));
   if($('#pmvReconcile25'))$('#pmvReconcile25').onclick=()=>payrollReconciliationScreen25().catch(err=>toast(err.message,'error'));
+  if($('#pmvValidate26'))$('#pmvValidate26').onclick=()=>payrollPreClosingScreen26().catch(err=>toast(err.message,'error'));
   $$('[data-pmv-delete]').forEach(b=>b.onclick=()=>payrollMovementDelete(b.dataset.pmvDelete));
 }
 async function payrollMovementForm(competenceId){
@@ -853,6 +854,88 @@ function payrollDsrReviewForm13(employee,week,paymentDate){
       await payrollEnvelopePreviewResult11(paymentDate);
     }catch(err){toast(err.message,'error');btn.disabled=false;}
   };
+}
+
+// ===== SAGAS Folha Etapa 26: diagnostico pre-fechamento (somente leitura) =====
+async function payrollPreClosingScreen26(){
+  if(!window.sagasPayrollCompetence){toast('Selecione uma competência.','error');return;}
+  openModal('Validação pré-fechamento','Etapa 26 — verificar divergências técnicas e exigências ainda não implementadas.',
+    '<form id="preClosingForm26"><label class="field"><span>Data prevista de pagamento (para conferir IRRF)</span>'+
+    '<input type="date" name="payment_date" min="2020-01-01" max="2026-12-31" required></label>'+
+    '<p class="help">Uma conferência sem pendências aritméticas NÃO significa folha aprovada, pronta para pagamento ou contabilização.</p>'+
+    '<div class="form-actions"><button class="btn secondary" type="button" id="pre26Cancel">Cancelar</button>'+
+    '<button class="btn primary" type="submit">Verificar envelopes</button></div></form>');
+  $('#pre26Cancel').onclick=closeModal;
+  const form=$('#preClosingForm26');
+  form.onsubmit=async ev=>{
+    ev.preventDefault();
+    const btn=form.querySelector('[type=submit]');btn.disabled=true;
+    try{await payrollPreClosingResult26(form.elements.payment_date.value);}
+    catch(err){
+      toast(err.status===404?'Publique o Worker v64 no Cloudflare para usar a validação pré-fechamento.':err.message,'error');
+      btn.disabled=false;
+    }
+  };
+}
+async function payrollPreClosingResult26(paymentDate){
+  const cid=window.sagasPayrollCompetence;
+  if(!cid){toast('Selecione uma competência.','error');return;}
+  const d=await api('/api/payroll/final-validation-preview?competence_id='+encodeURIComponent(cid)+
+    '&payment_date='+encodeURIComponent(paymentDate));
+  const items=d.items||[];
+  const rows=items.map(e=>{
+    const r=e.final_validation||{};
+    return '<tr><td class="code">'+esc(e.employee_code||'—')+'</td>'+
+      '<td><b>'+esc(e.employee_name)+'</b></td>'+
+      '<td>'+esc(r.technical_pending_count??'—')+'</td>'+
+      '<td>'+esc(r.implementation_blocker_count??'—')+'</td>'+
+      '<td>'+esc(r.status==='CONFERENCIA_PRELIMINAR'?'Conferência preliminar':'Pendente')+'</td>'+
+      '<td><button class="btn secondary sm" type="button" data-pre26-employee="'+esc(e.employee_id)+'">Detalhar</button></td></tr>';
+  }).join('');
+  const summary=(d.validation_summary||[]).map(r=>'<tr><td>'+esc(r.title)+'</td>'+
+    '<td>'+esc(r.pendente??0)+'</td><td>'+esc(r.conferencia??0)+'</td>'+
+    '<td>'+esc(r.nao_implementado??0)+'</td></tr>').join('');
+  openModal('Pré-fechamento — '+String(d.competence?.competence||''),
+    'Mapa de pendências; nenhuma folha foi homologada.',
+    '<p class="help"><b>Funcionários:</b> '+esc(d.employee_count||0)+
+    ' · <b>Com pendências técnicas:</b> '+esc(d.pending_employee_count||0)+
+    ' · <b>Em conferência preliminar:</b> '+esc(d.preliminary_employee_count||0)+
+    ' · <b>Homologados:</b> 0</p>'+
+    '<div class="table-wrap"><table class="table"><thead><tr><th>ID</th><th>Funcionário</th>'+
+    '<th>Pendências</th><th>Etapas não implementadas</th><th>Situação</th><th>Ação</th></tr></thead><tbody>'+
+    (rows||empty(6,'Sem funcionários','Nenhum funcionário nesta competência.'))+'</tbody></table></div>'+
+    '<h4>Resumo das verificações</h4><div class="table-wrap"><table class="table"><thead><tr>'+
+    '<th>Área</th><th>Pendente</th><th>Conferência</th><th>Não implementado</th></tr></thead><tbody>'+
+    (summary||empty(4,'Sem verificações',''))+'</tbody></table></div>'+
+    '<p class="help"><b>Atenção:</b> salário líquido, descontos definitivos, aprovação, fechamento, pagamentos e contabilização continuam indisponíveis.</p>',true);
+  $$('[data-pre26-employee]',$('#modalBody')).forEach(btn=>btn.onclick=()=>{
+    const employee=items.find(x=>x.employee_id===btn.dataset.pre26Employee);
+    if(employee)payrollPreClosingEmployee26(employee,paymentDate);
+  });
+}
+function payrollPreClosingEmployee26(employee,paymentDate){
+  const r=employee.final_validation||{};
+  const checks=(r.checks||[]).map(x=>'<tr><td><b>'+esc(x.title)+'</b></td>'+
+    '<td>'+esc(x.status)+'</td><td>'+esc(x.evidence||'—')+'</td>'+
+    '<td>'+esc(x.required_action||'—')+'</td><td>'+esc(x.source||'—')+'</td></tr>').join('');
+  const actions=(r.required_actions||[]).map(x=>
+    '<p><b>'+esc(x.title)+':</b> '+esc(x.required_action)+
+    ' <span class="muted">('+esc(x.source)+')</span></p>').join('');
+  const amount=x=>typeof x==='number'&&Number.isFinite(x)?money(x):'Indisponível';
+  openModal('Pré-fechamento — '+employee.employee_name,
+    'ID '+(employee.employee_code||'—')+' · verificação técnica, sem aprovação.',
+    '<p><b>Status:</b> '+esc(r.status||'PENDENTE')+
+    ' · <b>Pendências técnicas:</b> '+esc(r.technical_pending_count??0)+
+    ' · <b>Etapas não implementadas:</b> '+esc(r.implementation_blocker_count??0)+'</p>'+
+    '<p><b>Referência aritmética (não líquida):</b> '+amount(r.arithmetic_reference)+'</p>'+
+    '<div class="table-wrap"><table class="table"><thead><tr><th>Área</th><th>Situação</th>'+
+    '<th>Evidência</th><th>O que conferir</th><th>Origem</th></tr></thead><tbody>'+
+    (checks||empty(5,'Sem verificações',''))+'</tbody></table></div>'+
+    '<h4>Impedimentos e próximas ações</h4><div class="help">'+
+    (actions||'Não há pendências técnicas adicionais, mas falta homologação legal e integração da folha.')+'</div>'+
+    '<p class="help"><b>Esta tela não grava decisões nem autoriza descontos, pagamentos ou contabilização.</b></p>'+
+    '<div class="form-actions"><button class="btn secondary" type="button" id="pre26Back">Voltar</button></div>',true);
+  $('#pre26Back').onclick=()=>payrollPreClosingResult26(paymentDate).catch(err=>toast(err.message,'error'));
 }
 
 // ===== SAGAS Folha Etapa 25: conciliacao aritmetica sem valor liquido definitivo =====
