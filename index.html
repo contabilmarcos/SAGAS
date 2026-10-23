@@ -454,6 +454,7 @@ async function renderPayrollMovements(){
         <button type="button" id="pmvValidate26" class="sagas-payroll-process-item" role="menuitem">Validar pré-fechamento</button>
         <button type="button" id="pmvControl27" class="sagas-payroll-process-item" role="menuitem">Controle da competência</button>
         <button type="button" id="pmvRuns28" class="sagas-payroll-process-item" role="menuitem">Protocolos da folha</button>
+        <button type="button" id="pmvFinance37" class="sagas-payroll-process-item" role="menuitem">Integrar Financeiro / Contábil</button>
       </div>
       </div>
     </div></div>
@@ -518,6 +519,7 @@ async function renderPayrollMovements(){
   if($('#pmvValidate26'))$('#pmvValidate26').onclick=()=>payrollPreClosingScreen26().catch(err=>toast(err.message,'error'));
   if($('#pmvControl27'))$('#pmvControl27').onclick=()=>payrollControlScreen27().catch(err=>toast(err.message,'error'));
   if($('#pmvRuns28'))$('#pmvRuns28').onclick=()=>payrollRunsScreen28().catch(err=>toast(err.message,'error'));
+  if($('#pmvFinance37'))$('#pmvFinance37').onclick=()=>payrollFinanceModal37().catch(err=>toast(err.message,'error'));
   if($('#pmvPrepare34'))$('#pmvPrepare34').onclick=()=>payrollPreparationScreen34().catch(err=>toast(err.message,'error'));
   if($('#pmvCalc35'))$('#pmvCalc35').onclick=()=>payrollMonthlyCalcScreen35().catch(err=>toast(err.message,'error'));
   $$('[data-pmv-delete]').forEach(b=>b.onclick=()=>payrollMovementDelete(b.dataset.pmvDelete));
@@ -6243,7 +6245,7 @@ function openFinancialEventItemEditor(item,side,opts,onSave){
 
 async function renderFinancialPayables(){
   const d=await api('/api/financial-payables'),a=d.payables||[],manage=can('financial.payable.manage');
-  tablePage({cols:['Número','Fornecedor','Emissão','Vencimento','Documento','Origem','Valor','Saldo','Situação','Ações'],rows:a.length?a.map(x=>`<tr><td class="code">${esc(x.number)}</td><td>${esc(x.supplier_code)} - ${esc(x.supplier_name)}</td><td>${dateBR(x.issue_date)}</td><td>${dateBR(x.due_date)}</td><td>${esc(x.document_number||'')}</td><td>${esc(x.receipt_number?`Receb. ${x.receipt_number}`:'')}</td><td>${money(x.amount)}</td><td>${money(x.balance)}</td><td>${badge(x.status)}</td><td><div class="actions"><button class="btn secondary sm" data-open-payable="${x.id}">Abrir</button>${manage&&x.status==='OPEN'?`<button class="btn success sm" data-pay-payable="${x.id}">Pagar</button>`:''}${manage&&x.status==='PAID'?`<button class="btn danger sm" data-unpay-payable="${x.id}">Desfazer baixa</button>`:''}</div></td></tr>`).join(''):null,emptyTitle:'Nenhum título em Contas a Pagar',emptyText:'Os títulos serão gerados automaticamente pelos recebimentos quando a integração estiver ativa.'});
+  tablePage({cols:['Número','Beneficiário','Emissão','Vencimento','Documento','Origem','Valor','Saldo','Situação','Ações'],rows:a.length?a.map(x=>`<tr><td class="code">${esc(x.number)}</td><td>${esc(x.supplier_code)} - ${esc(x.supplier_name)}</td><td>${dateBR(x.issue_date)}</td><td>${dateBR(x.due_date)}</td><td>${esc(x.document_number||'')}</td><td>${esc(x.source_type==='PAYROLL_MONTHLY'?'Folha mensal':x.receipt_number?`Receb. ${x.receipt_number}`:'')}</td><td>${money(x.amount)}</td><td>${money(x.balance)}</td><td>${badge(x.status)}</td><td><div class="actions"><button class="btn secondary sm" data-open-payable="${x.id}">Abrir</button>${manage&&x.status==='OPEN'?`<button class="btn success sm" data-pay-payable="${x.id}">Pagar</button>`:''}${manage&&x.status==='PAID'?`<button class="btn danger sm" data-unpay-payable="${x.id}">Desfazer baixa</button>`:''}</div></td></tr>`).join(''):null,emptyTitle:'Nenhum título em Contas a Pagar',emptyText:'Os títulos serão gerados automaticamente pelos recebimentos quando a integração estiver ativa.'});
   $$('[data-open-payable]').forEach(b=>b.onclick=()=>financialPayableView(b.dataset.openPayable));
   $$('[data-pay-payable]').forEach(b=>b.onclick=()=>financialPayablePayForm(b.dataset.payPayable));
   $$('[data-unpay-payable]').forEach(b=>b.onclick=()=>financialPayableUndoPayment(b.dataset.unpayPayable));
@@ -6998,5 +7000,6 @@ setInterval(()=>checkSessionAccess(),180000);
   }
 })();
 </script>
+<script src="sagas-payroll37-ui.js"></script>
 </body>
 </html>
