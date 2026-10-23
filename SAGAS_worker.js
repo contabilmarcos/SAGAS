@@ -1889,6 +1889,8 @@ async function updateEntry(env, request, auth, companyId, id, body) {
   await requirePermission(env,auth.user.id,companyId,"accounting.entry.edit");
 
   const before=await entrySnapshot(env,companyId,id);
+  if(before.source_module==="PAYROLL"&&String(before.source_reference||"").startsWith("MONTHLY:"))
+    throw new HttpError(409,"Lancamento integrado pela folha nao pode ser alterado isoladamente.","PAYROLL_LINK_LOCKED");
   await assertEntryCanBeMaintained(env,companyId,before,"editado");
 
   // A mesma validação usada na inclusão: lote aberto, período aberto,
@@ -1986,6 +1988,8 @@ async function deleteEntry(env, request, auth, companyId, id) {
   await requirePermission(env,auth.user.id,companyId,"accounting.entry.delete");
 
   const before=await entrySnapshot(env,companyId,id);
+  if(before.source_module==="PAYROLL"&&String(before.source_reference||"").startsWith("MONTHLY:"))
+    throw new HttpError(409,"Lancamento integrado pela folha nao pode ser excluido isoladamente.","PAYROLL_LINK_LOCKED");
 
   // Exclusão é diferente de edição/anulação:
   // permite remover tanto lançamento contabilizado quanto já anulado,
@@ -2670,6 +2674,8 @@ async function voidEntry(env, request, auth, companyId, id, reason) {
   await requirePermission(env, auth.user.id, companyId, "accounting.entry.void");
   const before=await env.DB.prepare("SELECT * FROM journal_entries WHERE id=? AND company_id=?").bind(id,companyId).first();
   if (!before) throw new HttpError(404,"Lançamento não encontrado.","NOT_FOUND");
+  if(before.source_module==="PAYROLL"&&String(before.source_reference||"").startsWith("MONTHLY:"))
+    throw new HttpError(409,"Lancamento integrado pela folha nao pode ser anulado isoladamente.","PAYROLL_LINK_LOCKED");
   await ensureBatchIntegrationSchema(env);
   if (before.status!=="POSTED") throw new HttpError(409,"Somente lançamento contabilizado pode ser anulado.","INVALID_STATUS");
   if (before.official_status==="INTEGRATED") {
