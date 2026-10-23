@@ -1,4 +1,4 @@
-// SAGAS Worker v71 - Etapa 34: preparacao operacional e base de processamento | cumulativo desde v49
+// SAGAS Worker v72 - Etapa 35: calculo mensal gravado sem homologacao | cumulativo desde v49
 // ===== utils.js =====
 function json(data, status = 200, extraHeaders = {}) {
   return new Response(JSON.stringify(data), {
@@ -9442,6 +9442,238 @@ async function payrollMonthlyPreparation34(env,companyId,competenceId,paymentDat
     message:'Conferencia de cadastros e parametros. Nenhuma folha, salario liquido, titulo financeiro ou contabilizacao foi gerado.'};
 }
 
+// ===== SAGAS Folha Etapa 35: processamento mensal versionado e NAO homologado =====
+// O processamento usa somente a competencia normal integral. Excecoes ou dados
+// incompletos sao bloqueados antes de qualquer gravacao; nao gera titulos ou contabilidade.
+function payrollMonthlyEmployeeCalc35(employee, movements, rules, dependents, competence, paymentDate){
+  const moneySafe=(value,label)=>{
+    if(!Number.isSafeInteger(value)||value<0||value>99999999999)
+      throw new HttpError(409,'Valor invalido no calculo de '+label+'.','DATA_INVALID');
+    return value;
+  };
+  const salary=moneySafe(employee.salary_cents,'salario');
+  if(salary===0)throw new HttpError(409,'Salario historico zerado.','CALCULATION_BLOCKED');
+  const hours=Number(employee.monthly_hours_milli);
+  if(!Number.isSafeInteger(hours)||hours<=0)throw new HttpError(409,'Jornada mensal ausente.','CALCULATION_BLOCKED');
+  let earnings=salary,manualDiscounts=0,baseInss=salary,baseIrrf=salary,baseFgts=salary;
+  const lines=[{event_id:null,event_code:'SALARIO_BASE',event_name:'Salario mensal',
+    line_type:'PROVENTO',amount_cents:salary,reference_text:'Mes integral',rule_version:null}];
+  for(const mov of movements){
+    const rule=rules.get(mov.event_id);
+    if(!rule||[rule.inss,rule.irrf,rule.fgts].some(x=>!['SIM','NAO'].includes(x)))
+      throw new HttpError(409,'Evento sem parametros fiscais vigentes: '+mov.event_code+'.','CALCULATION_BLOCKED');
+    let value;
+    if(mov.unit==='VALOR')value=moneySafe(Number(mov.amount_cents),mov.event_code);
+    else{
+      if(Number(rule.calculation_code)!==0||!String(rule.formula_text||'').trim())
+        throw new HttpError(409,'Formula especial nao suportada em '+mov.event_code+'.','CALCULATION_BLOCKED');
+      if(!Number.isSafeInteger(mov.quantity_milli)||mov.quantity_milli<0)
+        throw new HttpError(409,'Referencia invalida em '+mov.event_code+'.','CALCULATION_BLOCKED');
+      const ref={a:BigInt(mov.quantity_milli),b:1000n};
+      const variables={SALARIO:{a:BigInt(salary),b:100n},REFERENCIA:ref,QUANTIDADE:ref,
+        JORNADA_MENSAL:{a:BigInt(hours),b:1000n}};
+      if(mov.unit==='HORAS')variables.HORAS=ref;
+      if(mov.unit==='DIAS')variables.DIAS=ref;
+      if(mov.unit==='PERCENTUAL')variables.PERCENTUAL=ref;
+      try{value=payrollExprCents(rule.formula_text,variables)}
+      catch(e){throw new HttpError(409,'Formula nao calculavel para '+mov.event_code+': '+String(e?.message||e),'CALCULATION_BLOCKED');}
+      moneySafe(value,mov.event_code);
+    }
+    if(mov.event_type==='PROVENTO'){
+      earnings+=value;
+      if(rule.inss==='SIM')baseInss+=value;
+      if(rule.irrf==='SIM')baseIrrf+=value;
+      if(rule.fgts==='SIM')baseFgts+=value;
+    }else if(mov.event_type==='DESCONTO'){
+      // Faltas, pensoes e outros descontos que ajustam bases legais exigem
+      // implementacao propria; proibir tratá-los como descontos simples.
+      if([rule.inss,rule.irrf,rule.fgts].includes('SIM'))
+        throw new HttpError(409,'Desconto com reflexo tributario requer regra especifica: '+mov.event_code+'.','CALCULATION_BLOCKED');
+      manualDiscounts+=value;
+    }else if(mov.event_type==='INFORMATIVO'){
+      if([rule.inss,rule.irrf,rule.fgts].includes('SIM'))
+        throw new HttpError(409,'Evento informativo com incidencia fiscal nao pode compor a folha: '+mov.event_code+'.','CALCULATION_BLOCKED');
+    }else throw new HttpError(409,'Tipo de evento invalido.','CALCULATION_BLOCKED');
+    lines.push({event_id:mov.event_id,event_code:mov.event_code,event_name:mov.event_name,
+      line_type:mov.event_type,amount_cents:value,
+      reference_text:mov.unit==='VALOR'?'Valor informado':mov.unit+': '+(mov.quantity_milli/1000),
+      rule_version:rule.effective_from+'#'+rule.revision});
+  }
+  for(const [n,v] of Object.entries({earnings,manualDiscounts,baseInss,baseIrrf,baseFgts}))moneySafe(v,n);
+  // Para o caso mensal padrao, INSS do segurado incide sobre o total da base
+  // contribuinte e IRRF sobre rendimentos tributaveis no mes de pagamento.
+  const tax=payrollTaxHistoricalWithDependents(baseInss,baseIrrf,baseFgts,competence,paymentDate,dependents);
+  const discounts=manualDiscounts+tax.inss_cents+tax.irrf_cents;
+  if(discounts>earnings)throw new HttpError(409,'Descontos excedem os proventos do funcionario.','CALCULATION_BLOCKED');
+  lines.push({event_id:null,event_code:'INSS_EMP',event_name:'INSS empregado',line_type:'DESCONTO',
+    amount_cents:tax.inss_cents,reference_text:'Base '+centsToMoney(baseInss),rule_version:tax.inss_table_from});
+  lines.push({event_id:null,event_code:'IRRF_EMP',event_name:'IRRF empregado',line_type:'DESCONTO',
+    amount_cents:tax.irrf_cents,reference_text:'Base '+centsToMoney(tax.irrf_base_cents),rule_version:tax.irrf_table_from});
+  lines.push({event_id:null,event_code:'FGTS_PATRONAL',event_name:'FGTS do empregador',line_type:'INFORMATIVO',
+    amount_cents:tax.fgts_cents,reference_text:'Base '+centsToMoney(baseFgts),rule_version:competence});
+  return {employee_id:employee.employee_id,employee_code:employee.employee_code,employee_name:employee.employee_name,
+    earnings_cents:earnings,deductions_cents:discounts,net_cents:earnings-discounts,
+    inss_cents:tax.inss_cents,irrf_cents:tax.irrf_cents,fgts_cents:tax.fgts_cents,
+    inss_base_cents:baseInss,irrf_gross_cents:baseIrrf,irrf_base_cents:tax.irrf_base_cents,
+    fgts_base_cents:baseFgts,dependent_count:dependents,lines};
+}
+async function payrollMonthlySource35(env,companyId,competenceId,paymentDate){
+  const prep=await payrollMonthlyPreparation34(env,companyId,competenceId,paymentDate);
+  if(prep.blocker_count>0||prep.global_blockers.length>0){
+    const example=prep.global_blockers[0]?.message||prep.employees.find(e=>e.blocker_count)?.blockers[0]?.message||'Cadastros incompletos';
+    throw new HttpError(409,'Corrija as pendencias de Preparar folha mensal antes de calcular: '+example,'PREPARATION_PENDING');
+  }
+  if(prep.employee_count===0||prep.employee_count>100)
+    throw new HttpError(409,'Esta rotina processa de 1 a 100 funcionarios por competencia.','LIMIT');
+  const employees=prep.employees;
+  const ids=new Set(employees.map(e=>e.employee_id));
+  const mov=await env.DB.prepare(`SELECT m.id,m.employee_id,m.event_id,m.unit,m.amount_cents,m.quantity_milli,
+      e.code AS event_code,e.name AS event_name,e.event_type
+    FROM payroll_movements m JOIN payroll_events e ON e.id=m.event_id AND e.company_id=m.company_id
+    WHERE m.company_id=? AND m.competence_id=? ORDER BY m.employee_id,e.code,m.id LIMIT 501`)
+    .bind(companyId,competenceId).all();
+  const movements=mov.results||[];
+  if(movements.length>500)throw new HttpError(409,'Mais de 500 eventos no periodo: calcule por lote em versao futura.','LIMIT');
+  if(movements.some(m=>!ids.has(m.employee_id)))
+    throw new HttpError(409,'Existem eventos lancados para funcionario nao elegivel para folha mensal.','CALCULATION_BLOCKED');
+  const rulesResult=await env.DB.prepare(`SELECT event_id,effective_from,revision,inss,irrf,fgts,calculation_code,formula_text
+    FROM payroll_event_rule_versions WHERE company_id=? AND effective_from<=?
+      AND event_id IN (SELECT DISTINCT event_id FROM payroll_movements WHERE company_id=? AND competence_id=?)
+    ORDER BY event_id,effective_from DESC,revision DESC LIMIT 5001`)
+    .bind(companyId,prep.competence.competence,companyId,competenceId).all();
+  if((rulesResult.results||[]).length>5000)throw new HttpError(409,'Historico de versoes dos eventos excede o limite.','LIMIT');
+  const rules=new Map();for(const rule of rulesResult.results||[])if(!rules.has(rule.event_id))rules.set(rule.event_id,rule);
+  const depResult=await env.DB.prepare(`SELECT employee_id,COUNT(*) AS total FROM payroll_employee_dependents
+    WHERE company_id=? AND irrf_eligible=1 AND effective_from<=?
+      AND (effective_to IS NULL OR effective_to>=?) GROUP BY employee_id LIMIT 101`)
+    .bind(companyId,paymentDate,paymentDate).all();
+  if((depResult.results||[]).length>100)throw new HttpError(409,'Mais de 100 funcionarios com dependentes.','LIMIT');
+  const dependents=new Map((depResult.results||[]).map(x=>[x.employee_id,Number(x.total)]));
+  const history=await payrollEmployeeHistoricalContext(env,companyId,prep.first_date,prep.last_date);
+  const items=[];
+  for(const emp of employees){
+    const salary=history.salary.get(emp.employee_id)?.[0]||null;
+    const schedule=history.schedule.get(emp.employee_id)?.[0]||null;
+    if(!salary||!schedule)throw new HttpError(409,'Historico de salario e jornada foi alterado durante a preparacao.','SOURCE_CHANGED');
+    const count=dependents.get(emp.employee_id)||0;
+    const relevant=movements.filter(m=>m.employee_id===emp.employee_id);
+    const calculated=payrollMonthlyEmployeeCalc35({...emp,salary_cents:salary.salary_cents,
+      monthly_hours_milli:schedule.monthly_hours_milli},relevant,rules,count,
+      prep.competence.competence,paymentDate);
+    items.push(calculated);
+  }
+  const financialSafe=items.every(x=>[x.earnings_cents,x.deductions_cents,x.net_cents,x.inss_cents,
+    x.irrf_cents,x.fgts_cents].every(n=>Number.isSafeInteger(n)&&n>=0));
+  if(!financialSafe)throw new HttpError(409,'Total fora da faixa monetaria permitida.','DATA_INVALID');
+  // O fingerprint inclui todas as entradas relevantes e a saida deterministica.
+  const fingerprint=await payrollProcessingSnapshotHash28({version:35,company_id:companyId,
+    competence_id:competenceId,competence:prep.competence.competence,payment_date:paymentDate,
+    employee_inputs:employees,history_salary:items.map(x=>[x.employee_id,history.salary.get(x.employee_id)]),
+    history_schedule:items.map(x=>[x.employee_id,history.schedule.get(x.employee_id)]),
+    history_functional:items.map(x=>[x.employee_id,history.functional.get(x.employee_id)]),
+    movements,rules:[...rulesResult.results||[]],dependents:[...dependents.entries()],items});
+  return {prep,items,fingerprint,employee_count:items.length,
+    totals:{earnings_cents:items.reduce((a,x)=>a+x.earnings_cents,0),
+      deductions_cents:items.reduce((a,x)=>a+x.deductions_cents,0),
+      net_cents:items.reduce((a,x)=>a+x.net_cents,0),
+      inss_cents:items.reduce((a,x)=>a+x.inss_cents,0),
+      irrf_cents:items.reduce((a,x)=>a+x.irrf_cents,0),
+      fgts_cents:items.reduce((a,x)=>a+x.fgts_cents,0)}};
+}
+async function payrollMonthlyRunDetail35(env,companyId,runId){
+  const run=await env.DB.prepare(`SELECT r.id,r.competence_id,c.competence,r.payment_date,r.revision,r.status,
+    r.source_fingerprint,r.created_at FROM payroll_calc_runs r
+    JOIN payroll_competences c ON c.id=r.competence_id AND c.company_id=r.company_id
+    WHERE r.id=? AND r.company_id=? AND r.process_kind='MONTHLY'`).bind(runId,companyId).first();
+  if(!run)throw new HttpError(404,'Processamento mensal nao encontrado.','NOT_FOUND');
+  const rows=await env.DB.prepare(`SELECT e.*,n.number AS employee_number,p.name AS employee_name
+    FROM payroll_calc_envelopes e
+    JOIN payroll_employees p ON p.id=e.employee_id AND p.company_id=e.company_id
+    LEFT JOIN payroll_employee_numbers n ON n.employee_id=e.employee_id AND n.company_id=e.company_id
+    WHERE e.company_id=? AND e.run_id=? ORDER BY p.name COLLATE NOCASE,e.id`)
+    .bind(companyId,runId).all();
+  const envelopes=[];
+  for(const envp of rows.results||[]){
+    const result=await env.DB.prepare(`SELECT event_code,event_name,line_type,amount_cents,reference_text,rule_version,sequence
+      FROM payroll_calc_lines WHERE company_id=? AND envelope_id=? ORDER BY sequence`)
+      .bind(companyId,envp.id).all();
+    envelopes.push({employee_id:envp.employee_id,
+      employee_code:envp.employee_number==null?null:String(envp.employee_number).padStart(5,'0'),
+      employee_name:envp.employee_name,
+      earnings_cents:envp.earnings_cents,deductions_cents:envp.deductions_cents,
+      net_cents:envp.net_cents,inss_cents:envp.inss_cents,irrf_cents:envp.irrf_cents,
+      fgts_cents:envp.fgts_cents,lines:result.results||[]});
+  }
+  return {kind:'FOLHA_MENSAL_CALCULADA_ETAPA_35',run,envelopes,employee_count:envelopes.length,
+    totals:{earnings_cents:envelopes.reduce((a,x)=>a+x.earnings_cents,0),
+      deductions_cents:envelopes.reduce((a,x)=>a+x.deductions_cents,0),
+      net_cents:envelopes.reduce((a,x)=>a+x.net_cents,0),
+      inss_cents:envelopes.reduce((a,x)=>a+x.inss_cents,0),
+      irrf_cents:envelopes.reduce((a,x)=>a+x.irrf_cents,0),
+      fgts_cents:envelopes.reduce((a,x)=>a+x.fgts_cents,0)},
+    approved:false,ready_for_payment:false,ready_for_accounting:false,
+    message:'Calculo armazenado para conferencia. Nao homologado nem autorizado para pagamento ou contabilizacao.'};
+}
+async function payrollMonthlyRuns35(env,companyId,competenceId){
+  const c=await env.DB.prepare(`SELECT id FROM payroll_competences WHERE company_id=? AND id=?`)
+    .bind(companyId,competenceId).first();
+  if(!c)throw new HttpError(404,'Competencia nao encontrada.','NOT_FOUND');
+  const r=await env.DB.prepare(`SELECT id,revision,status,payment_date,created_at FROM payroll_calc_runs
+    WHERE company_id=? AND competence_id=? AND process_kind='MONTHLY' ORDER BY revision DESC LIMIT 100`)
+    .bind(companyId,competenceId).all();
+  return {runs:r.results||[]};
+}
+async function payrollMonthlyRunCreate35(env,request,auth,companyId,competenceId,paymentDate){
+  await requirePermission(env,auth.user.id,companyId,'payroll.manage');
+  const date=payrollStrictDate(paymentDate,'Data prevista de pagamento');
+  await ensureSchemaRevision(env,'payroll-event-rules',1,()=>ensurePayrollEventRulesSchema(env));
+  await ensureSchemaRevision(env,'payroll-employee-history',1,()=>ensurePayrollEmployeeRecordsSchema(env));
+  await ensureSchemaRevision(env,'payroll-calculation-foundation',1,()=>ensurePayrollCalculationFoundation34(env));
+  const source=await payrollMonthlySource35(env,companyId,competenceId,date);
+  const previous=await env.DB.prepare(`SELECT id,revision,source_fingerprint,payment_date,status
+    FROM payroll_calc_runs WHERE company_id=? AND competence_id=? AND process_kind='MONTHLY'
+    ORDER BY revision DESC LIMIT 1`).bind(companyId,competenceId).first();
+  if(previous?.source_fingerprint===source.fingerprint && previous.payment_date===date){
+    const detail=await payrollMonthlyRunDetail35(env,companyId,previous.id);
+    return {...detail,reused:true};
+  }
+  if(previous && previous.status!=='CALCULATED')
+    throw new HttpError(409,'Ha um processamento ja revisado ou aprovado. Nao e permitido substitui-lo automaticamente.','RUN_LOCKED');
+  const revision=previous?Number(previous.revision)+1:1;
+  if(!Number.isSafeInteger(revision)||revision>99999)throw new HttpError(409,'Limite de revisoes atingido.','LIMIT');
+  const runId=uuid();
+  const statements=[env.DB.prepare(`INSERT INTO payroll_calc_runs
+      (id,company_id,competence_id,process_kind,payment_date,revision,status,source_fingerprint,created_by)
+      SELECT ?,?,?,'MONTHLY',?,?,'CALCULATED',?,? WHERE EXISTS(
+        SELECT 1 FROM payroll_competences WHERE id=? AND company_id=? AND status='OPEN')`)
+      .bind(runId,companyId,competenceId,date,revision,source.fingerprint,auth.user.id,competenceId,companyId)];
+  for(const emp of source.items){
+    const envelopeId=uuid();
+    statements.push(env.DB.prepare(`INSERT INTO payroll_calc_envelopes
+      (id,company_id,run_id,employee_id,earnings_cents,deductions_cents,net_cents,inss_cents,irrf_cents,fgts_cents)
+      VALUES (?,?,?,?,?,?,?,?,?,?)`)
+      .bind(envelopeId,companyId,runId,emp.employee_id,emp.earnings_cents,emp.deductions_cents,emp.net_cents,
+        emp.inss_cents,emp.irrf_cents,emp.fgts_cents));
+    for(let i=0;i<emp.lines.length;i++){
+      const line=emp.lines[i];
+      statements.push(env.DB.prepare(`INSERT INTO payroll_calc_lines
+        (id,company_id,envelope_id,event_id,event_code,event_name,line_type,amount_cents,reference_text,rule_version,sequence)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?)`).bind(uuid(),companyId,envelopeId,line.event_id,
+          line.event_code,line.event_name,line.line_type,line.amount_cents,line.reference_text,line.rule_version,i+1));
+    }
+  }
+  try{await env.DB.batch(statements)}
+  catch(err){
+    if(/UNIQUE constraint failed|FOREIGN KEY constraint failed/i.test(String(err?.message||err)))
+      throw new HttpError(409,'Outro processamento ou alteracao de competencia ocorreu. Atualize e tente novamente.','CONFLICT');
+    throw err;
+  }
+  await audit(env,{companyId,userId:auth.user.id,action:'CREATE',entity:'payroll_calc_runs',entityId:runId,
+    after:{competence_id:competenceId,revision,employee_count:source.employee_count,
+      source_fingerprint:source.fingerprint,totals:source.totals,approved:false},request});
+  return {...await payrollMonthlyRunDetail35(env,companyId,runId),reused:false};
+}
+
 // ===== SAGAS Folha: Etapa 01 da integração operacional (sem cálculo) =====
 async function ensurePayrollOperationsSchema(env){
   await env.DB.batch([
@@ -10049,6 +10281,22 @@ async function route(request, env) {
     await ensureSchemaRevision(env,'payroll-calculation-foundation',1,()=>ensurePayrollCalculationFoundation34(env));
     return ok(await payrollMonthlyPreparation34(env,companyId,
       url.searchParams.get('competence_id'),url.searchParams.get('payment_date')));
+  }
+  // Etapa 35: processamento mensal real, persistente e pendente de homologacao.
+  p=routeMatch(path,'/api/payroll/monthly-runs/:id');
+  if(p&&method==='GET'){
+    await requirePermission(env,auth.user.id,companyId,'payroll.read');
+    await ensureSchemaRevision(env,'payroll-calculation-foundation',1,()=>ensurePayrollCalculationFoundation34(env));
+    return ok(await payrollMonthlyRunDetail35(env,companyId,p.id));
+  }
+  if(path==='/api/payroll/monthly-runs'&&method==='GET'){
+    await requirePermission(env,auth.user.id,companyId,'payroll.read');
+    await ensureSchemaRevision(env,'payroll-calculation-foundation',1,()=>ensurePayrollCalculationFoundation34(env));
+    return ok(await payrollMonthlyRuns35(env,companyId,url.searchParams.get('competence_id')));
+  }
+  if(path==='/api/payroll/monthly-runs'&&method==='POST'){
+    const body=await readJson(request);
+    return ok(await payrollMonthlyRunCreate35(env,request,auth,companyId,body.competence_id,body.payment_date),201);
   }
   // Etapa 32: comparar duas fotografias historicas sem atualizar a folha.
   // Esta rota deve preceder o GET generico /:id.
