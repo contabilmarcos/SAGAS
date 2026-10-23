@@ -5,8 +5,16 @@ on:
     branches: [main]
     paths:
       - 'SAGAS_worker.js'
-      - '.github/workflows/deploy-sagas-worker.yml'
   workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Verificar sem publicar ou publicar no Cloudflare'
+        type: choice
+        required: true
+        default: verificar
+        options:
+          - verificar
+          - publicar
 
 permissions:
   contents: read
@@ -19,7 +27,7 @@ jobs:
   deploy-worker:
     name: Validar e publicar sagas-api
     # Mantém produção protegida até a ativação explícita pelo dono do repositório.
-    if: ${{ vars.SAGAS_CLOUDFLARE_AUTO_DEPLOY == 'enabled' }}
+    if: ${{ github.event_name == 'workflow_dispatch' || vars.SAGAS_CLOUDFLARE_AUTO_DEPLOY == 'enabled' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -72,18 +80,50 @@ jobs:
           console.log('Configuração validada. Destino: Worker sagas-api; vínculo D1: DB. Não foram exibidas credenciais.');
           NODE
 
-      - name: Confirmar que o Worker de produção já existe
+      - name: Conferir Worker e banco D1 de produção sem modificar nada
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_D1_DATABASE_ID: ${{ secrets.CLOUDFLARE_D1_DATABASE_ID }}
         run: |
-          set -euo pipefail
-          curl --fail --silent --show-error --output /dev/null \
-            --header "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
-            "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/scripts/sagas-api"
-          echo "Worker sagas-api existente confirmado. Prosseguindo com deploy no mesmo nome."
+          node --input-type=module <<'NODE'
+          import { readFileSync, writeFileSync } from 'node:fs';
+          const account = process.env.CLOUDFLARE_ACCOUNT_ID;
+          const token = process.env.CLOUDFLARE_API_TOKEN;
+          const expected = String(process.env.CLOUDFLARE_D1_DATABASE_ID || '').toLowerCase();
+          const endpoint = 'https://api.cloudflare.com/client/v4/accounts/' + account + '/workers/scripts/sagas-api/settings';
+          const response = await fetch(endpoint, { headers: { Authorization: 'Bearer ' + token } });
+          if (!response.ok) throw Error('Não foi possível consultar a configuração do Worker sagas-api. HTTP ' + response.status + '. Verifique conta e permissão Workers.');
+          const body = await response.json();
+          if (!body.success || !body.result || !Array.isArray(body.result.bindings)) {
+            throw Error('A Cloudflare não retornou os vínculos atuais do Worker.');
+          }
+          const d1 = body.result.bindings.filter(b => b.type === 'd1');
+          if (d1.length !== 1 || d1[0].name !== 'DB') {
+            throw Error('O Worker existente não possui exatamente um vínculo D1 com o nome DB. Deploy bloqueado.');
+          }
+          const actual = String(d1[0].database_id || d1[0].id || '').toLowerCase();
+          if (!actual || actual !== expected) {
+            throw Error('O UUID do banco D1 no GitHub difere do banco DB vinculado ao Worker de produção. Deploy bloqueado.');
+          }
+          const unsupported = body.result.bindings.filter(b => !['d1', 'plain_text', 'secret_text', 'secret_key'].includes(b.type));
+          if (unsupported.length) {
+            throw Error('O Worker contém vínculos adicionais não configurados neste workflow (' + unsupported.map(b => b.type).join(', ') + '). Deploy bloqueado para preservar os recursos.');
+          }
+          const configuration = JSON.parse(readFileSync('wrangler.sagas.deploy.json', 'utf8'));
+          if (body.result.compatibility_date) {
+            configuration.compatibility_date = body.result.compatibility_date;
+          }
+          if (Array.isArray(body.result.compatibility_flags)) {
+            configuration.compatibility_flags = body.result.compatibility_flags;
+          }
+          writeFileSync('wrangler.sagas.deploy.json', JSON.stringify(configuration, null, 2) + '\n');
+          console.log('Pré-verificação passou: Worker existente, vínculo DB e UUID D1 conferidos. Configuração de compatibilidade preservada.');
+          NODE
+
 
       - name: Publicar no Cloudflare
+        if: ${{ vars.SAGAS_CLOUDFLARE_AUTO_DEPLOY == 'enabled' && (github.event_name == 'push' || inputs.mode == 'publicar') }}
         uses: cloudflare/wrangler-action@v4
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
