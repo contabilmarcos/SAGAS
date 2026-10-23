@@ -9645,9 +9645,11 @@ async function payrollMonthlyRunDetail35(env,companyId,runId){
     JOIN payroll_competences c ON c.id=r.competence_id AND c.company_id=r.company_id
     WHERE r.id=? AND r.company_id=? AND r.process_kind='MONTHLY'`).bind(runId,companyId).first();
   if(!run)throw new HttpError(404,'Processamento mensal nao encontrado.','NOT_FOUND');
-  const rows=await env.DB.prepare(`SELECT e.*,n.number AS employee_number,p.name AS employee_name
+  const rows=await env.DB.prepare(`SELECT e.*,n.number AS employee_number,p.name AS employee_name,
+      cc.code AS cost_center_code,cc.name AS cost_center_name
     FROM payroll_calc_envelopes e
     JOIN payroll_employees p ON p.id=e.employee_id AND p.company_id=e.company_id
+    LEFT JOIN cost_centers cc ON cc.id=e.cost_center_id AND cc.company_id=e.company_id
     LEFT JOIN payroll_employee_numbers n ON n.employee_id=e.employee_id AND n.company_id=e.company_id
     WHERE e.company_id=? AND e.run_id=? ORDER BY p.name COLLATE NOCASE,e.id`)
     .bind(companyId,runId).all();
@@ -9659,6 +9661,7 @@ async function payrollMonthlyRunDetail35(env,companyId,runId){
     envelopes.push({employee_id:envp.employee_id,
       employee_code:envp.employee_number==null?null:String(envp.employee_number).padStart(5,'0'),
       employee_name:envp.employee_name,cost_center_id:envp.cost_center_id||null,
+      cost_center_code:envp.cost_center_code||null,cost_center_name:envp.cost_center_name||null,
       earnings_cents:envp.earnings_cents,deductions_cents:envp.deductions_cents,
       net_cents:envp.net_cents,inss_cents:envp.inss_cents,irrf_cents:envp.irrf_cents,
       fgts_cents:envp.fgts_cents,lines:result.results||[]});
