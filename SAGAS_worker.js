@@ -1,4 +1,4 @@
-// SAGAS Worker v72 - Etapa 35: calculo mensal gravado sem homologacao | cumulativo desde v49
+// SAGAS Worker v73 - Etapa 36: conferencia, holerites e fechamento da folha mensal | cumulativo desde v49
 // ===== utils.js =====
 function json(data, status = 200, extraHeaders = {}) {
   return new Response(JSON.stringify(data), {
@@ -9611,8 +9611,8 @@ async function payrollMonthlyRunDetail35(env,companyId,runId){
       inss_cents:envelopes.reduce((a,x)=>a+x.inss_cents,0),
       irrf_cents:envelopes.reduce((a,x)=>a+x.irrf_cents,0),
       fgts_cents:envelopes.reduce((a,x)=>a+x.fgts_cents,0)},
-    approved:false,ready_for_payment:false,ready_for_accounting:false,
-    message:'Calculo armazenado para conferencia. Nao homologado nem autorizado para pagamento ou contabilizacao.'};
+    approved:run.status==='APPROVED',ready_for_payment:false,ready_for_accounting:false,
+    message:run.status==='APPROVED'?'Folha fechada internamente. Ainda nao foi gerado pagamento ou contabilizacao.':'Calculo armazenado para conferencia; pagamentos e contabilizacao bloqueados.'};
 }
 async function payrollMonthlyRuns35(env,companyId,competenceId){
   const c=await env.DB.prepare(`SELECT id FROM payroll_competences WHERE company_id=? AND id=?`)
@@ -9672,6 +9672,196 @@ async function payrollMonthlyRunCreate35(env,request,auth,companyId,competenceId
     after:{competence_id:competenceId,revision,employee_count:source.employee_count,
       source_fingerprint:source.fingerprint,totals:source.totals,approved:false},request});
   return {...await payrollMonthlyRunDetail35(env,companyId,runId),reused:false};
+}
+
+// ===== SAGAS Folha Etapa 36 — conferencia e fechamento da folha mensal =====
+// Nao executa pagamentos, contabilizacao ou envio de obrigacoes fiscais.
+// A conferencia compara a fotografia gravada com as fontes atuais antes de fechar.
+async function ensurePayrollMonthlyReviewSchema36(env){
+  await env.DB.batch([
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS payroll_calc_monthly_reviews (
+      run_id TEXT PRIMARY KEY REFERENCES payroll_calc_runs(id) ON DELETE RESTRICT,
+      company_id TEXT NOT NULL,
+      source_fingerprint TEXT NOT NULL,
+      snapshot_json TEXT NOT NULL,
+      reviewed_by TEXT NOT NULL,
+      reviewed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      closed_by TEXT,
+      closed_at TEXT,
+      CHECK ((closed_by IS NULL AND closed_at IS NULL) OR
+             (closed_by IS NOT NULL AND closed_at IS NOT NULL))
+    )`),
+    env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_payroll_calc_monthly_reviews_company
+      ON payroll_calc_monthly_reviews(company_id,run_id)`)
+  ]);
+}
+function payrollMonthlyNumbersAgree36(actual,expected){
+  return ['earnings_cents','deductions_cents','net_cents','inss_cents','irrf_cents','fgts_cents']
+    .every(k=>Number.isSafeInteger(Number(actual[k]))&&Number(actual[k])===Number(expected[k]));
+}
+function payrollMonthlyEnvelopeAgree36(stored,source){
+  if(!payrollMonthlyNumbersAgree36(stored,source))return false;
+  const a=stored.lines||[],b=source.lines||[];
+  if(a.length!==b.length)return false;
+  return a.every((row,i)=>{
+    const line=b[i];
+    return line&&row.event_code===line.event_code&&row.event_name===line.event_name&&
+      row.line_type===line.line_type&&Number(row.amount_cents)===Number(line.amount_cents)&&
+      (row.reference_text||null)===(line.reference_text||null)&&
+      (row.rule_version||null)===(line.rule_version||null);
+  });
+}
+async function payrollMonthlyReadReview36(env,companyId,runId){
+  return await env.DB.prepare(`SELECT run_id,source_fingerprint,snapshot_json,reviewed_by,reviewed_at,
+    closed_by,closed_at FROM payroll_calc_monthly_reviews WHERE run_id=? AND company_id=?`)
+    .bind(runId,companyId).first();
+}
+async function payrollMonthlyConference36(env,companyId,runId){
+  const detail=await payrollMonthlyRunDetail35(env,companyId,runId);
+  const run=detail.run;
+  const review=await payrollMonthlyReadReview36(env,companyId,runId);
+  const latest=await env.DB.prepare(`SELECT id,revision FROM payroll_calc_runs
+    WHERE company_id=? AND competence_id=? AND process_kind='MONTHLY'
+    ORDER BY revision DESC LIMIT 1`).bind(companyId,run.competence_id).first();
+  const problems=[];
+  const block=(code,message)=>problems.push({code,message});
+  if(!detail.employee_count)block('SEM_ENVELOPES','Nenhum envelope foi gravado.');
+  if(!latest||latest.id!==runId)block('VERSAO_ANTERIOR','Somente a revisao mais recente pode ser conferida ou fechada.');
+  for(const e of detail.envelopes){
+    const proventos=(e.lines||[]).filter(x=>x.line_type==='PROVENTO').reduce((n,x)=>n+Number(x.amount_cents),0);
+    const descontos=(e.lines||[]).filter(x=>x.line_type==='DESCONTO').reduce((n,x)=>n+Number(x.amount_cents),0);
+    const inss=(e.lines||[]).filter(x=>x.event_code==='INSS_EMP').reduce((n,x)=>n+Number(x.amount_cents),0);
+    const irrf=(e.lines||[]).filter(x=>x.event_code==='IRRF_EMP').reduce((n,x)=>n+Number(x.amount_cents),0);
+    const fgts=(e.lines||[]).filter(x=>x.event_code==='FGTS_PATRONAL').reduce((n,x)=>n+Number(x.amount_cents),0);
+    if(![proventos,descontos,inss,irrf,fgts].every(Number.isSafeInteger)||
+      proventos!==Number(e.earnings_cents)||descontos!==Number(e.deductions_cents)||
+      proventos-descontos!==Number(e.net_cents)||inss!==Number(e.inss_cents)||
+      irrf!==Number(e.irrf_cents)||fgts!==Number(e.fgts_cents))
+      block('ENVELOPE_DIVERGENTE','Valores ou eventos do envelope '+(e.employee_code||e.employee_id)+' nao conciliam.');
+  }
+  const currentStatus=await env.DB.prepare(`SELECT status FROM payroll_competences
+    WHERE company_id=? AND id=?`).bind(companyId,run.competence_id).first();
+  if(!currentStatus)block('COMPETENCIA_INEXISTENTE','Competencia nao encontrada.');
+  const approved=run.status==='APPROVED';
+  let source=null;
+  if(approved){
+    if(currentStatus?.status!=='LOCKED')block('COMPETENCIA_NAO_BLOQUEADA','Competencia aprovada nao esta bloqueada.');
+    if(!review?.closed_at)block('FECHAMENTO_SEM_REGISTRO','Falta o registro de fechamento.');
+  }else{
+    if(currentStatus?.status!=='OPEN')block('COMPETENCIA_FECHADA','Competencia nao esta aberta.');
+    try{
+      source=await payrollMonthlySource35(env,companyId,run.competence_id,run.payment_date);
+      if(source.fingerprint!==run.source_fingerprint)
+        block('FONTES_ALTERADAS','Cadastros, eventos ou parametros mudaram apos o calculo. Recalcule antes de conferir.');
+      if(source.items.length!==detail.envelopes.length)block('FUNCIONARIOS_DIVERGENTES','Numero de funcionarios foi alterado.');
+      const expected=new Map(source.items.map(x=>[x.employee_id,x]));
+      for(const saved of detail.envelopes){
+        const current=expected.get(saved.employee_id);
+        if(!current||!payrollMonthlyEnvelopeAgree36(saved,current))
+          block('VALORES_MODIFICADOS','Envelopes gravados nao coincidem com o calculo atual.');
+      }
+      if(!payrollMonthlyNumbersAgree36(detail.totals,source.totals))
+        block('TOTAL_DIVERGENTE','Somatorios da folha nao coincidem com o processamento atual.');
+    }catch(e){
+      block('REPROCESSAMENTO_PENDENTE',String(e?.message||'Nao foi possivel validar as entradas atuais.').slice(0,320));
+    }
+  }
+  if(review && review.source_fingerprint!==run.source_fingerprint)
+    block('REVISAO_DIVERGENTE','A revisao nao corresponde a fotografia gravada.');
+  if(run.status==='REVIEWED'&&!review)block('REVISAO_AUSENTE','Folha marcada como revisada sem registro de conferencia.');
+  const canReview=run.status==='CALCULATED'&&!problems.length;
+  const canClose=run.status==='REVIEWED'&&!!review&&!problems.length;
+  return {kind:'CONFERENCIA_FOLHA_MENSAL_ETAPA_36',run,employee_count:detail.employee_count,
+    totals:detail.totals,problems,ready_for_review:canReview,ready_for_closure:canClose,
+    review:review?{reviewed_by:review.reviewed_by,reviewed_at:review.reviewed_at,
+      closed_by:review.closed_by,closed_at:review.closed_at}:null,
+    approved,source,ready_for_payment:false,ready_for_accounting:false,
+    note:approved?'Fechamento operacional registrado; a integridade das fontes futuras nao substitui esta fotografia.':
+      'Conferencia interna; revisar bases e direitos trabalhistas antes do fechamento. Nao autoriza pagamento.'};
+}
+async function payrollMonthlyReview36(env,request,auth,companyId,runId){
+  await requirePermission(env,auth.user.id,companyId,'payroll.manage');
+  await ensureSchemaRevision(env,'payroll-monthly-review',1,()=>ensurePayrollMonthlyReviewSchema36(env));
+  const conf=await payrollMonthlyConference36(env,companyId,runId);
+  if(conf.run.status==='REVIEWED'&&conf.review&&!conf.problems.length)return conf;
+  if(!conf.ready_for_review)throw new HttpError(409,'A folha possui pendencias ou nao esta calculada: '+(conf.problems[0]?.message||conf.run.status),'REVIEW_BLOCKED');
+  const snapshot=conf.source.items.map(e=>({employee_id:e.employee_id,
+    employee_name:e.employee_name,employee_code:e.employee_code}));
+  const stmts=[
+    env.DB.prepare(`INSERT INTO payroll_calc_monthly_reviews
+      (run_id,company_id,source_fingerprint,snapshot_json,reviewed_by)
+      VALUES (?,?,?,?,?)`).bind(runId,companyId,conf.run.source_fingerprint,JSON.stringify(snapshot),auth.user.id),
+    env.DB.prepare(`UPDATE payroll_calc_runs SET status='REVIEWED' WHERE id=? AND company_id=?
+      AND status='CALCULATED'`).bind(runId,companyId)
+  ];
+  try{await env.DB.batch(stmts)}catch(err){
+    if(/UNIQUE constraint|constraint failed/i.test(String(err)))
+      throw new HttpError(409,'A folha foi conferida por outra operacao. Atualize a consulta.','CONFLICT');
+    throw err;
+  }
+  await audit(env,{companyId,userId:auth.user.id,action:'REVIEW',entity:'payroll_calc_runs',entityId:runId,
+    after:{status:'REVIEWED',source_fingerprint:conf.run.source_fingerprint,employee_count:snapshot.length},request});
+  return payrollMonthlyConference36(env,companyId,runId);
+}
+async function payrollMonthlyUndoReview36(env,request,auth,companyId,runId){
+  await requirePermission(env,auth.user.id,companyId,'payroll.manage');
+  await ensureSchemaRevision(env,'payroll-monthly-review',1,()=>ensurePayrollMonthlyReviewSchema36(env));
+  const conf=await payrollMonthlyConference36(env,companyId,runId);
+  if(conf.run.status!=='REVIEWED')throw new HttpError(409,'Somente uma conferencia nao fechada pode ser desfeita.','REVIEW_LOCKED');
+  const results=await env.DB.batch([
+    env.DB.prepare(`DELETE FROM payroll_calc_monthly_reviews WHERE run_id=? AND company_id=? AND closed_at IS NULL`)
+      .bind(runId,companyId),
+    env.DB.prepare(`UPDATE payroll_calc_runs SET status='CALCULATED'
+      WHERE id=? AND company_id=? AND status='REVIEWED'`).bind(runId,companyId)
+  ]);
+  if(!results[1]?.meta?.changes)throw new HttpError(409,'A situacao da revisao mudou. Atualize.','CONFLICT');
+  await audit(env,{companyId,userId:auth.user.id,action:'UNDO_REVIEW',entity:'payroll_calc_runs',entityId:runId,
+    after:{status:'CALCULATED'},request});
+  return payrollMonthlyConference36(env,companyId,runId);
+}
+async function payrollMonthlyClose36(env,request,auth,companyId,runId,body){
+  await requirePermission(env,auth.user.id,companyId,'payroll.manage');
+  if(String(body?.confirmation||'').trim()!=='FECHAR')
+    throw new HttpError(400,'Confirme o fechamento digitando FECHAR.','CONFIRMATION_REQUIRED');
+  await ensureSchemaRevision(env,'payroll-monthly-review',1,()=>ensurePayrollMonthlyReviewSchema36(env));
+  const conf=await payrollMonthlyConference36(env,companyId,runId);
+  if(!conf.ready_for_closure)
+    throw new HttpError(409,'Nao foi possivel fechar: '+(conf.problems[0]?.message||'Folha ainda nao conferida.'),'CLOSURE_BLOCKED');
+  const stmts=[
+    env.DB.prepare(`UPDATE payroll_competences SET status='LOCKED'
+      WHERE id=? AND company_id=? AND status='OPEN'`).bind(conf.run.competence_id,companyId),
+    env.DB.prepare(`UPDATE payroll_calc_runs SET status='APPROVED'
+      WHERE id=? AND company_id=? AND status='REVIEWED' AND source_fingerprint=?`)
+      .bind(runId,companyId,conf.run.source_fingerprint),
+    env.DB.prepare(`UPDATE payroll_calc_monthly_reviews
+      SET closed_by=?,closed_at=CURRENT_TIMESTAMP
+      WHERE run_id=? AND company_id=? AND closed_at IS NULL AND source_fingerprint=?`)
+      .bind(auth.user.id,runId,companyId,conf.run.source_fingerprint)
+  ];
+  const results=await env.DB.batch(stmts);
+  if(results.some(x=>Number(x?.meta?.changes)!==1))
+    throw new HttpError(409,'O fechamento nao foi confirmado integralmente. Nao utilize a folha e solicite conferencia da competencia.','CLOSURE_CONFLICT');
+  await audit(env,{companyId,userId:auth.user.id,action:'CLOSE',entity:'payroll_calc_runs',entityId:runId,
+    after:{status:'APPROVED',competence_status:'LOCKED',employee_count:conf.employee_count,
+      totals:conf.totals,ready_for_payment:false,ready_for_accounting:false},request});
+  return payrollMonthlyConference36(env,companyId,runId);
+}
+async function payrollMonthlyReceipt36(env,companyId,runId,employeeId){
+  const detail=await payrollMonthlyRunDetail35(env,companyId,runId);
+  const envelope=detail.envelopes.find(x=>x.employee_id===employeeId);
+  if(!envelope)throw new HttpError(404,'Funcionario nao consta deste processamento.','NOT_FOUND');
+  const review=await payrollMonthlyReadReview36(env,companyId,runId);
+  if(review){
+    let snap=[];
+    try{snap=JSON.parse(review.snapshot_json||'[]')}catch(_){snap=[]}
+    const row=snap.find(x=>x.employee_id===employeeId);
+    if(row){envelope.employee_name=row.employee_name;envelope.employee_code=row.employee_code;}
+  }
+  return {kind:'HOLERITE_MENSAL_ETAPA_36',run:detail.run,employee:envelope,
+    document_status:detail.run.status==='APPROVED'?'FOLHA_FECHADA':'PRELIMINAR',
+    totals:detail.totals,review:review?{reviewed_at:review.reviewed_at,closed_at:review.closed_at}:null,
+    ready_for_payment:false,paid:false,ready_for_accounting:false,
+    message:'Demonstrativo de folha, nao e comprovante de deposito ou pagamento.'};
 }
 
 // ===== SAGAS Folha: Etapa 01 da integração operacional (sem cálculo) =====
@@ -10281,6 +10471,25 @@ async function route(request, env) {
     await ensureSchemaRevision(env,'payroll-calculation-foundation',1,()=>ensurePayrollCalculationFoundation34(env));
     return ok(await payrollMonthlyPreparation34(env,companyId,
       url.searchParams.get('competence_id'),url.searchParams.get('payment_date')));
+  }
+  // Etapa 36: conferencia da ultima revisao e fechamento controlado.
+  p=routeMatch(path,'/api/payroll/monthly-runs/:id/conference');
+  if(p&&method==='GET'){
+    await requirePermission(env,auth.user.id,companyId,'payroll.read');
+    await ensureSchemaRevision(env,'payroll-monthly-review',1,()=>ensurePayrollMonthlyReviewSchema36(env));
+    return ok(await payrollMonthlyConference36(env,companyId,p.id));
+  }
+  p=routeMatch(path,'/api/payroll/monthly-runs/:id/review');
+  if(p&&method==='POST')return ok(await payrollMonthlyReview36(env,request,auth,companyId,p.id));
+  p=routeMatch(path,'/api/payroll/monthly-runs/:id/undo-review');
+  if(p&&method==='POST')return ok(await payrollMonthlyUndoReview36(env,request,auth,companyId,p.id));
+  p=routeMatch(path,'/api/payroll/monthly-runs/:id/close');
+  if(p&&method==='POST')return ok(await payrollMonthlyClose36(env,request,auth,companyId,p.id,await readJson(request)));
+  p=routeMatch(path,'/api/payroll/monthly-runs/:id/receipts/:employee_id');
+  if(p&&method==='GET'){
+    await requirePermission(env,auth.user.id,companyId,'payroll.read');
+    await ensureSchemaRevision(env,'payroll-monthly-review',1,()=>ensurePayrollMonthlyReviewSchema36(env));
+    return ok(await payrollMonthlyReceipt36(env,companyId,p.id,p.employee_id));
   }
   // Etapa 35: processamento mensal real, persistente e pendente de homologacao.
   p=routeMatch(path,'/api/payroll/monthly-runs/:id');

@@ -591,7 +591,7 @@ async function payrollMonthlyCalcScreen35(){
       <label class="field"><span>Data prevista de pagamento</span><input type="date" name="payment_date" value="${esc(old.competenceId===competenceId?old.payment:'')}" required></label>
       <div><button type="submit" class="btn primary">Calcular e gravar</button></div>
     </form>
-    <p class="help">O calculo exige os cadastros conferidos na preparacao da folha. Situacoes especiais serao bloqueadas. Nao gera financeiro, contabilidade, holerites definitivos ou pagamento.</p>
+    <p class="help">O calculo exige os cadastros conferidos na preparacao da folha. Situacoes especiais serao bloqueadas. A conferência e os holerites imprimíveis ficam disponíveis após o cálculo. Não gera financeiro, contabilidade ou pagamento.</p>
     <div class="toolbar"><button type="button" class="btn secondary sm" id="payroll35History">Processamentos anteriores</button></div>
     <div id="payroll35Results"></div>`,true);
   $('#payroll35Form').onsubmit=async e=>{
@@ -612,13 +612,16 @@ async function payrollMonthlyCalcScreen35(){
 function payrollMonthlyCalcResults35(data){
   const target=$('#payroll35Results');if(!target)return;
   const x=data.totals||{},r=data.run||{};
-  const rows=(data.envelopes||[]).map((e,i)=>`<tr><td class="code">${esc(e.employee_code||'—')}</td><td>${esc(e.employee_name)}</td><td>${payroll35Money(e.earnings_cents)}</td><td>${payroll35Money(e.deductions_cents)}</td><td><b>${payroll35Money(e.net_cents)}</b></td><td><button class="btn secondary sm" type="button" data-payroll35-detail="${i}">Ver eventos</button></td></tr>`).join('');
+  const rows=(data.envelopes||[]).map((e,i)=>`<tr><td class="code">${esc(e.employee_code||'—')}</td><td>${esc(e.employee_name)}</td><td>${payroll35Money(e.earnings_cents)}</td><td>${payroll35Money(e.deductions_cents)}</td><td><b>${payroll35Money(e.net_cents)}</b></td><td><button class="btn secondary sm" type="button" data-payroll35-detail="${i}">Ver eventos</button> <button class="btn secondary sm" type="button" data-payroll36-receipt="${i}">Holerite</button></td></tr>`).join('');
   target.innerHTML=`<div class="section-title">Processamento ${esc(String(r.revision||'—'))} · ${esc(r.competence||'')}</div>
-    <p class="help">Situação: <b>Calculada — aguardando conferência</b>. ${Number(data.employee_count||0)} funcionário(s).</p>
+    <p class="help">Situação: <b>${esc(payroll36Status(r.status))}</b>. ${Number(data.employee_count||0)} funcionário(s).</p>
     <div class="table-wrap" style="max-height:340px;overflow:auto"><table class="table"><thead><tr><th>ID</th><th>Funcionário</th><th>Proventos</th><th>Descontos</th><th>Líquido</th><th>Ações</th></tr></thead><tbody>${rows||empty(6,'Nenhum envelope','Nenhum funcionario calculado.')}</tbody></table></div>
     <p class="help"><b>Totais:</b> Proventos ${payroll35Money(x.earnings_cents)} · Descontos ${payroll35Money(x.deductions_cents)} · Líquido ${payroll35Money(x.net_cents)} · FGTS informativo ${payroll35Money(x.fgts_cents)}.</p>
-    <p class="help">Os valores ainda precisam de validação antes de uso financeiro e contábil.</p>`;
+    <div class="toolbar"><button type="button" class="btn primary sm" id="payroll36Conference">Conferir / fechar folha</button></div>
+    <p class="help">Conferencia interna e fechamento nao geram pagamentos nem contabilizacao. O holerite nao comprova deposito.</p>`;
   $$('[data-payroll35-detail]',target).forEach(btn=>btn.onclick=()=>payrollMonthlyDetail35(Number(btn.dataset.payroll35Detail)));
+  $$('[data-payroll36-receipt]',target).forEach(btn=>btn.onclick=()=>{const emp=data.envelopes[Number(btn.dataset.payroll36Receipt)];if(emp)payroll36OpenReceipt(r.id,emp.employee_id)});
+  if($('#payroll36Conference'))$('#payroll36Conference').onclick=()=>payroll36ConferenceScreen(r.id).catch(err=>toast(err.message,'error'));
 }
 function payrollMonthlyDetail35(i){
   const previous=window.sagasPayrollCalculation35;
@@ -649,6 +652,94 @@ async function payrollMonthlyHistory35(competenceId){
     }catch(err){toast(err.message,'error')}
   });
   $('#payroll35HistoryBack').onclick=()=>payrollMonthlyCalcScreen35().catch(err=>toast(err.message,'error'));
+}
+
+// ===== SAGAS Folha Etapa 36: conferencia, holerite e fechamento =====
+const payroll36Status=status=>({CALCULATED:'Calculada · aguardando conferencia',
+  REVIEWED:'Conferida · aguardando fechamento',APPROVED:'Fechada',VOID:'Cancelada'})[status]||status;
+async function payroll36ConferenceScreen(runId){
+  const c=await api('/api/payroll/monthly-runs/'+encodeURIComponent(runId)+'/conference');
+  window.sagasPayrollConference36=c;
+  const rows=(c.problems||[]).map(p=>`<tr><td class="code">${esc(p.code)}</td><td>${esc(p.message)}</td></tr>`).join('');
+  const canManage=can('payroll.manage');
+  openModal('Conferencia e fechamento da folha',
+    'Etapa 36 · Confirme os calculos e somente depois feche a competencia.',
+    `<p class="help"><b>Competencia:</b> ${esc(c.run.competence)} · <b>Revisao:</b> ${esc(String(c.run.revision))} · <b>Situacao:</b> ${esc(payroll36Status(c.run.status))}</p>
+    <p class="help"><b>Funcionarios:</b> ${esc(String(c.employee_count))} · <b>Proventos:</b> ${payroll35Money(c.totals.earnings_cents)} · <b>Descontos:</b> ${payroll35Money(c.totals.deductions_cents)} · <b>Liquido:</b> ${payroll35Money(c.totals.net_cents)}</p>
+    <div class="table-wrap"><table class="table"><thead><tr><th>Verificacao</th><th>Resultado</th></tr></thead><tbody>${rows||'<tr><td colspan="2">Nenhuma divergencia automatica encontrada.</td></tr>'}</tbody></table></div>
+    <p class="help">${esc(c.note)}</p>
+    ${c.review?`<p class="help">Revisao registrada em ${esc(dateBR(c.review.reviewed_at))}. ${c.review.closed_at?'Fechamento registrado em '+esc(dateBR(c.review.closed_at))+'.':''}</p>`:''}
+    ${canManage&&c.ready_for_review?'<div class="form-actions"><button type="button" class="btn primary" id="payroll36Review">Registrar conferencia</button></div>':''}
+    ${canManage&&c.run.status==='REVIEWED'?'<div class="form-actions"><button type="button" class="btn secondary" id="payroll36Undo">Desfazer conferencia</button></div>':''}
+    ${canManage&&c.ready_for_closure?'<form id="payroll36CloseForm"><p class="help"><b>Atenção:</b> o fechamento bloqueara novos lancamentos nesta competencia. Nao gera pagamento nem contabilizacao. Digite FECHAR para confirmar.</p><label class="field"><span>Confirmacao</span><input name="confirmation" autocomplete="off" placeholder="FECHAR" required></label><div class="form-actions"><button class="btn primary" type="submit">Fechar competencia</button></div></form>':''}
+    <div class="form-actions"><button id="payroll36Return" type="button" class="btn secondary">Voltar aos envelopes</button></div>`,true);
+  const act=async(path,body=null)=>{
+    try{
+      const opts={method:'POST'};if(body)opts.body=body;
+      await api('/api/payroll/monthly-runs/'+encodeURIComponent(runId)+'/'+path,opts);
+      toast('Situacao da folha atualizada.');
+      await payroll36ConferenceScreen(runId);
+    }catch(e){toast(e.message,'error')}
+  };
+  if($('#payroll36Review'))$('#payroll36Review').onclick=()=>act('review');
+  if($('#payroll36Undo'))$('#payroll36Undo').onclick=()=>act('undo-review');
+  if($('#payroll36CloseForm'))$('#payroll36CloseForm').onsubmit=e=>{
+    e.preventDefault();const confirmation=e.target.elements.confirmation.value;
+    if(confirmation!=='FECHAR'){toast('Digite FECHAR exatamente.','error');return}
+    act('close',{confirmation});
+  };
+  $('#payroll36Return').onclick=()=>payroll36BackToRun(runId);
+}
+async function payroll36BackToRun(runId){
+  try{
+    const detail=await api('/api/payroll/monthly-runs/'+encodeURIComponent(runId));
+    window.sagasPayrollCalculation35={competenceId:detail.run.competence_id,payment:detail.run.payment_date,data:detail};
+    await payrollMonthlyCalcScreen35();
+    payrollMonthlyCalcResults35(detail);
+  }catch(e){toast(e.message,'error')}
+}
+function payroll36ReceiptHTML(data){
+  const emp=data.employee,run=data.run;
+  const rows=(emp.lines||[]).map(x=>`<tr><td>${esc(x.event_code)}</td><td>${esc(x.event_name)}</td>
+    <td>${esc(x.reference_text||'—')}</td><td class="number">${x.line_type==='PROVENTO'?payroll35Money(x.amount_cents):'—'}</td>
+    <td class="number">${x.line_type==='DESCONTO'?payroll35Money(x.amount_cents):'—'}</td></tr>`).join('');
+  const info=(emp.lines||[]).filter(x=>x.line_type==='INFORMATIVO').map(x=>`<p>${esc(x.event_name)}: ${payroll35Money(x.amount_cents)}</p>`).join('');
+  return `<!DOCTYPE html><html lang="pt-BR"><head><meta charset="UTF-8"><title>Holerite ${esc(emp.employee_code||'')} — ${esc(run.competence)}</title>
+    <style>body{font:14px Arial,sans-serif;color:#17263b;margin:36px auto;max-width:960px}header{border-bottom:3px solid #1753a5;padding:14px 0;margin-bottom:22px}
+    h1{font-size:22px;margin:0 0 8px;color:#1753a5}h2{font-size:16px;margin:20px 0 8px}p{margin:5px 0}table{border-collapse:collapse;width:100%;margin:16px 0}
+    th,td{padding:9px 8px;border:1px solid #c8d1da;text-align:left}th{background:#eaf0f9}.number{text-align:right;white-space:nowrap}
+    .net{border:2px solid #1753a5;padding:15px;text-align:right;font-weight:bold;font-size:19px}.note{margin-top:24px;color:#4b5870;font-size:12px}
+    .toolbar{margin-bottom:18px}.toolbar button{background:#1753a5;color:#fff;border:0;padding:10px 16px;cursor:pointer}
+    @media print{.toolbar{display:none}body{margin:12mm}th{-webkit-print-color-adjust:exact;print-color-adjust:exact}}
+    </style></head><body><div class="toolbar"><button onclick="window.print()">Imprimir / Salvar em PDF</button></div>
+    <header><h1>Demonstrativo de pagamento — Folha mensal</h1>
+    <p><b>Competencia:</b> ${esc(run.competence)} &nbsp; <b>Data prevista:</b> ${esc(dateBR(run.payment_date))} &nbsp; <b>Revisao:</b> ${esc(String(run.revision))}</p>
+    <p><b>Situacao:</b> ${esc(payroll36Status(run.status))}</p></header>
+    <p><b>Funcionario:</b> ${esc(emp.employee_name)} &nbsp; <b>ID:</b> ${esc(emp.employee_code||'—')}</p>
+    <table><thead><tr><th>Codigo</th><th>Descricao</th><th>Referencia</th><th>Proventos</th><th>Descontos</th></tr></thead><tbody>${rows}</tbody>
+    <tfoot><tr><th colspan="3">Totais</th><th class="number">${payroll35Money(emp.earnings_cents)}</th><th class="number">${payroll35Money(emp.deductions_cents)}</th></tr></tfoot></table>
+    <div class="net">Liquido calculado: ${payroll35Money(emp.net_cents)}</div><h2>Encargos informativos</h2>${info||'<p>Sem eventos informativos.</p>'}
+    <p class="note">${data.document_status==='FOLHA_FECHADA'?'Folha fechada no SAGAS.':'Folha em conferencia, ainda nao fechada.'} Este demonstrativo nao comprova pagamento, recolhimento de tributos ou envio ao eSocial.</p>
+    </body></html>`;
+}
+async function payroll36OpenReceipt(runId,employeeId){
+  try{
+    const data=await api('/api/payroll/monthly-runs/'+encodeURIComponent(runId)+'/receipts/'+encodeURIComponent(employeeId));
+    // Abertura de documento preparado: botao para abrir nova aba apenas depois do retorno da API.
+    openModal('Holerite — '+data.employee.employee_name,
+      'Demonstrativo imprimivel da competencia '+data.run.competence+'.',
+      `<p class="help"><b>Funcionario:</b> ${esc(data.employee.employee_code||'—')} · ${esc(data.employee.employee_name)}</p>
+      <p class="help"><b>Situacao:</b> ${esc(payroll36Status(data.run.status))} · <b>Liquido:</b> ${payroll35Money(data.employee.net_cents)}</p>
+      <p class="help">Clique em Abrir para visualizar o holerite e usar Imprimir / Salvar em PDF. Nao e comprovante de pagamento.</p>
+      <div class="form-actions"><button type="button" id="payroll36Print" class="btn primary">Abrir holerite</button><button id="payroll36ReceiptBack" type="button" class="btn secondary">Voltar</button></div>`,true);
+    $('#payroll36Print').onclick=()=>{
+      const page=window.open('','_blank');
+      if(!page){toast('O navegador bloqueou a nova aba. Permita pop-ups para este site.','error');return}
+      page.document.open();page.document.write(payroll36ReceiptHTML(data));page.document.close();
+      try{page.opener=null}catch(_){}
+    };
+    $('#payroll36ReceiptBack').onclick=()=>payroll36BackToRun(runId);
+  }catch(e){toast(e.message,'error')}
 }
 
 async function payrollMovementForm(competenceId){
