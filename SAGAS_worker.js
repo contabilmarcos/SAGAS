@@ -9347,9 +9347,12 @@ async function payrollMonthlyPreparation34(env,companyId,competenceId,paymentDat
   const first=period.competence+'-01';
   const [year,month]=period.competence.split('-').map(Number);
   const last=period.competence+'-'+String(new Date(Date.UTC(year,month,0)).getUTCDate()).padStart(2,'0');
-  const allEmployees=(await listPayroll(env,companyId,'employees')).filter(e=>e.admission_date<=last);
-  if(allEmployees.length>2000)throw new HttpError(409,'Mais de 2.000 funcionarios na competencia. Consulte em lotes.','LIMIT');
+  const candidates=(await listPayroll(env,companyId,'employees')).filter(e=>e.admission_date<=last);
+  if(candidates.length>2000)throw new HttpError(409,'Mais de 2.000 funcionarios na competencia. Consulte em lotes.','LIMIT');
   const history=await payrollEmployeeHistoricalContext(env,companyId,first,last);
+  // Funcionarios ja desligados no inicio da competencia nao compoem a folha mensal.
+  // Quem foi desligado DURANTE o mes permanece para conferencia das verbas proporcionais.
+  const allEmployees=candidates.filter(e=>history.functional.get(e.id)?.[0]?.situation!=='DESLIGADO');
   const movements=await env.DB.prepare(`SELECT m.id,m.employee_id,m.event_id,m.unit,m.amount_cents,m.quantity_milli,
       v.code AS event_code,v.name AS event_name,v.event_type,v.active AS event_active
     FROM payroll_movements m JOIN payroll_events v
