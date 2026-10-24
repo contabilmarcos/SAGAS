@@ -156,7 +156,10 @@ export async function payrollVacationMonthly100(env,companyId,competenceId,payme
    irrf_gross_cents:snapshot.salary_worked_cents,irrf_base_cents:irrf.base_cents,
    dependent_count:snapshot.dependent_count,
    lines:lines.map(x=>({event_id:mapped.get(x.event_code)?.id||null,event_code:x.event_code,event_name:x.event_name,
-    line_type:x.line_type,amount_cents:x.amount_cents,reference_text:x.reference_text||'',
+    line_type:x.line_type,amount_cents:x.amount_cents,
+    reference_text:x.event_code==='INSS_EMP'?'Base '+(snapshot.base_inss_cents/100).toFixed(2):
+      x.event_code==='FGTS_PATRONAL'?'Base '+(snapshot.base_fgts_cents/100).toFixed(2):
+      x.reference_text||'',
     rule_version:'FERIAS100#'+s.id}))};
   byEmployee.set(s.employee_id,item);
   records.push({id:s.id,employee_id:s.employee_id,source_fingerprint:s.source_fingerprint,
