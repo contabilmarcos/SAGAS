@@ -85,8 +85,10 @@ function payrollVacation56Result(month,occ,data){
   (blocks?'<p class="section-title">Bloqueios</p><ul class="help">'+blocks+'</ul>':'')+
   '<p class="help">'+(data.months||[]).flatMap(m=>(m.salary_notes||[]).map(n=>m.competence+': '+n)).map(esc).join(' ')+'</p>'+
   '<p class="help">'+(data.notes||[]).map(esc).join(' ')+'</p>'+
+  '<div class="form-actions"><button id="vac58FromPreview" class="btn primary" type="button">Registrar envelope de férias</button>'+ 
   '<div class="form-actions"><button id="vac56ResultBack" class="btn secondary" type="button">Voltar</button>'+
   '<button id="vac56ResultRedo" class="btn primary" type="button">Refazer simulação</button></div>',true);
  $('#vac56ResultBack').onclick=()=>payrollVacation55Open(month,occ).catch(e=>toast(e.message,'error'));
  $('#vac56ResultRedo').onclick=()=>payrollVacation56Open(month,occ).catch(e=>toast(e.message,'error'));
+ $('#vac58FromPreview').onclick=()=>payrollVacation58Open(month,occ).catch(e=>toast(e.message,'error'));
 }
