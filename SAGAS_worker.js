@@ -14,8 +14,9 @@ import { payrollVacationIntegration53 } from './sagas-payroll-vacation53.js';
 import { payrollVacation54, payrollVacationSchema54 } from './sagas-payroll-vacation54.js';
 import { payrollVacation55, payrollVacationSchema55 } from './sagas-payroll-vacation55.js';
 import { payrollVacation56 } from './sagas-payroll-vacation56.js';
+import { payrollVacationEnvelope58, payrollVacationSchema58 } from './sagas-payroll-vacation58.js';
 import { payrollProvisionAccounting44 } from './sagas-payroll-provisions44.js';
-// SAGAS Worker v95 - Conferência de meses especiais e reajuste RM das férias | cumulativo desde v49
+// SAGAS Worker v96 - Registro auditável do envelope próprio VACATION de férias | cumulativo desde v49
 // ===== utils.js =====
 function json(data, status = 200, extraHeaders = {}) {
   return new Response(JSON.stringify(data), {
@@ -10628,6 +10629,28 @@ async function route(request, env) {
   p=routeMatch(path,"/api/financial-payables/:id/cancel"); if(p&&method==="POST")return ok({payable:await cancelFinancialPayable(env,request,auth,companyId,p.id)});
   p=routeMatch(path,"/api/financial-payables/:id"); if(p&&method==="GET"){await requirePermission(env,auth.user.id,companyId,"financial.payable.read");const payable=await getFinancialPayable(env,companyId,p.id);if(payable.source_type==="PAYROLL_MONTHLY")await requirePermission(env,auth.user.id,companyId,"payroll.read");return ok({payable});}
 
+  // Etapa 58 (v96): envelope próprio VACATION, vinculado ao recibo conciliado.
+  if(path==='/api/payroll/vacation-envelope'&&(method==='GET'||method==='POST')){
+    await ensureSchemaRevision(env,'payroll-employee-numbers',1,()=>ensurePayrollEmployeeNumbersSchema(env));
+    await ensureSchemaRevision(env,'payroll-employee-history',1,()=>ensurePayrollEmployeeRecordsSchema(env));
+    await ensureSchemaRevision(env,'payroll-employee-cost-center39',1,()=>ensurePayrollCostCenter39(env));
+    await ensureSchemaRevision(env,'payroll-envelope-cost-center39',1,()=>ensurePayrollEnvelopeCostCenter39(env));
+    await ensureSchemaRevision(env,'payroll-calculation-foundation',1,()=>ensurePayrollCalculationFoundation34(env));
+    await ensureSchemaRevision(env,'payroll-absence48',1,()=>payrollAbsenceSchema48(env));
+    await ensureSchemaRevision(env,'payroll-salary-change47',1,()=>payrollSalarySchema47(env));
+    await ensureSchemaRevision(env,'payroll-vacation50',1,()=>payrollVacationSchema50(env));
+    await ensureSchemaRevision(env,'payroll-vacation89',1,()=>payrollVacationSchema89(env));
+    await ensureSchemaRevision(env,'payroll-vacation54',1,()=>payrollVacationSchema54(env));
+    await ensureSchemaRevision(env,'payroll-vacation55',1,()=>payrollVacationSchema55(env));
+    await ensureSchemaRevision(env,'payroll-vacation-envelope58',1,()=>payrollVacationSchema58(env));
+    await payrollFinance39('catalog',{env,companyId,auth,d:{HttpError,requirePermission,ensureSchemaRevision,audit,uuid}});
+    const body=method==='POST'?await readJson(request):{};
+    return ok(await payrollVacationEnvelope58(method==='GET'?'read':String(body.action||''),{
+      env,companyId,auth,request,body,occurrenceId:url.searchParams.get('occurrence_id'),
+      d:{HttpError,requirePermission,ensureSchemaRevision,audit,uuid,hash:payrollProcessingSnapshotHash28,
+        validateCenter:validateCostCenterForEntry}
+    }));
+  }
   // Etapa 56 (v94): simulação determinística do envelope com férias, sem gravação.
   if(path==='/api/payroll/vacation-monthly-preview'&&(method==='GET'||method==='POST')){
     await requirePermission(env,auth.user.id,companyId,'payroll.read');
@@ -10671,6 +10694,7 @@ async function route(request, env) {
     await ensureSchemaRevision(env,'payroll-vacation89',1,()=>payrollVacationSchema89(env));
     await ensureSchemaRevision(env,'payroll-vacation54',1,()=>payrollVacationSchema54(env));
     await ensureSchemaRevision(env,'payroll-vacation55',1,()=>payrollVacationSchema55(env));
+    await ensureSchemaRevision(env,'payroll-vacation-envelope58',1,()=>payrollVacationSchema58(env));
     const body=method==='POST'?await readJson(request):{};
     return ok(await payrollVacation55(method==='GET'?'read':String(body.action||''),{
       env,companyId,auth,request,body,occurrenceId:url.searchParams.get('occurrence_id'),
@@ -10686,6 +10710,7 @@ async function route(request, env) {
     await ensureSchemaRevision(env,'payroll-vacation89',1,()=>payrollVacationSchema89(env));
     await ensureSchemaRevision(env,'payroll-vacation54',1,()=>payrollVacationSchema54(env));
     await ensureSchemaRevision(env,'payroll-vacation55',1,()=>payrollVacationSchema55(env));
+    await ensureSchemaRevision(env,'payroll-vacation-envelope58',1,()=>payrollVacationSchema58(env));
     await payrollFinance39('catalog',{env,companyId,auth,d:{HttpError,requirePermission,ensureSchemaRevision,audit,uuid}});
     const body=method==='POST'?await readJson(request):{};
     return ok(await payrollVacation54(method==='GET'?'read':String(body.action||''),{
