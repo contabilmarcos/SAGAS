@@ -245,8 +245,9 @@ export async function payrollVacation54(action,c){
   if(notes.length<12||notes.length>500)fail54(d,'Descreva a conferência do pagamento (12–500 caracteres).','PAYMENT_NOTES');
   const advanceId=d.uuid();
   try{
-   await env.DB.prepare("INSERT INTO payroll_vacation_advances54(id,company_id,employee_id,occurrence_id,processing_id,payment_date,amount_cents,external_reference,notes,status,declared_by) SELECT ?,?,?,?,?,?,?,?,?,'DECLARED',? WHERE EXISTS(SELECT 1 FROM payroll_vacation_processings54 WHERE id=? AND company_id=? AND occurrence_id=? AND source_fingerprint=? AND status='PREPARED')")
+   const savedAdvance=await env.DB.prepare("INSERT INTO payroll_vacation_advances54(id,company_id,employee_id,occurrence_id,processing_id,payment_date,amount_cents,external_reference,notes,status,declared_by) SELECT ?,?,?,?,?,?,?,?,?,'DECLARED',? WHERE EXISTS(SELECT 1 FROM payroll_vacation_processings54 WHERE id=? AND company_id=? AND occurrence_id=? AND source_fingerprint=? AND status='PREPARED')")
     .bind(advanceId,companyId,fresh.employee.id,id,existing.id,paymentDate,amount,reference,notes,auth.user.id,existing.id,companyId,id,fingerprint).run();
+   if(savedAdvance.meta?.changes!==1)fail54(d,'A preparação mudou antes de declarar o adiantamento.','PROCESSING_CONFLICT');
   }catch(e){if(String(e.message||'').includes('UNIQUE'))fail54(d,'Adiantamento já declarado por outra sessão.','ADVANCE_CONFLICT');throw e}
   await d.audit(env,{companyId,userId:auth.user.id,action:'DECLARE',entity:'payroll_vacation_advances54',entityId:advanceId,request,
    before:null,after:{occurrence_id:id,processing_id:existing.id,payment_date:paymentDate,amount_cents:amount,external_reference:reference}});
