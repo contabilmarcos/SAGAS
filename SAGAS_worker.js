@@ -10,8 +10,9 @@ import { payrollLeave49, payrollLeaveSchema49, payrollLeaveSnapshot49, payrollLe
 import { payrollVacation50 } from './sagas-payroll-vacation50.js';
 import { payrollVacation89, payrollVacationSchema89 } from './sagas-payroll-vacation51.js';
 import { payrollVacation90 } from './sagas-payroll-vacation52.js';
+import { payrollVacationIntegration53 } from './sagas-payroll-vacation53.js';
 import { payrollProvisionAccounting44 } from './sagas-payroll-provisions44.js';
-// SAGAS Worker v90 - Conferência tributária de férias 2026 por competência | cumulativo desde v49
+// SAGAS Worker v91 - Ponte de férias com envelopes e naturezas orçamentárias | cumulativo desde v49
 // ===== utils.js =====
 function json(data, status = 200, extraHeaders = {}) {
   return new Response(JSON.stringify(data), {
@@ -5697,7 +5698,7 @@ async function savePayroll(env,request,auth,companyId,kind,id,body){
   const table=payrollKindTable(kind);
   await requirePermission(env,auth.user.id,companyId,'payroll.manage');
   const before=id?await getPayroll(env,companyId,kind,id):null;
-  if(kind==='events'&&before&&['SALARIO_BASE','INSS_EMP','IRRF_EMP','FGTS_PATRONAL','FALTA_INJUSTIFICADA','ATRASO_MINUTOS','DSR_DESCONTO','LICENCA_REMUNERADA','LICENCA_NAO_REMUNERADA','DOENCA_EMPRESA_15'].includes(before.code))
+  if(kind==='events'&&before&&['SALARIO_BASE','INSS_EMP','IRRF_EMP','FGTS_PATRONAL','FALTA_INJUSTIFICADA','ATRASO_MINUTOS','DSR_DESCONTO','LICENCA_REMUNERADA','LICENCA_NAO_REMUNERADA','DOENCA_EMPRESA_15','FERIAS_GOZO','TERCO_FERIAS','ABONO_FERIAS','TERCO_ABONO_FERIAS','ADIANTAMENTO_FERIAS','INSS_FERIAS','IRRF_FERIAS','FGTS_FERIAS'].includes(before.code))
     throw new HttpError(409,'Evento automático da folha: não é permitido alterar seu cadastro. Configure apenas a contabilização.','AUTO_EVENT_LOCKED');
   const entryId=id||uuid();
   const name=cleanText(required(body.name,'nome'),200);
@@ -10624,6 +10625,18 @@ async function route(request, env) {
   p=routeMatch(path,"/api/financial-payables/:id/cancel"); if(p&&method==="POST")return ok({payable:await cancelFinancialPayable(env,request,auth,companyId,p.id)});
   p=routeMatch(path,"/api/financial-payables/:id"); if(p&&method==="GET"){await requirePermission(env,auth.user.id,companyId,"financial.payable.read");const payable=await getFinancialPayable(env,companyId,p.id);if(payable.source_type==="PAYROLL_MONTHLY")await requirePermission(env,auth.user.id,companyId,"payroll.read");return ok({payable});}
 
+  // Etapa 53 (v91): conciliação de férias com envelopes sem lançamento.
+  if(path==='/api/payroll/vacation-integration'&&method==='GET'){
+    await requirePermission(env,auth.user.id,companyId,'payroll.read');
+    await ensureSchemaRevision(env,'payroll-employee-numbers',1,()=>ensurePayrollEmployeeNumbersSchema(env));
+    await ensureSchemaRevision(env,'payroll-employee-cost-center39',1,()=>ensurePayrollCostCenter39(env));
+    await ensureSchemaRevision(env,'payroll-calculation-foundation',1,()=>ensurePayrollCalculationFoundation34(env));
+    await ensureSchemaRevision(env,'payroll-envelope-cost-center39',1,()=>ensurePayrollEnvelopeCostCenter39(env));
+    return ok(await payrollVacationIntegration53({
+      env,companyId,auth,request,occurrenceId:url.searchParams.get('occurrence_id'),
+      d:{HttpError,requirePermission,ensureSchemaRevision,audit,uuid,payrollFinance39}
+    }));
+  }
   // Etapa 52 (v90): tributos de férias — simulação exclusiva de conferência.
   if(path==='/api/payroll/vacation-tax'&&(method==='GET'||method==='POST')){
     await ensureSchemaRevision(env,'payroll-employee-numbers',1,()=>ensurePayrollEmployeeNumbersSchema(env));
