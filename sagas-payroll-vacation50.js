@@ -104,7 +104,6 @@ export async function payrollVacation50(action,c){
   if(!Number.isSafeInteger(missing)||missing<0||missing>90)
    vacationFail50(d,'Período aquisitivo fora do vínculo empregatício.','VACATION_ACQUISITION');
   const end=dateShift50(addYear50(start),-1);
-  const deadline=dateShift50(addYear50(end),0);
   // Período concessivo começa no dia seguinte ao aquisitivo e tem até 12 meses.
   const concessionDeadline=dateShift50(addYear50(dateShift50(end,1)),-1);
   const raw=String(body.unjustified_absences??'');
@@ -141,8 +140,9 @@ export async function payrollVacation50(action,c){
   if(!group||group.period_count>=3||group.remaining_days<occ.days)
    vacationFail50(d,'Saldo insuficiente ou limite de três frações atingido.','VACATION_BALANCE');
   const lengths=group.fragments.map(x=>x.days).concat(occ.days);
-  if(lengths.some(x=>x<5)||lengths.length===3&&Math.max(...lengths)<14)
-   vacationFail50(d,'Fracionamento incompatível com os limites legais.','VACATION_FRACTION');
+  const remainder=cycle.entitled_days-lengths.reduce((n,x)=>n+x,0);
+  if(lengths.some(x=>x<5)||lengths.length>1 && Math.max(...lengths)<14 && remainder<14 || lengths.length===1 && lengths[0]<cycle.entitled_days && Math.max(lengths[0],remainder)<14)
+   vacationFail50(d,'O fracionamento impede um período mínimo de 14 dias. Reveja os dias e o saldo.','VACATION_FRACTION');
   // Uma instrução condicional atômica protege saldo e frações contra duas gravações simultâneas.
   const insert=await env.DB.prepare(
    "INSERT INTO payroll_vacation_links50(occurrence_id,cycle_id,company_id,employee_id,notes,created_by) SELECT ?,?,?,?,?,? WHERE (SELECT COUNT(*) FROM payroll_vacation_links50 WHERE cycle_id=? AND company_id=?)<3 AND (SELECT COALESCE(SUM(CAST(julianday(o.end_date)-julianday(o.start_date)+1 AS INTEGER)),0) FROM payroll_vacation_links50 l JOIN payroll_employee_occurrences o ON o.id=l.occurrence_id AND o.company_id=l.company_id WHERE l.cycle_id=? AND l.company_id=?) + ? <= ?")
