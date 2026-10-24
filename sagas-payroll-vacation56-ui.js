@@ -29,6 +29,7 @@ async function payrollVacation56Open(month,occ){
   '<th>Dias fora férias</th><th>Dias de salário (base 30)</th><th>Complemento</th>'+
   '<th>Salário histórico</th><th>Centro de custo atual</th><th>Folha</th></tr></thead><tbody>'+rows+'</tbody></table></div>'+
   '<p class="help">O complemento de fevereiro completa a referência comercial de 30 dias; não representa trabalho realizado. Em meses de 31 dias, o dia excedente não gera salário adicional.</p>'+
+  '<p class="help">Configuração salarial: '+esc((data.salary_references||[]).map(x=>x.competence+' — '+(x.salary_mode||'RM_NEXT_MONTH')).join('; '))+'.</p>'+
   '<p>Bruto do recibo: <b>'+esc(vacation56BRL(data.gross_cents))+'</b> · Férias gozadas + 1/3: <b>'+
   esc(vacation56BRL(data.vacation_gross_cents))+'</b>.</p>'+
   '<p class="section-title">Pendências verificadas</p>'+
@@ -82,6 +83,7 @@ function payrollVacation56Result(month,occ,data){
   (rows||'<tr><td colspan="11">Nenhuma competência liberada para simulação.</td></tr>')+'</tbody></table></div>'+
   '<p class="section-title">Rubricas calculadas por competência</p>'+detail+
   (blocks?'<p class="section-title">Bloqueios</p><ul class="help">'+blocks+'</ul>':'')+
+  '<p class="help">'+(data.months||[]).flatMap(m=>(m.salary_notes||[]).map(n=>m.competence+': '+n)).map(esc).join(' ')+'</p>'+
   '<p class="help">'+(data.notes||[]).map(esc).join(' ')+'</p>'+
   '<div class="form-actions"><button id="vac56ResultBack" class="btn secondary" type="button">Voltar</button>'+
   '<button id="vac56ResultRedo" class="btn primary" type="button">Refazer simulação</button></div>',true);
