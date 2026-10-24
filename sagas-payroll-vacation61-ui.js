@@ -116,12 +116,14 @@ async function payrollVacation61Open(month,occ){
  const data=await api('/api/payroll/vacation-monthly-stage?occurrence_id='+encodeURIComponent(occ.id));
  const rows=(data.items||[]).map(x=>'<tr><td>'+esc(x.competence)+'</td>'+
   '<td>'+esc(x.payment_date)+'</td><td>'+esc(vacation99Money(x.snapshot?.vacation_gross_cents))+'</td>'+
-  '<td>'+esc(vacation99Money(x.snapshot?.illustrative_net_cents))+'</td></tr>').join('');
- openModal('Férias — memória mensal registrada (v99)',esc(occ.employee_name||''),
-  '<p class="help">Registros auditáveis, sem alterar folha mensal, provisões, financeiro ou contabilidade.</p>'+
+  '<td>'+esc(vacation99Money(x.snapshot?.illustrative_net_cents))+'</td>'+
+  '<td>'+esc(x.integrated_in_monthly?(x.monthly_usage||[]).map(u=>
+   'Integrado · revisão '+String(u.revision)+' ('+u.status+')').join('; '):'Aguardando cálculo mensal')+'</td></tr>').join('');
+ openModal('Férias — memória e integração mensal (v100)',esc(occ.employee_name||''),
+  '<p class="help">Memórias de férias e vínculos com as folhas mensais. A utilização não gera pagamento bancário nem contabilização automática.</p>'+
   '<div class="table-wrap"><table class="table"><thead><tr><th>Competência</th><th>Pagamento previsto</th><th>Férias + 1/3</th><th>Líquido ilustrativo</th></tr></thead><tbody>'+rows+'</tbody></table></div>'+
   '<div class="form-actions"><button id="vac99StageBack" class="btn secondary" type="button">Voltar</button>'+
-  (can('payroll.manage')&&data.items?.length?
+  (can('payroll.manage')&&data.items?.length&&!data.items.some(x=>x.integrated_in_monthly)?
    '<button id="vac99StageVoid" class="btn danger" type="button">Anular memória</button>':'')+
   '</div>',true);
  $('#vac99StageBack').onclick=()=>payrollVacation60Open(month,occ).catch(e=>toast(e.message,'error'));
