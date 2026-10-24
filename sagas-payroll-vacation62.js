@@ -9,12 +9,21 @@ function safe100(v,d,name){
  return v;
 }
 export async function payrollVacationMonthlySchema100(env){
- await env.DB.batch([
+ const stageExists=await env.DB.prepare(
+  "SELECT name FROM sqlite_master WHERE type='table' AND name='payroll_vacation_monthly_stage61' LIMIT 1"
+ ).first();
+ const statements=[
   env.DB.prepare("CREATE TABLE IF NOT EXISTS payroll_vacation_monthly_usage100 (id TEXT PRIMARY KEY,company_id TEXT NOT NULL,run_id TEXT NOT NULL REFERENCES payroll_calc_runs(id) ON DELETE RESTRICT,stage_id TEXT NOT NULL REFERENCES payroll_vacation_monthly_stage61(id) ON DELETE RESTRICT,employee_id TEXT NOT NULL,competence_id TEXT NOT NULL,source_fingerprint TEXT NOT NULL,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,UNIQUE(run_id,stage_id))"),
-  env.DB.prepare("CREATE INDEX IF NOT EXISTS ix_vacation_usage100_run ON payroll_vacation_monthly_usage100(company_id,run_id)"),
-  env.DB.prepare("DROP TRIGGER IF EXISTS tr_vac_stage61_block_monthly"),
-  env.DB.prepare("CREATE TRIGGER IF NOT EXISTS tr_vac100_block_unsigned_monthly BEFORE INSERT ON payroll_calc_runs WHEN NEW.process_kind='MONTHLY' AND EXISTS(SELECT 1 FROM payroll_vacation_monthly_stage61 WHERE company_id=NEW.company_id AND competence_id=NEW.competence_id AND status='STAGED') AND NEW.source_fingerprint NOT LIKE 'VACATION100:%' BEGIN SELECT RAISE(ABORT,'VACATION_MONTHLY_NOT_SIGNED'); END")
- ]);
+  env.DB.prepare("CREATE INDEX IF NOT EXISTS ix_vacation_usage100_run ON payroll_vacation_monthly_usage100(company_id,run_id)")
+ ];
+ // Não criar trigger consultando uma tabela de férias que ainda não existe.
+ // Se a v99 for inicializada posteriormente, seu próprio trigger já aceita
+ // exclusivamente processamentos validados com assinatura VACATION100.
+ if(stageExists){
+  statements.push(env.DB.prepare("DROP TRIGGER IF EXISTS tr_vac_stage61_block_monthly"));
+  statements.push(env.DB.prepare("CREATE TRIGGER IF NOT EXISTS tr_vac100_block_unsigned_monthly BEFORE INSERT ON payroll_calc_runs WHEN NEW.process_kind='MONTHLY' AND EXISTS(SELECT 1 FROM payroll_vacation_monthly_stage61 WHERE company_id=NEW.company_id AND competence_id=NEW.competence_id AND status='STAGED') AND NEW.source_fingerprint NOT LIKE 'VACATION100:%' BEGIN SELECT RAISE(ABORT,'VACATION_MONTHLY_NOT_SIGNED'); END"));
+ }
+ await env.DB.batch(statements);
 }
 function exactly100(lines,code,d){
  const matches=lines.filter(x=>x.event_code===code);
