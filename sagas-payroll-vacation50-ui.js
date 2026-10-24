@@ -16,10 +16,10 @@ async function payrollVacation50Open(month,occ){
  const rows=cycles.map(p=>
   '<tr><td>'+esc(p.acquisition_start)+' a '+esc(p.acquisition_end)+'</td>'+
   '<td>'+esc(String(p.unjustified_absences))+'</td><td>'+esc(String(p.entitled_days))+'</td>'+
-  '<td>'+esc(String(p.used_days))+'</td><td><b>'+esc(String(p.remaining_days))+'</b></td>'+
+  '<td>'+esc(String(p.used_days))+'</td><td>'+esc(String(p.reserved_abono_days||0))+'</td><td><b>'+esc(String(p.remaining_days))+'</b></td>'+
   '<td>'+esc(p.concession_deadline)+'</td></tr>').join('');
  const current=cycles.find(x=>x.id===data.allocation?.cycle_id);
- const pre=preview?'<p class="section-title">Prévia bruta — sem homologação</p><div class="table-wrap"><table class="table"><tbody>'+
+ const pre=preview?'<p class="section-title">Prévia fixa simplificada — sem médias, abono ou impostos</p><div class="table-wrap"><table class="table"><tbody>'+
   '<tr><td>Salário-base histórico</td><td>'+esc(brMoney(preview.salary_cents))+'</td></tr>'+
   '<tr><td>Remuneração fixa do gozo</td><td>'+esc(brMoney(preview.vacation_remuneration_cents))+'</td></tr>'+
   '<tr><td>Terço constitucional</td><td>'+esc(brMoney(preview.constitutional_third_cents))+'</td></tr>'+
@@ -32,11 +32,12 @@ async function payrollVacation50Open(month,occ){
   '<p class="help">O direito aos dias e as faltas devem ser confirmados pelo Departamento Pessoal. O vínculo não quita férias nem retira o bloqueio do cálculo mensal.</p>'+
   '<div class="toolbar"><div><b>Períodos aquisitivos cadastrados</b></div>'+
   (canEdit?'<button id="vacation50Add" class="btn secondary" type="button">+ Novo período</button>':'')+'</div>'+
-  '<div class="table-wrap"><table class="table"><thead><tr><th>Aquisição</th><th>Faltas</th><th>Direito</th><th>Utilizados</th><th>Saldo</th><th>Concessão até</th></tr></thead><tbody>'+
-  (rows||'<tr><td colspan="6">Nenhum período aquisitivo cadastrado.</td></tr>')+'</tbody></table></div>'+
+  '<div class="table-wrap"><table class="table"><thead><tr><th>Aquisição</th><th>Faltas</th><th>Direito</th><th>Utilizados</th><th>Abono</th><th>Saldo</th><th>Concessão até</th></tr></thead><tbody>'+
+  (rows||'<tr><td colspan="7">Nenhum período aquisitivo cadastrado.</td></tr>')+'</tbody></table></div>'+
   (linked?'<p class="section-title">Ocorrência vinculada</p><p>Período aquisitivo: <b>'+
     esc(current?current.acquisition_start+' a '+current.acquisition_end:'Não encontrado')+
     '</b>. Saldo após o vínculo: <b>'+esc(String(current?.remaining_days??'—'))+' dia(s)</b>.</p>'+
+    '<button id="vacation89Open" type="button" class="btn secondary">Médias, abono e minuta</button> '+
     (canEdit?'<button id="vacation50Unlink" type="button" class="btn danger">Desvincular ocorrência</button>':''):
    '<p class="section-title">Vincular férias ao período aquisitivo</p>'+
    (canEdit?'<form id="vacation50LinkForm"><div class="grid">'+
@@ -50,6 +51,7 @@ async function payrollVacation50Open(month,occ){
  if($('#vacation50Back'))$('#vacation50Back').onclick=()=>payrollLeave49Open(month).catch(e=>toast(e.message,'error'));
  if($('#vacation50Add'))$('#vacation50Add').onclick=()=>payrollVacation50Register(month,occ,data.employee);
  if($('#vacation50Unlink'))$('#vacation50Unlink').onclick=()=>payrollVacation50Unlink(month,occ);
+ if($('#vacation89Open'))$('#vacation89Open').onclick=()=>payrollVacation89Open(month,occ).catch(e=>toast(e.message,'error'));
  const form=$('#vacation50LinkForm');
  if(form)form.onsubmit=async event=>{
   event.preventDefault();const button=form.querySelector('[type=submit]');button.disabled=true;
