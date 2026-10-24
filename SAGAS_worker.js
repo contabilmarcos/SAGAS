@@ -15,6 +15,9 @@ import { payrollVacation54, payrollVacationSchema54 } from './sagas-payroll-vaca
 import { payrollVacation55, payrollVacationSchema55 } from './sagas-payroll-vacation55.js';
 import { payrollVacation56 } from './sagas-payroll-vacation56.js';
 import { payrollVacationEnvelope58, payrollVacationSchema58 } from './sagas-payroll-vacation58.js';
+import { payrollVacationReview59 } from './sagas-payroll-vacation59.js';
+import { payrollVacationBridge60 } from './sagas-payroll-vacation60.js';
+import { payrollVacationStage61 } from './sagas-payroll-vacation61.js';
 import { payrollProvisionAccounting44 } from './sagas-payroll-provisions44.js';
 // SAGAS Worker v96 - Registro auditável do envelope próprio VACATION de férias | cumulativo desde v49
 // ===== utils.js =====
@@ -10650,6 +10653,50 @@ async function route(request, env) {
       d:{HttpError,requirePermission,ensureSchemaRevision,audit,uuid,hash:payrollProcessingSnapshotHash28,
         validateCenter:validateCostCenterForEntry}
     }));
+  }
+
+  // v97-99: conferencia de envelope VACATION, simulacao e memoria de eventos.
+  // NAO alteram o calculo MONTHLY nem autorizam financeira ou contabilizacao.
+  if(['/api/payroll/vacation-review','/api/payroll/vacation-monthly-bridge',
+      '/api/payroll/vacation-monthly-stage'].includes(path)&&(method==='GET'||method==='POST')){
+    await ensureSchemaRevision(env,'payroll-employee-numbers',1,()=>ensurePayrollEmployeeNumbersSchema(env));
+    await ensureSchemaRevision(env,'payroll-employee-history',1,()=>ensurePayrollEmployeeRecordsSchema(env));
+    await ensureSchemaRevision(env,'payroll-employee-cost-center39',1,()=>ensurePayrollCostCenter39(env));
+    await ensureSchemaRevision(env,'payroll-envelope-cost-center39',1,()=>ensurePayrollEnvelopeCostCenter39(env));
+    await ensureSchemaRevision(env,'payroll-event-rules',1,()=>ensurePayrollEventRulesSchema(env));
+    await ensureSchemaRevision(env,'payroll-salary-change47',1,()=>payrollSalarySchema47(env));
+    await ensureSchemaRevision(env,'payroll-calculation-foundation',1,()=>ensurePayrollCalculationFoundation34(env));
+    await ensureSchemaRevision(env,'payroll-absence48',1,()=>payrollAbsenceSchema48(env));
+    await ensureSchemaRevision(env,'payroll-vacation50',1,()=>payrollVacationSchema50(env));
+    await ensureSchemaRevision(env,'payroll-vacation89',1,()=>payrollVacationSchema89(env));
+    await ensureSchemaRevision(env,'payroll-vacation54',1,()=>payrollVacationSchema54(env));
+    await ensureSchemaRevision(env,'payroll-vacation55',1,()=>payrollVacationSchema55(env));
+    await ensureSchemaRevision(env,'payroll-vacation-envelope58',1,()=>payrollVacationSchema58(env));
+    const body=method==='POST'?await readJson(request):{};
+    const monthlyIrrf=(gross,inssBalance,dependents,paymentDate)=>{
+      const t=histTable(HIST_IRRF,paymentDate.slice(0,7));
+      const legal=inssBalance+dependents*18959;
+      const deduction=Math.max(legal,t[2]);
+      const taxable=Math.max(0,gross-deduction);
+      const band=t[1].find(x=>taxable<=x[0]);
+      const before=Math.max(0,payrollTaxRound(taxable*band[1],10000)-band[2]);
+      let reduction=0;
+      if(t[3]){
+        if(gross<=500000)reduction=Math.min(before,31289);
+        else if(gross<=735000)reduction=Math.min(before,Math.max(0,97862-payrollTaxRound(gross*133145,1000000)));
+      }
+      return {irrf_cents:Math.max(0,before-reduction),base_cents:taxable,deduction_cents:deduction};
+    };
+    const ctx={env,companyId,auth,request,body,
+      occurrenceId:url.searchParams.get('occurrence_id'),
+      d:{HttpError,requirePermission,ensureSchemaRevision,audit,uuid,
+        hash:payrollProcessingSnapshotHash28,validateCenter:validateCostCenterForEntry,
+        taxes:payrollTaxHistoricalWithDependents,monthlyIrrf}};
+    if(path==='/api/payroll/vacation-review')
+      return ok(await payrollVacationReview59(method==='GET'?'read':String(body.action||'approve'),ctx));
+    if(path==='/api/payroll/vacation-monthly-bridge')
+      return ok(await payrollVacationBridge60(method==='GET'?'prepare':'simulate',ctx));
+    return ok(await payrollVacationStage61(method==='GET'?'read':String(body.action||'record'),ctx));
   }
   // Etapa 56 (v94): simulação determinística do envelope com férias, sem gravação.
   if(path==='/api/payroll/vacation-monthly-preview'&&(method==='GET'||method==='POST')){
