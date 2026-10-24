@@ -3,6 +3,7 @@
 // Bloqueia cenários com datas/divisores ou incidências ainda não homologados.
 import { payrollVacation55 } from './sagas-payroll-vacation55.js';
 import { payrollVacation54 } from './sagas-payroll-vacation54.js';
+import { payrollVacationDays57, payrollVacationSalary57 } from './sagas-payroll-vacation57.js';
 
 function fail56(d,message,code='VACATION_MONTHLY_REVIEW_REQUIRED',status=409){
  throw new d.HttpError(status,message,code);
@@ -48,10 +49,9 @@ async function baseMonth56(env,companyId,employeeId,occId,month,p,d){
  if(!Number.isInteger(year)||!Number.isInteger(m)||m<1||m>12)
   fail56(d,'Competência de férias inválida.','INVALID_MONTH');
  const length=new Date(Date.UTC(year,m,0)).getUTCDate(),first=month+'-01',last=month+'-'+String(length).padStart(2,'0');
- const fail=blockers56(),value={competence:month,days:p.days,month_length:length,salary_cents:null,
-  pay_date:null,dependents:0,existing_run:null,existing_center:null,blockers:fail.items};
- if(length!==30)
-  fail.add('DIVISOR_MES','O cálculo mensal integrado ainda requer competência de 30 dias. Meses de '+length+' dias precisam de regra específica para dias trabalhados.');
+ const fail=blockers56(),calendar=payrollVacationDays57(month,p.days,d);
+ const value={competence:month,days:p.days,month_length:length,salary_cents:null,
+  calendar,pay_date:null,dependents:0,existing_run:null,existing_center:null,blockers:fail.items};
  if(!month.startsWith('2026-'))fail.add('TABELA_ANO','A integração desta fase exige tabelas tributárias de 2026.');
  if(!Number.isSafeInteger(p.days)||p.days<1||p.days>length)fail.add('DIAS_INCOMPATIVEIS','Dias de férias incompatíveis com a competência.');
  const period=await env.DB.prepare("SELECT id,status FROM payroll_competences WHERE company_id=? AND competence=? LIMIT 1").bind(companyId,month).first();
@@ -117,9 +117,9 @@ export async function payrollVacation56(action,c){
   periods.push(await baseMonth56(env,companyId,employeeId,id,period.competence,period,d));
  }
  const signature=await d.hash({
-  code_version:56,plan,reconciliation_id:details.reconciled.id,receipt_recorded_at:details.reconciled.recorded_at,
+  code_version:57,plan,reconciliation_id:details.reconciled.id,receipt_recorded_at:details.reconciled.recorded_at,
   processing_id:original.processing.id,original_model:original.snapshot.model_revision,
-  months:periods.map(x=>({competence:x.competence,salary:x.salary_cents,dependents:x.dependents,
+  months:periods.map(x=>({competence:x.competence,salary:x.salary_cents,calendar:x.calendar,dependents:x.dependents,
    existing_run:x.existing_run,center:x.existing_center,blockers:x.blockers}))
  });
  if(action==='prepare')return {prepared:true,employee:plan.employee,occurrence_id:id,
@@ -147,7 +147,8 @@ export async function payrollVacation56(action,c){
    blockers.add('TABELA_PAGAMENTO',month.competence+': somente pagamento em 2026 nesta fase.');continue;
   }
   const salary=month.salary_cents;
-  const nonVacation=half56(BigInt(salary)*BigInt(30-item.days),30n,d);
+  const cal=month.calendar;
+  const nonVacation=payrollVacationSalary57(salary,cal,d);
   const compensation=safe56(item.compensation_gross_cents,'compensação bruta',d);
   const inssBase=nonVacation+compensation,fgtsBase=inssBase;
   if(!Number.isSafeInteger(inssBase)||inssBase>99999999999){
@@ -164,7 +165,7 @@ export async function payrollVacation56(action,c){
    blockers.add('LIQUIDO_NEGATIVO',month.competence+': saldo salarial após tributos seria negativo. Requer tratamento específico.');continue;
   }
   const lines=[
-   {event_code:'SALARIO_BASE',event_name:'Salário de dias trabalhados',line_type:'PROVENTO',amount_cents:nonVacation,reference_text:(30-item.days)+' dia(s) trabalhados em mês comercial'},
+   {event_code:'SALARIO_BASE',event_name:'Saldo salarial da competência',line_type:'PROVENTO',amount_cents:nonVacation,reference_text:cal.salary_paid_reference_days+' dia(s) comerciais; '+cal.calendar_nonvacation_days+' dia(s) calendário fora das férias'+(cal.commercial_salary_complement_days?'; complemento '+cal.commercial_salary_complement_days+' dia(s)':'')},
    {event_code:'FERIAS_GOZO',event_name:'Férias gozadas',line_type:'PROVENTO',amount_cents:item.remuneration_cents,reference_text:item.days+' dia(s) de gozo'},
    {event_code:'TERCO_FERIAS',event_name:'Terço constitucional de férias',line_type:'PROVENTO',amount_cents:item.constitutional_third_cents,reference_text:'Conforme recibo conciliado'},
    {event_code:'ADIANTAMENTO_FERIAS',event_name:'Compensação bruta do adiantamento de férias',line_type:'DESCONTO',amount_cents:compensation,reference_text:'Compensa férias e terço; não é o líquido do banco'},
@@ -176,7 +177,12 @@ export async function payrollVacation56(action,c){
   const deductions=lines.filter(x=>x.line_type==='DESCONTO').reduce((a,x)=>a+x.amount_cents,0);
   if(credits-deductions!==net||credits!==nonVacation+compensation)
    fail56(d,'Envelope simulado não fecha na competência '+month.competence+'.','MONTHLY_BALANCE_MISMATCH');
-  summaries.push({competence:month.competence,payment_date:payment,days_worked:30-item.days,
+  summaries.push({competence:month.competence,payment_date:payment,
+   days_worked:cal.calendar_nonvacation_days,salary_reference_days:cal.salary_paid_reference_days,
+   commercial_salary_complement_days:cal.commercial_salary_complement_days,
+   calendar_excess_day_adjustment:cal.calendar_excess_day_adjustment,
+   month_length:cal.calendar_month_days,calendar_reference_mode:cal.reference_mode,
+   calendar_warning:cal.warning,
    days_vacation:item.days,salary_cents:salary,salary_worked_cents:nonVacation,
    vacation_gross_cents:compensation,base_inss_cents:inssBase,base_fgts_cents:fgtsBase,
    receipt_inss_allocated_cents:allocated,inss_total_competence_cents:total.inss_cents,
@@ -186,13 +192,14 @@ export async function payrollVacation56(action,c){
    cost_center_id:month.existing_center?.id||null,cost_center_code:month.existing_center?.code||null,
    events:lines,ready_for_posting:false});
  }
- return {status:'CALCULO_MENSAL_FERIAS_SIMULADO_V94',occurrence_id:id,employee:plan.employee,
+ return {status:'CALCULO_MENSAL_FERIAS_SIMULADO_V95',occurrence_id:id,employee:plan.employee,
   months:summaries,source_fingerprint:signature,blockers:blockers.items,
   calculated_months:summaries.length,expected_months:plan.periods.length,
   checked_read_only:true,ready_for_payroll:false,ready_for_payment:false,ready_for_accounting:false,
   notes:[
    'O cálculo não grava eventos em folha existente e não modifica processamento mensal revisado/fechado.',
-   'Requer a competência comercial de 30 dias; demais meses, afastamentos, movimentos, reajustes e incidências especiais permanecem bloqueados.',
+   'A referência comercial é 30 dias inclusive em meses de 28, 29 e 31; os dias pagos como complemento de fevereiro não são dias trabalhados.',
+   'Reajustes salariais intramês, afastamentos, movimentos e incidências especiais continuam bloqueados até cálculo integrado por vigências.',
    'INSS do recibo foi distribuído matematicamente por férias gozadas e subtraído do INSS total projetado da competência. A conferência final precisa validar os valores efetivos.',
    'IRRF das férias já foi documentado no pagamento; IRRF da folha mensal é calculado somente sobre o salário dos dias trabalhados.',
    'FGTS patronal calculado sobre salário dos dias trabalhados, férias gozadas e terço, sem desconto no salário do trabalhador.'
