@@ -23,7 +23,7 @@ function vacationRight50(n){
  return 0;
 }
 function noted50(x,d){const s=String(x||'').trim();if(s.length<10||s.length>500)vacationFail50(d,'Descreva a conferência documental (10 a 500 caracteres).','VALIDATION_ERROR',400);return s}
-async function payrollVacationSchema50(env){
+export async function payrollVacationSchema50(env){
  await env.DB.batch([
   env.DB.prepare("CREATE TABLE IF NOT EXISTS payroll_vacation_cycles50 (id TEXT PRIMARY KEY,company_id TEXT NOT NULL,employee_id TEXT NOT NULL REFERENCES payroll_employees(id) ON DELETE RESTRICT,acquisition_start TEXT NOT NULL,acquisition_end TEXT NOT NULL,concession_deadline TEXT NOT NULL,unjustified_absences INTEGER NOT NULL CHECK(unjustified_absences BETWEEN 0 AND 32),entitled_days INTEGER NOT NULL CHECK(entitled_days IN (12,18,24,30)),notes TEXT NOT NULL,created_by TEXT NOT NULL,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,UNIQUE(company_id,employee_id,acquisition_start))"),
   env.DB.prepare("CREATE INDEX IF NOT EXISTS ix_vacation_cycles50 ON payroll_vacation_cycles50(company_id,employee_id,acquisition_start)"),
@@ -165,6 +165,8 @@ export async function payrollVacation50(action,c){
   const existing=await env.DB.prepare("SELECT cycle_id,notes FROM payroll_vacation_links50 WHERE occurrence_id=? AND company_id=? AND employee_id=? LIMIT 1").bind(occurrenceId,companyId,occ.employee_id).first();
   if(!existing)vacationFail50(d,'Férias sem vínculo para desfazer.','NOT_FOUND',404);
   await openCompetences50(env,companyId,occ.start_date,occ.end_date,d);
+  const processing=await env.DB.prepare("SELECT id FROM payroll_vacation_processings54 WHERE company_id=? AND occurrence_id=? AND status='PREPARED' LIMIT 1").bind(companyId,occurrenceId).first();
+  if(processing)vacationFail50(d,'Anule a preparação de férias antes de desvincular a ocorrência.','VACATION_PROCESSING_EXISTS');
   const calc=await env.DB.prepare("SELECT occurrence_id FROM payroll_vacation_models89 WHERE occurrence_id=? AND company_id=? LIMIT 1").bind(occurrenceId,companyId).first();
   if(calc)vacationFail50(d,'Exclua a memória de médias e abono antes de desvincular as férias.','VACATION_CALC_EXISTS');
   await env.DB.prepare("DELETE FROM payroll_vacation_links50 WHERE occurrence_id=? AND company_id=?").bind(occurrenceId,companyId).run();
