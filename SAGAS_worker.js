@@ -13,8 +13,9 @@ import { payrollVacation90 } from './sagas-payroll-vacation52.js';
 import { payrollVacationIntegration53 } from './sagas-payroll-vacation53.js';
 import { payrollVacation54, payrollVacationSchema54 } from './sagas-payroll-vacation54.js';
 import { payrollVacation55, payrollVacationSchema55 } from './sagas-payroll-vacation55.js';
+import { payrollVacation56 } from './sagas-payroll-vacation56.js';
 import { payrollProvisionAccounting44 } from './sagas-payroll-provisions44.js';
-// SAGAS Worker v93 - Conciliação de recibo e proposta de rubricas da folha | cumulativo desde v49
+// SAGAS Worker v94 - Motor de conferência mensal de férias sem gravação | cumulativo desde v49
 // ===== utils.js =====
 function json(data, status = 200, extraHeaders = {}) {
   return new Response(JSON.stringify(data), {
@@ -10627,6 +10628,40 @@ async function route(request, env) {
   p=routeMatch(path,"/api/financial-payables/:id/cancel"); if(p&&method==="POST")return ok({payable:await cancelFinancialPayable(env,request,auth,companyId,p.id)});
   p=routeMatch(path,"/api/financial-payables/:id"); if(p&&method==="GET"){await requirePermission(env,auth.user.id,companyId,"financial.payable.read");const payable=await getFinancialPayable(env,companyId,p.id);if(payable.source_type==="PAYROLL_MONTHLY")await requirePermission(env,auth.user.id,companyId,"payroll.read");return ok({payable});}
 
+  // Etapa 56 (v94): simulação determinística do envelope com férias, sem gravação.
+  if(path==='/api/payroll/vacation-monthly-preview'&&(method==='GET'||method==='POST')){
+    await requirePermission(env,auth.user.id,companyId,'payroll.read');
+    await ensureSchemaRevision(env,'payroll-employee-numbers',1,()=>ensurePayrollEmployeeNumbersSchema(env));
+    await ensureSchemaRevision(env,'payroll-employee-history',1,()=>ensurePayrollEmployeeRecordsSchema(env));
+    await ensureSchemaRevision(env,'payroll-calculation-foundation',1,()=>ensurePayrollCalculationFoundation34(env));
+    await ensureSchemaRevision(env,'payroll-absence48',1,()=>payrollAbsenceSchema48(env));
+    await ensureSchemaRevision(env,'payroll-vacation50',1,()=>payrollVacationSchema50(env));
+    await ensureSchemaRevision(env,'payroll-vacation89',1,()=>payrollVacationSchema89(env));
+    await ensureSchemaRevision(env,'payroll-vacation54',1,()=>payrollVacationSchema54(env));
+    await ensureSchemaRevision(env,'payroll-vacation55',1,()=>payrollVacationSchema55(env));
+    await ensureSchemaRevision(env,'payroll-envelope-cost-center39',1,()=>ensurePayrollEnvelopeCostCenter39(env));
+    await payrollFinance39('catalog',{env,companyId,auth,d:{HttpError,requirePermission,ensureSchemaRevision,audit,uuid}});
+    const body=method==='POST'?await readJson(request):{};
+    const monthlyIrrf=(gross,inssBalance,dependents,paymentDate)=>{
+      const t=histTable(HIST_IRRF,paymentDate.slice(0,7));
+      const legal=inssBalance+dependents*18959;
+      const deduction=Math.max(legal,t[2]);
+      const taxable=Math.max(0,gross-deduction);
+      const band=t[1].find(x=>taxable<=x[0]);
+      const before=Math.max(0,payrollTaxRound(taxable*band[1],10000)-band[2]);
+      let reduction=0;
+      if(t[3]){
+        if(gross<=500000)reduction=Math.min(before,31289);
+        else if(gross<=735000)reduction=Math.min(before,Math.max(0,97862-payrollTaxRound(gross*133145,1000000)));
+      }
+      return {irrf_cents:Math.max(0,before-reduction),base_cents:taxable,deduction_cents:deduction};
+    };
+    return ok(await payrollVacation56(method==='GET'?'prepare':'simulate',{
+      env,companyId,auth,request,body,occurrenceId:url.searchParams.get('occurrence_id'),
+      d:{HttpError,requirePermission,ensureSchemaRevision,audit,uuid,
+        hash:payrollProcessingSnapshotHash28,taxes:payrollTaxHistoricalWithDependents,monthlyIrrf}
+    }));
+  }
   // Etapa 55 (v93): conciliação formal do recibo com rubricas por competência.
   if(path==='/api/payroll/vacation-reconciliation'&&(method==='GET'||method==='POST')){
     await ensureSchemaRevision(env,'payroll-employee-numbers',1,()=>ensurePayrollEmployeeNumbersSchema(env));
