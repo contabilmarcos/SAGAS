@@ -17,7 +17,7 @@ import { payrollVacation56 } from './sagas-payroll-vacation56.js';
 import { payrollVacationEnvelope58, payrollVacationSchema58 } from './sagas-payroll-vacation58.js';
 import { payrollVacationReview59 } from './sagas-payroll-vacation59.js';
 import { payrollVacationBridge60 } from './sagas-payroll-vacation60.js';
-import { payrollVacationStage61 } from './sagas-payroll-vacation61.js';
+import { payrollVacationStage61, payrollVacationBlockMonthly61 } from './sagas-payroll-vacation61.js';
 import { payrollProvisionAccounting44 } from './sagas-payroll-provisions44.js';
 // SAGAS Worker v96 - Registro auditável do envelope próprio VACATION de férias | cumulativo desde v49
 // ===== utils.js =====
@@ -9791,6 +9791,14 @@ async function payrollMonthlyRuns35(env,companyId,competenceId){
   return {runs:r.results||[]};
 }
 async function payrollMonthlyRunCreate35(env,request,auth,companyId,competenceId,paymentDate){
+  // v99: bloquear gravacao de MONTHLY enquanto ferias reconciliadas nao forem
+  // consideradas no motor salarial, INSS, IRRF e FGTS.
+  const vacationCompetence99=await env.DB.prepare(
+    "SELECT competence FROM payroll_competences WHERE id=? AND company_id=? LIMIT 1"
+  ).bind(competenceId,companyId).first();
+  if(vacationCompetence99)
+    await payrollVacationBlockMonthly61(env,companyId,vacationCompetence99.competence,{HttpError});
+
   await requirePermission(env,auth.user.id,companyId,'payroll.manage');
   const date=payrollStrictDate(paymentDate,'Data prevista de pagamento');
   await ensureSchemaRevision(env,'payroll-event-rules',1,()=>ensurePayrollEventRulesSchema(env));
@@ -9948,6 +9956,12 @@ async function payrollMonthlyConference36(env,companyId,runId){
       'Conferencia interna; revisar bases e direitos trabalhistas antes do fechamento. Nao autoriza pagamento.'};
 }
 async function payrollMonthlyReview36(env,request,auth,companyId,runId){
+  const vacationRun99=await env.DB.prepare(
+    "SELECT c.competence FROM payroll_calc_runs r JOIN payroll_competences c ON c.id=r.competence_id AND c.company_id=r.company_id WHERE r.company_id=? AND r.id=? AND r.process_kind='MONTHLY' LIMIT 1"
+  ).bind(companyId,runId).first();
+  if(vacationRun99)
+    await payrollVacationBlockMonthly61(env,companyId,vacationRun99.competence,{HttpError});
+
   await requirePermission(env,auth.user.id,companyId,'payroll.manage');
   await ensureSchemaRevision(env,'payroll-monthly-review',1,()=>ensurePayrollMonthlyReviewSchema36(env));
   const conf=await payrollMonthlyConference36(env,companyId,runId);
@@ -9988,6 +10002,12 @@ async function payrollMonthlyUndoReview36(env,request,auth,companyId,runId){
   return payrollMonthlyConference36(env,companyId,runId);
 }
 async function payrollMonthlyClose36(env,request,auth,companyId,runId,body){
+  const vacationRun99=await env.DB.prepare(
+    "SELECT c.competence FROM payroll_calc_runs r JOIN payroll_competences c ON c.id=r.competence_id AND c.company_id=r.company_id WHERE r.company_id=? AND r.id=? AND r.process_kind='MONTHLY' LIMIT 1"
+  ).bind(companyId,runId).first();
+  if(vacationRun99)
+    await payrollVacationBlockMonthly61(env,companyId,vacationRun99.competence,{HttpError});
+
   await requirePermission(env,auth.user.id,companyId,'payroll.manage');
   if(String(body?.confirmation||'').trim()!=='FECHAR')
     throw new HttpError(400,'Confirme o fechamento digitando FECHAR.','CONFIRMATION_REQUIRED');
