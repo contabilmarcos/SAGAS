@@ -19,10 +19,10 @@ async function payrollLeave49Open(period){
   (rows||'<tr><td colspan="5">Nenhuma licença ou afastamento cadastrado para esta competência.</td></tr>')+'</tbody></table></div>'+
   '<p class="help">Liberação inicial: licença remunerada (sem desconto), licença sem remuneração (desconto por divisor selecionado) e doença de até 15 dias sob responsabilidade da empresa. Benefício previdenciário, acidente, maternidade e férias ainda exigem seus processos próprios.</p>',true);
  $('#leave49Search').onclick=()=>payrollLeave49Open($('#leave49Month').value).catch(e=>toast(e.message,'error'));
- $('[data-vacation49]').forEach(btn=>{
+ $$('[data-vacation49]').forEach(btn=>{
   btn.onclick=()=>payrollVacation49Preview(month,(data.items||[]).find(x=>x.id===btn.dataset.vacation49)).catch(e=>toast(e.message,'error'));
  });
- $('[data-leave49]').forEach(btn=>{
+ $$('[data-leave49]').forEach(btn=>{
   btn.disabled=!can('payroll.manage');
   btn.onclick=()=>payrollLeave49Classify(month,(data.items||[]).find(x=>x.id===btn.dataset.leave49),data.treatments||{},data.modes||{});
  });
