@@ -117,7 +117,7 @@ export function payrollVacationTaxScenario90(receipt,body,d){
    total_projected_inss_base_cents:fgtsBase+other,incremental_inss_estimate_cents:projected,
    fgts_rate_percent:rate,fgts_base_cents:fgtsBase,fgts_estimate_cents:fgts};
  });
- const irrfTaxable=vacation+third; // Abono e terço do abono não tributados (art. 143 CLT).
+ const irrfTaxable=vacation+third+abonoThird; // Abono pecuniário isento; terço sobre abono tributável durante o vínculo (COSIT).
  const ir=ir90(irrfTaxable,projectedInss,dependentCount,pension,d);
  const assumedNet=gross-ir.irrf_cents-projectedInss;
  if(assumedNet<0)error90(d,'Descontos projetados superiores ao bruto; confira entradas.','TAX_ESTIMATE_INVALID');
@@ -130,7 +130,7 @@ export function payrollVacationTaxScenario90(receipt,body,d){
   paid_after_deadline:payment>deadline,
   vacation_start:receipt.start_date,vacation_end:receipt.end_date,
   gross_estimate_cents:gross,taxable_vacation_cents:irrfTaxable,
-  nontaxable_abono_cents:abono+abonoThird,
+  nontaxable_abono_cents:abono,taxable_abono_third_cents:abonoThird,
   estimated_inss_cents:projectedInss,estimated_fgts_cents:projectedFgts,
   fgts_employer_charge_not_employee_deduction:true,
   irrf:ir,monthly,estimated_net_cents:assumedNet,
@@ -138,7 +138,7 @@ export function payrollVacationTaxScenario90(receipt,body,d){
   document_type:'DEMONSTRATIVO DE CONFERENCIA / NAO E RECIBO',
   warnings:[
    'IRRF sobre férias gozadas e seu terço no mês de pagamento, em separado das demais remunerações; redução mensal de 2026 estimada.',
-   'Abono pecuniário e respectivo terço não compõem INSS, FGTS nem IRRF nesta simulação.',
+   'O abono pecuniário não integra o IRRF; o terço incidente sobre o abono é incluído no IRRF, conforme entendimento da Receita Federal.',
    'INSS simulado por competência sobre remuneração total declarada: diferenças de segurado, vínculos concomitantes, tetos e folha efetiva precisam de reconciliação.',
    'FGTS é obrigação do empregador, não desconto do funcionário; apurado somente sobre férias gozadas/terço, sem demais salários.',
    'Líquido indicado é projeção, não valor autorizável para pagamento; INSS definitivo é apurado nas folhas das competências.',
