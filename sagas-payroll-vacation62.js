@@ -29,6 +29,17 @@ export async function payrollVacationMonthly100(env,companyId,competenceId,payme
  const has=n=>types.some(r=>r.name===n);
  const active=has('payroll_vacation_envelope_links58')?
   (await env.DB.prepare("SELECT l.id,l.employee_id,l.occurrence_id,l.run_id FROM payroll_vacation_envelope_links58 l JOIN payroll_vacation_reconciliations55 r ON r.id=l.reconciliation_id AND r.company_id=l.company_id JOIN payroll_calc_runs v ON v.id=l.run_id AND v.company_id=l.company_id JOIN json_each(r.plan_json,'$.periods') p WHERE l.company_id=? AND l.status='ACTIVE' AND v.process_kind='VACATION' AND v.status IN ('CALCULATED','REVIEWED','APPROVED') AND json_extract(p.value,'$.competence')=?").bind(companyId,month).all()).results||[]:[];
+ // Mesmo férias apenas CADASTRADAS não podem ser ignoradas pela folha mensal.
+ const [yr,mm]=month.split('-').map(Number);
+ const lastDay=new Date(Date.UTC(yr,mm,0)).getUTCDate();
+ const firstDay=month+'-01',lastDate=month+'-'+String(lastDay).padStart(2,'0');
+ const scheduled=(await env.DB.prepare(
+  "SELECT id,employee_id FROM payroll_employee_occurrences WHERE company_id=? AND kind='FERIAS' AND start_date<=? AND end_date>=? LIMIT 102"
+ ).bind(companyId,lastDate,firstDay).all()).results||[];
+ if(scheduled.length>100)block100(d,'Mais de 100 ocorrências de férias na mesma competência.','VACATION_OCCURRENCE_LIMIT');
+ const coveredOccurrences=new Set(active.map(x=>x.occurrence_id));
+ if(scheduled.some(x=>!coveredOccurrences.has(x.id)))
+  block100(d,'Há férias cadastradas para '+month+' sem recibo reconciliado e envelope VACATION ativo. Prepare as férias antes de calcular a folha mensal.','VACATION_NOT_RECONCILED');
  const stages=has('payroll_vacation_monthly_stage61')?
   (await env.DB.prepare("SELECT s.id,s.employee_id,s.occurrence_id,s.vacation_run_id,s.payment_date,s.source_fingerprint,s.events_json,s.snapshot_json,c.status AS competence_status,e.cost_center_id,l.status AS vacation_link_status,r.status AS vacation_status,r.source_fingerprint AS vacation_fingerprint,v.plan_json,v.receipt_inss_cents,v.receipt_irrf_cents FROM payroll_vacation_monthly_stage61 s JOIN payroll_employees e ON e.id=s.employee_id AND e.company_id=s.company_id JOIN payroll_vacation_envelope_links58 l ON l.company_id=s.company_id AND l.employee_id=s.employee_id AND l.occurrence_id=s.occurrence_id AND l.run_id=s.vacation_run_id AND l.status='ACTIVE' JOIN payroll_calc_runs r ON r.id=s.vacation_run_id AND r.company_id=s.company_id AND r.process_kind='VACATION' JOIN payroll_vacation_reconciliations55 v ON v.id=l.reconciliation_id AND v.company_id=l.company_id AND v.status='RECONCILED' JOIN payroll_competences c ON c.id=s.competence_id AND c.company_id=s.company_id WHERE s.company_id=? AND s.competence_id=? AND s.status='STAGED' LIMIT 101").bind(companyId,competenceId).all()).results||[]:[];
  if(active.length!==stages.length || stages.length>100)
