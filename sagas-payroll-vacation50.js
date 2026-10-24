@@ -144,6 +144,8 @@ export async function payrollVacation50(action,c){
    vacationFail50(d,'Saldo insuficiente ou limite de três frações atingido.','VACATION_BALANCE');
   const lengths=group.fragments.map(x=>x.days).concat(occ.days);
   const remainder=cycle.entitled_days-group.reserved_abono_days-lengths.reduce((n,x)=>n+x,0);
+  if((remainder>0&&remainder<5)||(lengths.length===3&&remainder!==0))
+   vacationFail50(d,'O vínculo deixaria saldo inferior a 5 dias ou exigiria uma quarta fração.','VACATION_FRACTION_BALANCE');
   if(lengths.some(x=>x<5)||lengths.length>1 && Math.max(...lengths)<14 && remainder<14 || lengths.length===1 && lengths[0]<cycle.entitled_days && Math.max(lengths[0],remainder)<14)
    vacationFail50(d,'O fracionamento impede um período mínimo de 14 dias. Reveja os dias e o saldo.','VACATION_FRACTION');
   // Uma instrução condicional atômica protege saldo e frações contra duas gravações simultâneas.
