@@ -145,9 +145,13 @@ export async function payrollVacation89(action,c){
  if(notes.length<15||notes.length>600)fail89(d,'Documente origem das médias e fundamento do abono (15 a 600 caracteres).','INVALID_NOTES',400);
  if(body.confirmation!=='MEDIAS CONFERIDAS')
   fail89(d,'Confirme digitando MEDIAS CONFERIDAS.','CONFIRMATION_REQUIRED',400);
- const used=await env.DB.prepare("SELECT COALESCE(SUM(CAST(julianday(o.end_date)-julianday(o.start_date)+1 AS INTEGER)),0) AS days FROM payroll_vacation_links50 l JOIN payroll_employee_occurrences o ON o.id=l.occurrence_id AND o.company_id=l.company_id WHERE l.company_id=? AND l.cycle_id=?").bind(companyId,x.link.cycle_id).first();
+ const used=await env.DB.prepare("SELECT COALESCE(SUM(CAST(julianday(o.end_date)-julianday(o.start_date)+1 AS INTEGER)),0) AS days, COUNT(*) AS fragments, COALESCE(MAX(CAST(julianday(o.end_date)-julianday(o.start_date)+1 AS INTEGER)),0) AS longest FROM payroll_vacation_links50 l JOIN payroll_employee_occurrences o ON o.id=l.occurrence_id AND o.company_id=l.company_id WHERE l.company_id=? AND l.cycle_id=?").bind(companyId,x.link.cycle_id).first();
  if(Number(used?.days||0)+abono>x.link.entitled_days)
   fail89(d,'Dias gozados e abono ultrapassam o direito total do período aquisitivo.','ABONO_EXCEEDS_BALANCE');
+ const balance=x.link.entitled_days-Number(used?.days||0)-abono;
+ if((balance>0&&balance<5)||(Number(used?.fragments||0)>=3&&balance!==0)||
+    (Number(used?.fragments||0)>0 && Number(used?.longest||0)<14 && balance<14))
+  fail89(d,'Abono deixaria saldo sem possibilidade de fracionamento legal; revise os períodos.','ABONO_FRACTION_BALANCE');
  const others=await env.DB.prepare("SELECT occurrence_id FROM payroll_vacation_models89 WHERE company_id=? AND cycle_id=? AND occurrence_id<>? AND abono_days>0 LIMIT 1").bind(companyId,x.link.cycle_id,occId).first();
  if(others&&abono)fail89(d,'Abono já previsto em outra ocorrência do mesmo período aquisitivo.','ABONO_DUPLICATE');
  // Bloqueia atualização silenciosa sobre uma revisão vista antes em outra sessão.
