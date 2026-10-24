@@ -8,8 +8,9 @@ import { payrollSalarySettings47, payrollSalarySchema47, payrollSalaryRead47, pa
 import { payrollAbsence48, payrollAbsenceSchema48, payrollAbsenceSnapshot48, payrollAbsenceAmounts48 } from './sagas-payroll-absence48.js';
 import { payrollLeave49, payrollLeaveSchema49, payrollLeaveSnapshot49, payrollLeaveAmounts49 } from './sagas-payroll-leave49.js';
 import { payrollVacation50 } from './sagas-payroll-vacation50.js';
+import { payrollVacation89, payrollVacationSchema89 } from './sagas-payroll-vacation51.js';
 import { payrollProvisionAccounting44 } from './sagas-payroll-provisions44.js';
-// SAGAS Worker v88 - Períodos aquisitivos, saldos e vínculos de férias | cumulativo desde v49
+// SAGAS Worker v89 - Médias, abono e minuta bruta de férias | cumulativo desde v49
 // ===== utils.js =====
 function json(data, status = 200, extraHeaders = {}) {
   return new Response(JSON.stringify(data), {
@@ -10622,9 +10623,19 @@ async function route(request, env) {
   p=routeMatch(path,"/api/financial-payables/:id/cancel"); if(p&&method==="POST")return ok({payable:await cancelFinancialPayable(env,request,auth,companyId,p.id)});
   p=routeMatch(path,"/api/financial-payables/:id"); if(p&&method==="GET"){await requirePermission(env,auth.user.id,companyId,"financial.payable.read");const payable=await getFinancialPayable(env,companyId,p.id);if(payable.source_type==="PAYROLL_MONTHLY")await requirePermission(env,auth.user.id,companyId,"payroll.read");return ok({payable});}
 
+  // Etapa 51 (v89): médias, abono pecuniário e espelho bruto, sem financeiro.
+  if(path==='/api/payroll/vacation-calculation'&&(method==='GET'||method==='POST')){
+    await ensureSchemaRevision(env,'payroll-employee-numbers',1,()=>ensurePayrollEmployeeNumbersSchema(env));
+    const body=method==='POST'?await readJson(request):{};
+    return ok(await payrollVacation89(method==='GET'?'read':String(body.action||''),{
+      env,companyId,auth,request,occurrenceId:url.searchParams.get('occurrence_id'),body,
+      d:{HttpError,requirePermission,ensureSchemaRevision,audit,uuid}
+    }));
+  }
   // Etapa 50 (v88): controle de períodos aquisitivos e saldos de férias.
   if(path==='/api/payroll/vacations'&&(method==='GET'||method==='POST')){
     await ensureSchemaRevision(env,'payroll-employee-numbers',1,()=>ensurePayrollEmployeeNumbersSchema(env));
+    await ensureSchemaRevision(env,'payroll-vacation89',1,()=>payrollVacationSchema89(env));
     const body=method==='POST'?await readJson(request):{};
     return ok(await payrollVacation50(method==='GET'?'read':String(body.action||''),{
       env,companyId,auth,request,employeeId:url.searchParams.get('employee_id'),
