@@ -1,4 +1,4 @@
-// SAGAS folha v86 — classificação de licenças e afastamentos.
+// SAGAS folha v87 — licenças/afastamentos + prévia informativa de férias.
 // Tratamento mensal limitado a licença remunerada, licença sem remuneração validada
 // e até quinze dias iniciais de doença pagos pela empresa; demais processos bloqueados.
 const MODES49={CALENDAR:'Dias efetivos do mês',COMMERCIAL_30:'Mês comercial de 30 dias'};
@@ -138,8 +138,47 @@ export function payrollLeaveAmounts49(salaryCents,paidSalary,competence,snapshot
 }
 export async function payrollLeave49(action,c){
  const {env,companyId,auth,request,body={},d}=c;
- await d.requirePermission(env,auth.user.id,companyId,action==='list'?'payroll.read':'payroll.manage');
+ await d.requirePermission(env,auth.user.id,companyId,(action==='list'||action==='vacation_preview')?'payroll.read':'payroll.manage');
  await d.ensureSchemaRevision(env,'payroll-leave49',1,()=>payrollLeaveSchema49(env));
+
+ // Etapa 50 (v87): prévia bruta de férias cadastradas no histórico, sem lançamento financeiro
+ // e sem liberar folha mensal. Para homologar férias, faltam período aquisitivo, verbas
+ // variáveis, abono, tributação própria, recibo, pagamento e baixa de provisões.
+ if(action==='vacation_preview'){
+  const id=String(c.occurrenceId||'').trim();
+  if(!id||id.length>128)fail49(d,'Selecione a ocorrência de férias.','INVALID_OCCURRENCE',400);
+  const o=await env.DB.prepare("SELECT o.id,o.company_id,o.employee_id,o.start_date,o.end_date,o.notes,e.name AS employee_name,e.admission_date,n.number AS employee_number FROM payroll_employee_occurrences o JOIN payroll_employees e ON e.id=o.employee_id AND e.company_id=o.company_id LEFT JOIN payroll_employee_numbers n ON n.employee_id=e.id AND n.company_id=e.company_id WHERE o.id=? AND o.company_id=? AND o.kind='FERIAS' LIMIT 1").bind(id,companyId).first();
+  if(!o)fail49(d,'Férias não encontradas nesta empresa.','NOT_FOUND',404);
+  const start=date49(o.start_date,d),end=date49(o.end_date,d);
+  if(end<start||start<o.admission_date)fail49(d,'Datas das férias incompatíveis com a admissão.','VACATION_DATES');
+  const total=days49(start,end);
+  if(total<5||total>30)fail49(d,'Prévia indisponível: período fora de 5 a 30 dias. Confira fracionamento e saldo aquisitivo.','VACATION_DAYS');
+  const overlap=await env.DB.prepare("SELECT id,kind FROM payroll_employee_occurrences WHERE company_id=? AND employee_id=? AND id<>? AND start_date<=? AND end_date>=? LIMIT 1").bind(companyId,o.employee_id,id,end,start).first();
+  if(overlap)fail49(d,'Existem ocorrências sobrepostas às férias. Regularize no histórico do funcionário.','VACATION_OVERLAP');
+  const changed=await env.DB.prepare("SELECT effective_from FROM payroll_salary_history WHERE company_id=? AND employee_id=? AND effective_from>? AND effective_from<=? LIMIT 1").bind(companyId,o.employee_id,start,end).first();
+  if(changed)fail49(d,'O salário mudou durante as férias; é necessário cálculo por vigência.','VACATION_SALARY_CHANGE');
+  const history=await env.DB.prepare("SELECT salary_cents,effective_from FROM payroll_salary_history WHERE company_id=? AND employee_id=? AND effective_from<=? ORDER BY effective_from DESC LIMIT 1").bind(companyId,o.employee_id,start).first();
+  if(!history||!Number.isSafeInteger(Number(history.salary_cents))||Number(history.salary_cents)<=0)
+   fail49(d,'Não há salário histórico válido na data de início das férias.','VACATION_SALARY_MISSING');
+  const salary=Number(history.salary_cents);
+  // Prévia de remuneração FIXA proporcional: divisor 30. Não representa recibo líquido.
+  const vacation=halfUp49(BigInt(salary)*BigInt(total),30n,d);
+  const third=halfUp49(BigInt(vacation),3n,d);
+  const gross=vacation+third;
+  if(!Number.isSafeInteger(gross)||gross>99999999999)fail49(d,'Valor bruto excede o limite monetário.','VACATION_AMOUNT');
+  const deadline=new Date(time49(start)-2*86400000).toISOString().slice(0,10);
+  return {status:'PREVIA_BRUTA_NAO_HOMOLOGADA',employee:{id:o.employee_id,name:o.employee_name,number:o.employee_number},
+   occurrence_id:id,start_date:start,end_date:end,days:total,payment_deadline:deadline,
+   salary_effective_from:history.effective_from,salary_cents:salary,
+   vacation_remuneration_cents:vacation,constitutional_third_cents:third,gross_estimate_cents:gross,
+   warnings:[
+    'Simulação baseada somente no salário fixo histórico e em dias corridos com divisor 30.',
+    'Conferir saldo e período aquisitivo, direito aos dias, fracionamento, antecipação/aviso, feriados e descanso semanal.',
+    'Não contempla médias salariais, abono pecuniário, INSS, IRRF, FGTS, adiantamentos nem diferenças entre competências.',
+    'Não gera recibo, pagamento, evento de folha, título financeiro, contabilização ou baixa de provisão.',
+    ...(total<14?['Gozo inferior a 14 dias: confirmar outro período de pelo menos 14 dias, conforme fracionamento legal.']:[])
+   ]};
+ }
  if(action==='list'){
   const result=await source49(env,companyId,c.competence,d);
   return {...result,treatments:TREATMENTS49,modes:MODES49,
