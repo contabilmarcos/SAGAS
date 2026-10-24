@@ -15,7 +15,7 @@ import { payrollVacation54, payrollVacationSchema54 } from './sagas-payroll-vaca
 import { payrollVacation55, payrollVacationSchema55 } from './sagas-payroll-vacation55.js';
 import { payrollVacation56 } from './sagas-payroll-vacation56.js';
 import { payrollProvisionAccounting44 } from './sagas-payroll-provisions44.js';
-// SAGAS Worker v94 - Motor de conferência mensal de férias sem gravação | cumulativo desde v49
+// SAGAS Worker v95 - Conferência de meses especiais e reajuste RM das férias | cumulativo desde v49
 // ===== utils.js =====
 function json(data, status = 200, extraHeaders = {}) {
   return new Response(JSON.stringify(data), {
@@ -10633,6 +10633,7 @@ async function route(request, env) {
     await requirePermission(env,auth.user.id,companyId,'payroll.read');
     await ensureSchemaRevision(env,'payroll-employee-numbers',1,()=>ensurePayrollEmployeeNumbersSchema(env));
     await ensureSchemaRevision(env,'payroll-employee-history',1,()=>ensurePayrollEmployeeRecordsSchema(env));
+    await ensureSchemaRevision(env,'payroll-salary-change47',1,()=>payrollSalarySchema47(env));
     await ensureSchemaRevision(env,'payroll-calculation-foundation',1,()=>ensurePayrollCalculationFoundation34(env));
     await ensureSchemaRevision(env,'payroll-absence48',1,()=>payrollAbsenceSchema48(env));
     await ensureSchemaRevision(env,'payroll-vacation50',1,()=>payrollVacationSchema50(env));
