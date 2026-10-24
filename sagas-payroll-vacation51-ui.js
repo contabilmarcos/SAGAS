@@ -19,6 +19,7 @@ async function payrollVacation89Open(month,occ){
     '<button id="vacation89RemoveStale" class="btn danger" type="button">Excluir memória antiga</button></div>',true);
    $('#vacation89Back').onclick=()=>payrollVacation50Open(month,occ).catch(e=>toast(e.message,'error'));
  $('#vacation90Open').onclick=()=>payrollVacation90Open(month,occ).catch(e=>toast(e.message,'error'));
+ $('#vacation53Open').onclick=()=>payrollVacation53Open(month,occ).catch(e=>toast(e.message,'error'));
    $('#vacation89RemoveStale').onclick=()=>payrollVacation89Delete(month,occ);
    return;
   }
@@ -47,6 +48,7 @@ async function payrollVacation89Open(month,occ){
   '<p class="section-title">Conferências obrigatórias</p><ul class="help">'+(data.warnings||[]).map(x=>'<li>'+esc(x)+'</li>').join('')+'</ul>'+
   '<div class="form-actions"><button class="btn secondary" id="vacation89Back" type="button">Voltar</button>'+
   '<button class="btn primary" id="vacation90Open" type="button">INSS / IRRF / FGTS</button>'+
+  '<button class="btn secondary" id="vacation53Open" type="button">Conferir envelopes</button>'+
   (can('payroll.manage')?'<button class="btn secondary" id="vacation89Edit" type="button">Editar médias e abono</button>'+
   '<button class="btn danger" id="vacation89Delete" type="button">Excluir memória</button>':'')+'</div>',true);
  $('#vacation89Back').onclick=()=>payrollVacation50Open(month,occ).catch(e=>toast(e.message,'error'));
