@@ -145,12 +145,47 @@ export async function payrollVacation54(action,c){
  await d.ensureSchemaRevision(env,'payroll-vacation54',1,()=>payrollVacationSchema54(env));
  const id=String(action==='read'?c.occurrenceId||'':body.occurrence_id||'').trim();
  if(!id||id.length>128)fail54(d,'Selecione uma ocorrência de férias.','INVALID_OCCURRENCE',400);
- // A fonte é SEMPRE recalculada; não utilizar snapshot antigo como verdade atual.
+ // Cancelamento de preparação/referência documental deve continuar disponível
+ // mesmo que a origem tenha sido editada ou excluída; não exige modelo atual.
+ const existingBefore=await getPrep54(env,companyId,id);
+ const declaredBefore=await advance54(env,companyId,id);
+ if(action==='cancel-advance'){
+  if(!declaredBefore)fail54(d,'Não existe declaração de adiantamento ativa.','NOT_FOUND',404);
+  if(body.confirmation!=='CANCELAR REFERENCIA')
+   fail54(d,'Confirme digitando CANCELAR REFERENCIA.','CONFIRMATION_REQUIRED',400);
+  const reason=String(body.notes||'').trim();
+  if(reason.length<12||reason.length>500)fail54(d,'Justifique o cancelamento (12–500 caracteres).','INVALID_REASON',400);
+  const updated=await env.DB.prepare("UPDATE payroll_vacation_advances54 SET status='CANCELLED',cancelled_by=?,cancelled_at=CURRENT_TIMESTAMP,cancel_reason=? WHERE id=? AND company_id=? AND status='DECLARED'")
+   .bind(auth.user.id,reason,declaredBefore.id,companyId).run();
+  if(updated.meta?.changes!==1)fail54(d,'Adiantamento alterado por outra sessão.','VERSION_CONFLICT');
+  await d.audit(env,{companyId,userId:auth.user.id,action:'CANCEL',entity:'payroll_vacation_advances54',entityId:declaredBefore.id,request,
+   before:{status:'DECLARED',amount_cents:declaredBefore.amount_cents},after:{status:'CANCELLED',reason}});
+  return {cancelled:true,note:'Declaração cancelada no SAGAS; esta operação não estorna transações bancárias.'};
+ }
+ if(action==='void'){
+  if(!existingBefore)fail54(d,'Não há preparação de férias ativa.','NOT_FOUND',404);
+  if(declaredBefore)fail54(d,'Cancele primeiro a referência de adiantamento registrada.','ADVANCE_EXISTS');
+  if(body.confirmation!=='ANULAR PREPARACAO')fail54(d,'Confirme digitando ANULAR PREPARACAO.','CONFIRMATION_REQUIRED',400);
+  const reason=String(body.notes||'').trim();
+  if(reason.length<12||reason.length>500)fail54(d,'Justifique a anulação (12–500 caracteres).','INVALID_REASON',400);
+  const updated=await env.DB.prepare("UPDATE payroll_vacation_processings54 SET status='VOID',voided_by=?,voided_at=CURRENT_TIMESTAMP,void_reason=? WHERE company_id=? AND id=? AND status='PREPARED'")
+   .bind(auth.user.id,reason,companyId,existingBefore.id).run();
+  if(updated.meta?.changes!==1)fail54(d,'Preparação alterada por outro usuário.','VERSION_CONFLICT');
+  await d.audit(env,{companyId,userId:auth.user.id,action:'VOID',entity:'payroll_vacation_processings54',entityId:existingBefore.id,request,
+   before:{status:'PREPARED'},after:{status:'VOID',reason}});
+  return {voided:true};
+ }
+ // A fonte é SEMPRE recalculada para preparar/consultar/declarar.
  const model=await payrollVacation89('read',{env,companyId,auth,request,occurrenceId:id,body:{},d});
  if(!model.configured){
-  const old=await getPrep54(env,companyId,id);
-  return {prepared:!!old,stale:!!old,locked:true,
-   note:'Memória de férias inexistente ou alterada. A preparação não pode ser utilizada.'};
+  if(action!=='read')fail54(d,'A memória de férias mudou. Corrija-a antes de preparar ou declarar adiantamento.','MODEL_STALE');
+  return {prepared:!!existingBefore,stale:!!existingBefore,locked:true,
+   processing:existingBefore?{id:existingBefore.id,status:existingBefore.status,model_revision:existingBefore.model_revision,prepared_at:existingBefore.prepared_at}:null,
+   advance:declaredBefore?{id:declaredBefore.id,date:declaredBefore.payment_date,amount_cents:declaredBefore.amount_cents,external_reference:declaredBefore.external_reference}:null,
+   snapshot:existingBefore?JSON.parse(existingBefore.snapshot_json):null,
+   blockers:[{code:'MODEL_STALE',message:'Memória de férias alterada ou indisponível. Cancele a referência e anule a preparação antes de corrigir.'}],
+   note:'Memória de férias inexistente ou alterada. A preparação não pode ser utilizada.',
+   ready_for_payroll:false,ready_for_payment:false,ready_for_accounting:false};
  }
  const fresh=snapshot54(model,d),fingerprint=await d.hash(fresh);
  const existing=await getPrep54(env,companyId,id);
@@ -196,18 +231,6 @@ export async function payrollVacation54(action,c){
    note:'Preparação gravada como rascunho operacional NÃO HOMOLOGADO.'};
  }
  if(!existing)fail54(d,'Prepare as férias antes de registrar adiantamento ou anular.','PROCESSING_REQUIRED');
- if(action==='void'){
-  if(declared)fail54(d,'Cancele primeiro a referência de adiantamento registrada.','ADVANCE_EXISTS');
-  if(body.confirmation!=='ANULAR PREPARACAO')fail54(d,'Confirme digitando ANULAR PREPARACAO.','CONFIRMATION_REQUIRED',400);
-  const reason=String(body.notes||'').trim();
-  if(reason.length<12||reason.length>500)fail54(d,'Justifique a anulação (12–500 caracteres).','INVALID_REASON',400);
-  const updated=await env.DB.prepare("UPDATE payroll_vacation_processings54 SET status='VOID',voided_by=?,voided_at=CURRENT_TIMESTAMP,void_reason=? WHERE company_id=? AND id=? AND status='PREPARED'")
-   .bind(auth.user.id,reason,companyId,existing.id).run();
-  if(updated.meta?.changes!==1)fail54(d,'Preparação alterada por outro usuário.','VERSION_CONFLICT');
-  await d.audit(env,{companyId,userId:auth.user.id,action:'VOID',entity:'payroll_vacation_processings54',entityId:existing.id,request,
-   before:{status:'PREPARED'},after:{status:'VOID',reason}});
-  return {voided:true};
- }
  if(action==='declare-advance'){
   if(declared)fail54(d,'Já existe adiantamento declarado. Cancele a referência anterior antes de corrigir.','ADVANCE_ALREADY_DECLARED');
   if(body.confirmation!=='PAGAMENTO EXTERNO CONFERIDO')
@@ -229,18 +252,5 @@ export async function payrollVacation54(action,c){
    before:null,after:{occurrence_id:id,processing_id:existing.id,payment_date:paymentDate,amount_cents:amount,external_reference:reference}});
   return {declared:true,advance_id:advanceId,amount_cents:amount,
    note:'Referência documental gravada; NÃO foi emitido pagamento, financeiro nem desconto na folha.'};
- }
- if(action==='cancel-advance'){
-  if(!declared)fail54(d,'Não existe declaração de adiantamento ativa.','NOT_FOUND',404);
-  if(body.confirmation!=='CANCELAR REFERENCIA')
-   fail54(d,'Confirme digitando CANCELAR REFERENCIA.','CONFIRMATION_REQUIRED',400);
-  const reason=String(body.notes||'').trim();
-  if(reason.length<12||reason.length>500)fail54(d,'Justifique o cancelamento (12–500 caracteres).','INVALID_REASON',400);
-  const updated=await env.DB.prepare("UPDATE payroll_vacation_advances54 SET status='CANCELLED',cancelled_by=?,cancelled_at=CURRENT_TIMESTAMP,cancel_reason=? WHERE id=? AND company_id=? AND status='DECLARED'")
-   .bind(auth.user.id,reason,declared.id,companyId).run();
-  if(updated.meta?.changes!==1)fail54(d,'Adiantamento alterado por outra sessão.','VERSION_CONFLICT');
-  await d.audit(env,{companyId,userId:auth.user.id,action:'CANCEL',entity:'payroll_vacation_advances54',entityId:declared.id,request,
-   before:{status:'DECLARED',amount_cents:declared.amount_cents},after:{status:'CANCELLED',reason}});
-  return {cancelled:true,note:'Declaração cancelada no SAGAS; esta operação não estorna transações bancárias.'};
  }
 }
