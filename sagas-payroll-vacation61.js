@@ -52,6 +52,15 @@ export async function payrollVacationStage61(action,c){
  };
  if(action==='void'){
   if(!existing.length)error61(d,'Nao ha memoria ativa para anular.','NOT_FOUND',404);
+  // Uma memória já consumida não pode ser anulada sem estorno formal.
+  const hasUsage=(await env.DB.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='payroll_vacation_monthly_usage100' LIMIT 1").first());
+  if(hasUsage){
+   const ids=existing.map(x=>x.id);
+   for(const stageId of ids){
+    const usage=await env.DB.prepare("SELECT id FROM payroll_vacation_monthly_usage100 WHERE company_id=? AND stage_id=? LIMIT 1").bind(companyId,stageId).first();
+    if(usage)error61(d,'A memória já foi utilizada por uma folha mensal. Reverta formalmente o processamento antes de qualquer alteração.','VACATION_STAGE_IN_USE');
+   }
+  }
   if(body.confirmation!=='ANULAR MEMORIA FERIAS')
    error61(d,'Confirme digitando ANULAR MEMORIA FERIAS.','CONFIRMATION_REQUIRED',400);
   const reason=String(body.notes||'').trim();
