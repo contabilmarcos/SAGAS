@@ -91,7 +91,7 @@ function payrollVacation60Result(month,occ,bridge,data,dates){
  openModal('Férias — resultado da compensação',
   esc(occ.employee_name||'Funcionário'),
   '<p class="help"><b>Valores simulados.</b> Ainda não fazem parte dos envelopes MONTHLY. O registro abaixo apenas preserva a memória para a integração futura.</p>'+
-  '<div class="table-wrap"><table class="table"><thead><tr><th>Competência</th><th>Saldo salarial</th><th>Férias + 1/3</th><th>INSS residual</th><th>IRRF mensal</th><th>Líquido ilustrativo</th></tr></thead><tbody>'+rows+'</tbody></table></div>'+
+  '<div class="table-wrap"><table class="table"><thead><tr><th>Competência</th><th>Saldo salarial</th><th>Férias + 1/3</th><th>INSS residual</th><th>IRRF mensal</th><th>Líquido ilustrativo</th><th>Utilização mensal</th><th>Conferência</th></tr></thead><tbody>'+rows+'</tbody></table></div>'+
   vacation99Issues(data.blockers)+
   (can('payroll.manage')&&data.simulated?
    '<form id="vac99StageForm"><label class="field"><span>Confirme digitando GRAVAR MEMORIA FERIAS</span>'+
@@ -118,7 +118,10 @@ async function payrollVacation61Open(month,occ){
   '<td>'+esc(x.payment_date)+'</td><td>'+esc(vacation99Money(x.snapshot?.vacation_gross_cents))+'</td>'+
   '<td>'+esc(vacation99Money(x.snapshot?.illustrative_net_cents))+'</td>'+
   '<td>'+esc(x.integrated_in_monthly?(x.monthly_usage||[]).map(u=>
-   'Integrado · revisão '+String(u.revision)+' ('+u.status+')').join('; '):'Aguardando cálculo mensal')+'</td></tr>').join('');
+   'Integrado · revisão '+String(u.revision)+' ('+u.status+')').join('; '):'Aguardando cálculo mensal')+'</td>'+
+  '<td>'+(x.monthly_usage?.length?
+   '<button type="button" class="btn secondary vac101Check" data-run="'+esc(x.monthly_usage[0].run_id)+'">Conferir fechamento</button>':
+   'Aguardando folha mensal')+'</td></tr>').join('');
  openModal('Férias — memória e integração mensal (v100)',esc(occ.employee_name||''),
   '<p class="help">Memórias de férias e vínculos com as folhas mensais. A utilização não gera pagamento bancário nem contabilização automática.</p>'+
   '<div class="table-wrap"><table class="table"><thead><tr><th>Competência</th><th>Pagamento previsto</th><th>Férias + 1/3</th><th>Líquido ilustrativo</th></tr></thead><tbody>'+rows+'</tbody></table></div>'+
@@ -127,6 +130,9 @@ async function payrollVacation61Open(month,occ){
    '<button id="vac99StageVoid" class="btn danger" type="button">Anular memória</button>':'')+
   '</div>',true);
  $('#vac99StageBack').onclick=()=>payrollVacation60Open(month,occ).catch(e=>toast(e.message,'error'));
+ document.querySelectorAll('.vac101Check').forEach(button=>{
+  button.onclick=()=>payrollVacation63Open(month,occ,button.dataset.run).catch(e=>toast(e.message,'error'));
+ });
  if($('#vac99StageVoid'))$('#vac99StageVoid').onclick=()=>{
   openModal('Anular memória mensal de férias',esc(occ.employee_name||''),
    '<form id="vac99StageVoidForm"><label class="field"><span>Justificativa</span>'+
@@ -146,4 +152,51 @@ async function payrollVacation61Open(month,occ){
    }catch(err){toast(err.message||String(err),'error');btn.disabled=false}
   };
  };
+}
+
+async function payrollVacation63Open(month,occ,runId){
+ const data=await api('/api/payroll/monthly-runs/'+encodeURIComponent(runId)+'/vacation-closure-review');
+ if(!data.applicable){
+  openModal('Férias — conferência do fechamento (v101)',esc(occ.employee_name||''),
+   '<p class="help">'+esc(data.note||'Não há férias integradas nesta folha.')+'</p>'+
+   '<div class="form-actions"><button type="button" class="btn secondary" id="vac101Back">Voltar</button></div>',true);
+  $('#vac101Back').onclick=()=>payrollVacation61Open(month,occ).catch(e=>toast(e.message,'error'));
+  return;
+ }
+ const problems=(data.problems||[]).map(p=>'<li><b>'+esc(p.code)+'</b> — '+esc(p.message)+'</li>').join('');
+ const items=(data.items||[]).map(item=>{
+  const mappings=(item.mappings||[]).map(m=>
+   '<tr><td>'+esc(m.event_code)+'</td><td>'+esc(m.nature_code||'—')+'</td>'+
+   '<td>'+esc(m.cost_center_code||'—')+'</td>'+
+   '<td>'+esc(vacation99Money(m.amount_cents))+'</td>'+
+   '<td>'+esc((m.accounts||[]).map(a=>a.side+' '+a.account_code+' ('+a.percentage+'%)').join('; ')||'Pendente')+'</td>'+
+   '<td>'+esc(m.ready?'Conferido':'Pendente')+'</td></tr>').join('');
+  return '<p class="section-title">'+esc(item.employee_name||item.employee_id)+' · '+esc(item.employee_code||'')+'</p>'+
+   '<p class="help">Compensação bruta: '+esc(vacation99Money(item.compensation_gross_cents))+
+   ' · INSS do recibo (competência): '+esc(vacation99Money(item.receipt_inss_allocated_cents))+
+   ' · INSS residual na folha: '+esc(vacation99Money(item.monthly_inss_residual_cents))+
+   ' · FGTS: '+esc(vacation99Money(item.fgts_employer_cents))+'</p>'+
+   '<div class="table-wrap"><table class="table"><thead><tr><th>Evento</th><th>Natureza</th>'+
+   '<th>Centro de custo</th><th>Valor</th><th>Contas D/C</th><th>Conferência</th></tr></thead>'+
+   '<tbody>'+mappings+'</tbody></table></div>';
+ }).join('');
+ const employer=data.employer?.totals;
+ openModal('Férias — conferência de fechamento (v101)',
+  esc(occ.employee_name||'Funcionário')+' · competência '+esc(data.run?.competence||''),
+  '<p class="help"><b>Conferência sem lançamento.</b> A contabilização utiliza a natureza orçamentária configurada em cada evento e as contas vinculadas ao centro de custo.</p>'+
+  '<p>Situação da folha: <b>'+esc(data.run?.status||'—')+'</b> · '+esc(data.closed?'Fechada':'Aguardando fechamento')+
+  ' · '+esc(String(data.employee_count||0))+' funcionário(s) com férias integradas.</p>'+
+  items+
+  '<p class="section-title">Pendências</p>'+
+  (problems?'<ul class="help">'+problems+'</ul>':'<p class="help">Sem divergências identificadas nesta conferência.</p>')+
+  (employer?'<p class="help">Prévia patronal: INSS patronal '+esc(vacation99Money(employer.cpp_cents||0))+
+   ', RAT '+esc(vacation99Money(employer.rat_cents||0))+
+   ', terceiros '+esc(vacation99Money(employer.thirds_cents||0))+
+   '. Valores sujeitos à conferência das configurações da empresa.</p>':
+   '<p class="help">Prévia patronal será verificada após fechamento da competência.</p>')+
+  '<p class="help"><b>Financeiro e contabilidade permanecem bloqueados nesta versão.</b></p>'+
+  '<div class="form-actions"><button type="button" class="btn secondary" id="vac101Back">Voltar</button>'+
+  '<button type="button" class="btn secondary" id="vac101Reload">Atualizar</button></div>',true);
+ $('#vac101Back').onclick=()=>payrollVacation61Open(month,occ).catch(e=>toast(e.message,'error'));
+ $('#vac101Reload').onclick=()=>payrollVacation63Open(month,occ,runId).catch(e=>toast(e.message,'error'));
 }
