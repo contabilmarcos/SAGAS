@@ -8,7 +8,7 @@ async function payrollLeave49Open(period){
  const rows=(data.items||[]).map(x=>'<tr><td>'+esc(x.employee_number==null?'—':String(x.employee_number).padStart(5,'0'))+' — '+esc(x.employee_name)+'</td>'+
   '<td>'+esc(x.kind)+'</td><td>'+esc(x.start_date)+' a '+esc(x.end_date)+'</td>'+
   '<td>'+esc(treatmentNames[x.treatment]||'Pendente de classificação')+'</td>'+
-  '<td>'+(x.kind==='FERIAS'?'<span class="muted">Processo específico</span>':
+  '<td>'+(x.kind==='FERIAS'?'<button class="btn secondary sm" type="button" data-vacation49="'+esc(x.id)+'">Prévia de férias</button>':
   '<button class="btn secondary sm" type="button" data-leave49="'+esc(x.id)+'">Classificar</button>')+'</td></tr>').join('');
  openModal('Afastamentos e licenças',
   'Classificação por ocorrência e impacto no cálculo mensal.',
@@ -19,7 +19,10 @@ async function payrollLeave49Open(period){
   (rows||'<tr><td colspan="5">Nenhuma licença ou afastamento cadastrado para esta competência.</td></tr>')+'</tbody></table></div>'+
   '<p class="help">Liberação inicial: licença remunerada (sem desconto), licença sem remuneração (desconto por divisor selecionado) e doença de até 15 dias sob responsabilidade da empresa. Benefício previdenciário, acidente, maternidade e férias ainda exigem seus processos próprios.</p>',true);
  $('#leave49Search').onclick=()=>payrollLeave49Open($('#leave49Month').value).catch(e=>toast(e.message,'error'));
- $$('[data-leave49]').forEach(btn=>{
+ $('[data-vacation49]').forEach(btn=>{
+  btn.onclick=()=>payrollVacation49Preview(month,(data.items||[]).find(x=>x.id===btn.dataset.vacation49)).catch(e=>toast(e.message,'error'));
+ });
+ $('[data-leave49]').forEach(btn=>{
   btn.disabled=!can('payroll.manage');
   btn.onclick=()=>payrollLeave49Classify(month,(data.items||[]).find(x=>x.id===btn.dataset.leave49),data.treatments||{},data.modes||{});
  });
@@ -58,4 +61,27 @@ function payrollLeave49Classify(month,occ,treatments,modes){
    await payrollLeave49Open(month);
   }catch(e){toast(e.message,'error');btn.disabled=false;}
  };
+}
+
+ // Etapa 50 (v87): prévia de férias, consulta somente leitura.
+async function payrollVacation49Preview(month,occ){
+ if(!occ)return;
+ const data=await api('/api/payroll/leaves?view=vacation&id='+encodeURIComponent(occ.id));
+ const money=cents=>(Number(cents||0)/100).toLocaleString('pt-BR',{style:'currency',currency:'BRL'});
+ const warnings=(data.warnings||[]).map(x=>'<li>'+esc(x)+'</li>').join('');
+ openModal('Prévia de férias — sem processamento',
+  esc(data.employee?.name||occ.employee_name)+' | '+esc(data.start_date)+' até '+esc(data.end_date),
+  '<p class="help"><b>Somente simulação bruta.</b> Não equivale a recibo de férias nem libera o fechamento da folha.</p>'+
+  '<div class="table-wrap"><table class="table"><tbody>'+
+  '<tr><th>Matrícula</th><td>'+esc(String(data.employee?.number??'—').padStart(5,'0'))+'</td></tr>'+
+  '<tr><th>Dias corridos de gozo</th><td>'+esc(String(data.days))+'</td></tr>'+
+  '<tr><th>Data-limite legal de pagamento</th><td>'+esc(data.payment_deadline)+'</td></tr>'+
+  '<tr><th>Salário-base histórico</th><td>'+esc(money(data.salary_cents))+'</td></tr>'+
+  '<tr><th>Férias proporcionais ao gozo</th><td>'+esc(money(data.vacation_remuneration_cents))+'</td></tr>'+
+  '<tr><th>Terço constitucional</th><td>'+esc(money(data.constitutional_third_cents))+'</td></tr>'+
+  '<tr><th>Estimativa bruta</th><td><b>'+esc(money(data.gross_estimate_cents))+'</b></td></tr>'+
+  '</tbody></table></div>'+
+  '<p class="section-title">Conferências obrigatórias</p><ul>'+warnings+'</ul>'+
+  '<div class="form-actions"><button class="btn secondary" type="button" id="vacation49Back">Voltar</button></div>',true);
+ $('#vacation49Back').onclick=()=>payrollLeave49Open(month).catch(e=>toast(e.message,'error'));
 }
