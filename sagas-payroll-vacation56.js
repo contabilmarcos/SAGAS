@@ -4,6 +4,7 @@
 import { payrollVacation55 } from './sagas-payroll-vacation55.js';
 import { payrollVacation54 } from './sagas-payroll-vacation54.js';
 import { payrollVacationDays57, payrollVacationSalary57 } from './sagas-payroll-vacation57.js';
+import { payrollSalaryRead47 } from './sagas-payroll-salary47.js';
 
 function fail56(d,message,code='VACATION_MONTHLY_REVIEW_REQUIRED',status=409){
  throw new d.HttpError(status,message,code);
@@ -51,7 +52,8 @@ async function baseMonth56(env,companyId,employeeId,occId,month,p,d){
  const length=new Date(Date.UTC(year,m,0)).getUTCDate(),first=month+'-01',last=month+'-'+String(length).padStart(2,'0');
  const fail=blockers56(),calendar=payrollVacationDays57(month,p.days,d);
  const value={competence:month,days:p.days,month_length:length,salary_cents:null,
-  calendar,pay_date:null,dependents:0,existing_run:null,existing_center:null,blockers:fail.items};
+  calendar,pay_date:null,dependents:0,salary_mode:null,salary_change_date:null,
+  salary_notes:[],existing_run:null,existing_center:null,blockers:fail.items};
  if(!month.startsWith('2026-'))fail.add('TABELA_ANO','A integração desta fase exige tabelas tributárias de 2026.');
  if(!Number.isSafeInteger(p.days)||p.days<1||p.days>length)fail.add('DIAS_INCOMPATIVEIS','Dias de férias incompatíveis com a competência.');
  const period=await env.DB.prepare("SELECT id,status FROM payroll_competences WHERE company_id=? AND competence=? LIMIT 1").bind(companyId,month).first();
@@ -66,8 +68,19 @@ async function baseMonth56(env,companyId,employeeId,occId,month,p,d){
  if(!salary||!Number.isSafeInteger(Number(salary.salary_cents))||Number(salary.salary_cents)<=0)
   fail.add('SALARIO_AUSENTE','Não existe salário histórico válido desde o início desta competência.');
  else value.salary_cents=Number(salary.salary_cents);
- const salaryChange=await env.DB.prepare("SELECT effective_from FROM payroll_salary_history WHERE company_id=? AND employee_id=? AND effective_from>? AND effective_from<=? LIMIT 1").bind(companyId,employeeId,first,last).first();
- if(salaryChange)fail.add('REAJUSTE_NO_MES','Há alteração salarial durante a competência. Exige cálculo por vigências.');
+ const salarySetting=await payrollSalaryRead47(env,companyId,month);
+ value.salary_mode=salarySetting?.mode||'RM_NEXT_MONTH';
+ if(!['RM_NEXT_MONTH','PRORATE_CALENDAR'].includes(value.salary_mode))
+  fail.add('MODO_SALARIAL','Parâmetro de reajustes salariais desconhecido.');
+ const salaryChange=await env.DB.prepare("SELECT effective_from FROM payroll_salary_history WHERE company_id=? AND employee_id=? AND effective_from>? AND effective_from<=? ORDER BY effective_from ASC LIMIT 2").bind(companyId,employeeId,first,last).all();
+ const salaryChanges=(salaryChange.results||[]).map(row=>String(row.effective_from));
+ value.salary_change_date=salaryChanges[0]||null;
+ if(salaryChanges.length>1)
+  fail.add('REAJUSTES_MULTIPLOS','Mais de um reajuste na competência requer conferência conjunta.');
+ else if(salaryChanges.length===1&&value.salary_mode==='PRORATE_CALENDAR')
+  fail.add('REAJUSTE_POR_VIGENCIA','A empresa usa proporcionalização por vigência; ainda requer rateio combinado com férias.');
+ else if(salaryChanges.length===1&&value.salary_mode==='RM_NEXT_MONTH')
+  value.salary_notes.push('Reajuste '+salaryChanges[0]+' pela regra RM_NEXT_MONTH: utiliza salário do início da competência no saldo salarial.');
  const functional=await env.DB.prepare("SELECT id FROM payroll_employee_functional_history WHERE company_id=? AND employee_id=? AND effective_from>? AND effective_from<=? LIMIT 1").bind(companyId,employeeId,first,last).first();
  if(functional)fail.add('ALTERACAO_FUNCIONAL','Há mudança funcional durante o mês de férias.');
  const schedule=await env.DB.prepare("SELECT id FROM payroll_work_schedule_history WHERE company_id=? AND employee_id=? AND effective_from>? AND effective_from<=? LIMIT 1").bind(companyId,employeeId,first,last).first();
@@ -120,7 +133,9 @@ export async function payrollVacation56(action,c){
   code_version:57,plan,reconciliation_id:details.reconciled.id,receipt_recorded_at:details.reconciled.recorded_at,
   processing_id:original.processing.id,original_model:original.snapshot.model_revision,
   months:periods.map(x=>({competence:x.competence,salary:x.salary_cents,calendar:x.calendar,dependents:x.dependents,
-   existing_run:x.existing_run,center:x.existing_center,blockers:x.blockers}))
+   existing_run:x.existing_run,center:x.existing_center,
+   salary_mode:x.salary_mode,salary_change_date:x.salary_change_date,salary_notes:x.salary_notes,
+   blockers:x.blockers}))
  });
  if(action==='prepare')return {prepared:true,employee:plan.employee,occurrence_id:id,
   salary_references:periods,payment_dates_required:plan.periods.map(p=>p.competence),
@@ -182,7 +197,7 @@ export async function payrollVacation56(action,c){
    commercial_salary_complement_days:cal.commercial_salary_complement_days,
    calendar_excess_day_adjustment:cal.calendar_excess_day_adjustment,
    month_length:cal.calendar_month_days,calendar_reference_mode:cal.reference_mode,
-   calendar_warning:cal.warning,
+   calendar_warning:cal.warning,salary_mode:month.salary_mode,salary_notes:month.salary_notes,
    days_vacation:item.days,salary_cents:salary,salary_worked_cents:nonVacation,
    vacation_gross_cents:compensation,base_inss_cents:inssBase,base_fgts_cents:fgtsBase,
    receipt_inss_allocated_cents:allocated,inss_total_competence_cents:total.inss_cents,
@@ -199,7 +214,8 @@ export async function payrollVacation56(action,c){
   notes:[
    'O cálculo não grava eventos em folha existente e não modifica processamento mensal revisado/fechado.',
    'A referência comercial é 30 dias inclusive em meses de 28, 29 e 31; os dias pagos como complemento de fevereiro não são dias trabalhados.',
-   'Reajustes salariais intramês, afastamentos, movimentos e incidências especiais continuam bloqueados até cálculo integrado por vigências.',
+   'Reajustes intramês seguem o modo da empresa: RM_NEXT_MONTH mantém o salário do início; PRORATE_CALENDAR ainda exige cálculo combinado por vigências.',
+   'Afastamentos, outros movimentos e incidências especiais permanecem bloqueados até conferência integrada.',
    'INSS do recibo foi distribuído matematicamente por férias gozadas e subtraído do INSS total projetado da competência. A conferência final precisa validar os valores efetivos.',
    'IRRF das férias já foi documentado no pagamento; IRRF da folha mensal é calculado somente sobre o salário dos dias trabalhados.',
    'FGTS patronal calculado sobre salário dos dias trabalhados, férias gozadas e terço, sem desconto no salário do trabalhador.'
