@@ -7,8 +7,9 @@ import { payrollAdmission46, payrollAdmissionSchema46, payrollAdmissionRead46, p
 import { payrollSalarySettings47, payrollSalarySchema47, payrollSalaryRead47, payrollSalaryHistory47, payrollSalaryAmount47 } from './sagas-payroll-salary47.js';
 import { payrollAbsence48, payrollAbsenceSchema48, payrollAbsenceSnapshot48, payrollAbsenceAmounts48 } from './sagas-payroll-absence48.js';
 import { payrollLeave49, payrollLeaveSchema49, payrollLeaveSnapshot49, payrollLeaveAmounts49 } from './sagas-payroll-leave49.js';
+import { payrollVacation50 } from './sagas-payroll-vacation50.js';
 import { payrollProvisionAccounting44 } from './sagas-payroll-provisions44.js';
-// SAGAS Worker v87 - Licenças e afastamentos + prévia bruta segura de férias | cumulativo desde v49
+// SAGAS Worker v88 - Períodos aquisitivos, saldos e vínculos de férias | cumulativo desde v49
 // ===== utils.js =====
 function json(data, status = 200, extraHeaders = {}) {
   return new Response(JSON.stringify(data), {
@@ -10621,6 +10622,16 @@ async function route(request, env) {
   p=routeMatch(path,"/api/financial-payables/:id/cancel"); if(p&&method==="POST")return ok({payable:await cancelFinancialPayable(env,request,auth,companyId,p.id)});
   p=routeMatch(path,"/api/financial-payables/:id"); if(p&&method==="GET"){await requirePermission(env,auth.user.id,companyId,"financial.payable.read");const payable=await getFinancialPayable(env,companyId,p.id);if(payable.source_type==="PAYROLL_MONTHLY")await requirePermission(env,auth.user.id,companyId,"payroll.read");return ok({payable});}
 
+  // Etapa 50 (v88): controle de períodos aquisitivos e saldos de férias.
+  if(path==='/api/payroll/vacations'&&(method==='GET'||method==='POST')){
+    await ensureSchemaRevision(env,'payroll-employee-numbers',1,()=>ensurePayrollEmployeeNumbersSchema(env));
+    const body=method==='POST'?await readJson(request):{};
+    return ok(await payrollVacation50(method==='GET'?'read':String(body.action||''),{
+      env,companyId,auth,request,employeeId:url.searchParams.get('employee_id'),
+      occurrenceId:url.searchParams.get('occurrence_id'),body,
+      d:{HttpError,requirePermission,ensureSchemaRevision,audit,uuid}
+    }));
+  }
   // Etapa 49: cadastro de tratamento de licenças, doença e afastamentos.
   if(path==='/api/payroll/leaves'&&(method==='GET'||method==='POST')){
     await ensureSchemaRevision(env,'payroll-employee-numbers',1,()=>ensurePayrollEmployeeNumbersSchema(env));
