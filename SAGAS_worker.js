@@ -10692,6 +10692,7 @@ async function route(request, env) {
     await ensureSchemaRevision(env,'payroll-vacation54',1,()=>payrollVacationSchema54(env));
     await ensureSchemaRevision(env,'payroll-vacation55',1,()=>payrollVacationSchema55(env));
     await ensureSchemaRevision(env,'payroll-vacation-envelope58',1,()=>payrollVacationSchema58(env));
+    await payrollFinance39('catalog',{env,companyId,auth,d:{HttpError,requirePermission,ensureSchemaRevision,audit,uuid}});
     const body=method==='POST'?await readJson(request):{};
     const monthlyIrrf=(gross,inssBalance,dependents,paymentDate)=>{
       const t=histTable(HIST_IRRF,paymentDate.slice(0,7));
