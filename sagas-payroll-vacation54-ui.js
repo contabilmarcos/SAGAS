@@ -43,12 +43,14 @@ async function payrollVacation54Open(month,occ){
   (manage&&prepared&&!blocked&&!adv?'<button class="btn primary" type="button" id="vacation54Advance">Informar pagamento externo</button>':'')+
   (manage&&prepared&&adv?'<button class="btn secondary" type="button" id="vacation54CancelAdvance">Cancelar referência</button>':'')+
   (manage&&prepared&&!adv?'<button class="btn secondary" type="button" id="vacation54Void">Anular preparação</button>':'')+
+  (prepared?'<button class="btn primary" id="vacation55Open" type="button">Conciliar recibo / eventos</button>':'')+
   '</div>',true);
  $('#vacation54Back').onclick=()=>payrollVacation53Open(month,occ).catch(e=>toast(e.message,'error'));
  if($('#vacation54Prepare'))$('#vacation54Prepare').onclick=()=>payrollVacation54Action(month,occ,'prepare');
  if($('#vacation54Advance'))$('#vacation54Advance').onclick=()=>payrollVacation54Action(month,occ,'declare-advance');
  if($('#vacation54CancelAdvance'))$('#vacation54CancelAdvance').onclick=()=>payrollVacation54Action(month,occ,'cancel-advance');
  if($('#vacation54Void'))$('#vacation54Void').onclick=()=>payrollVacation54Action(month,occ,'void');
+ if($('#vacation55Open'))$('#vacation55Open').onclick=()=>payrollVacation55Open(month,occ).catch(e=>toast(e.message,'error'));
 }
 function payrollVacation54Action(month,occ,action){
  const isPrepare=action==='prepare',isAdvance=action==='declare-advance',
