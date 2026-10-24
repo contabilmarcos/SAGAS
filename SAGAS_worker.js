@@ -8,7 +8,7 @@ import { payrollSalarySettings47, payrollSalarySchema47, payrollSalaryRead47, pa
 import { payrollAbsence48, payrollAbsenceSchema48, payrollAbsenceSnapshot48, payrollAbsenceAmounts48 } from './sagas-payroll-absence48.js';
 import { payrollLeave49, payrollLeaveSchema49, payrollLeaveSnapshot49, payrollLeaveAmounts49 } from './sagas-payroll-leave49.js';
 import { payrollProvisionAccounting44 } from './sagas-payroll-provisions44.js';
-// SAGAS Worker v86 - Licenças e afastamentos com conferência de incidências | cumulativo desde v49
+// SAGAS Worker v87 - Licenças e afastamentos + prévia bruta segura de férias | cumulativo desde v49
 // ===== utils.js =====
 function json(data, status = 200, extraHeaders = {}) {
   return new Response(JSON.stringify(data), {
@@ -10624,8 +10624,8 @@ async function route(request, env) {
   // Etapa 49: cadastro de tratamento de licenças, doença e afastamentos.
   if(path==='/api/payroll/leaves'&&(method==='GET'||method==='POST')){
     await ensureSchemaRevision(env,'payroll-employee-numbers',1,()=>ensurePayrollEmployeeNumbersSchema(env));
-    return ok(await payrollLeave49(method==='GET'?'list':'classify',{
-      env,companyId,auth,request,competence:url.searchParams.get('competence'),
+    return ok(await payrollLeave49(method==='GET'?(url.searchParams.get('view')==='vacation'?'vacation_preview':'list'):'classify',{
+      env,companyId,auth,request,competence:url.searchParams.get('competence'),occurrenceId:url.searchParams.get('id'),
       body:method==='POST'?await readJson(request):{},
       d:{HttpError,requirePermission,ensureSchemaRevision,audit,uuid}
     }));
