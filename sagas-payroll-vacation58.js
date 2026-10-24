@@ -65,13 +65,14 @@ async function source58(c){
  if(reconciliation.stale)add('CONCILIACAO_OBSOLETA','Origem, recibo ou competências mudaram desde a conciliação.');
  for(const problem of reconciliation.blockers||[])if(problem.code!=='PAGAMENTO_FORA_DO_PRAZO')add(problem.code,problem.message);
  const plan=reconciliation.reconciled.plan,employeeId=plan.employee?.id;
- if(!employeeId||plan.occurrence_id!==id||reconciliation.advance?.id!==undefined&&
-    reconciliation.advance?.id!==plan.advance_id&&!!plan.advance_id)
+ if(!employeeId||plan.occurrence_id!==id)
   add('PLANO_INCONSISTENTE','Funcionário ou ocorrência do recibo não conferem.');
  let amounts=null;try{amounts=lines58(plan,d)}catch(e){add(e.code||'VALORES_DIVERGENTES',e.message)}
  const advance=reconciliation.advance;
  if(!advance?.id||advance.processing_id!==reconciliation.processing_id)
   add('ADIANTAMENTO_PENDENTE','Adiantamento externo não corresponde ao processamento conciliado.');
+ if(advance&&Number(advance.amount_cents)!==Number(plan.external_paid_cents))
+  add('ADIANTAMENTO_DIVERGENTE','O valor do pagamento externo foi alterado após a conciliação do recibo.');
  if(advance&&String(advance.date||'').slice(0,7).length!==7)
   add('DATA_PAGAMENTO','Data do pagamento externo inválida.');
  const month=String(advance?.date||'').slice(0,7);
