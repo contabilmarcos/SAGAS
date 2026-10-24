@@ -82,7 +82,9 @@ function payrollVacation90Result(month,occ,data){
   '<p class="section-title">Conferências obrigatórias</p><ul class="help">'+
   (data.warnings||[]).map(s=>'<li>'+esc(s)+'</li>').join('')+'</ul>'+
   '<div class="form-actions"><button id="vacation90Return" type="button" class="btn secondary">Voltar às férias</button>'+
-  '<button id="vacation90Recalc" type="button" class="btn primary">Refazer simulação</button></div>',true);
+  ' <button id="vacation90Recalc" type="button" class="btn primary">Refazer simulação</button>'+ 
+  '<button id="vacation53FromTax" type="button" class="btn secondary">Conferir envelopes</button></div>',true);
  $('#vacation90Return').onclick=()=>payrollVacation50Open(month,occ).catch(e=>toast(e.message,'error'));
  $('#vacation90Recalc').onclick=()=>payrollVacation90Open(month,occ).catch(e=>toast(e.message,'error'));
+ $('#vacation53FromTax').onclick=()=>payrollVacation53Open(month,occ).catch(e=>toast(e.message,'error'));
 }
