@@ -150,7 +150,7 @@ export async function payrollVacation89(action,c){
   fail89(d,'Dias gozados e abono ultrapassam o direito total do período aquisitivo.','ABONO_EXCEEDS_BALANCE');
  const balance=x.link.entitled_days-Number(used?.days||0)-abono;
  if((balance>0&&balance<5)||(Number(used?.fragments||0)>=3&&balance!==0)||
-    (Number(used?.fragments||0)>0 && Number(used?.longest||0)<14 && balance<14))
+    (Number(used?.fragments||0)>1 && Number(used?.longest||0)<14 && balance<14))
   fail89(d,'Abono deixaria saldo sem possibilidade de fracionamento legal; revise os períodos.','ABONO_FRACTION_BALANCE');
  const others=await env.DB.prepare("SELECT occurrence_id FROM payroll_vacation_models89 WHERE company_id=? AND cycle_id=? AND occurrence_id<>? AND abono_days>0 LIMIT 1").bind(companyId,x.link.cycle_id,occId).first();
  if(others&&abono)fail89(d,'Abono já previsto em outra ocorrência do mesmo período aquisitivo.','ABONO_DUPLICATE');
