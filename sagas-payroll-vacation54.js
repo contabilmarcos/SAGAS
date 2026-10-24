@@ -125,16 +125,31 @@ function projection54(snapshot,advance,d){
  // Rateio é meramente MATEMÁTICO para análise de risco: IRRF/INSS e a
  // compensação na folha ainda precisam ser homologados por competência.
  const declared=advance?cents54(Number(advance.amount_cents),'adiantamento',d):0;
+ const abonoGross=snapshot.abono_cents+snapshot.abono_third_cents;
+ const periodsGross=snapshot.periods.reduce((total,p)=>total+p.taxable_gross_cents,0);
+ if(periodsGross+abonoGross!==snapshot.gross_cents)
+  fail54(d,'Fotografia de férias não concilia com o bruto.','PROCESSING_MISMATCH');
+ if(declared>snapshot.gross_cents)
+  fail54(d,'O adiantamento declarado ultrapassa o valor bruto registrado.','ADVANCE_MISMATCH');
+ // Divide a referência externa primeiro entre gozo e abono proporcionalmente
+ // ao BRUTO, sem atribuir abono à folha mensal por engano. Não é evento.
+ const mathematicalAbonoShare=declared?
+  Number((BigInt(declared)*BigInt(abonoGross)+BigInt(Math.floor(snapshot.gross_cents/2)))/BigInt(snapshot.gross_cents)):0;
+ const mathematicalGozoShare=declared-mathematicalAbonoShare;
  const portions=snapshot.periods.map(p=>p.taxable_gross_cents);
- const part=declared?split54(declared,portions,d):portions.map(()=>0);
+ const part=mathematicalGozoShare?split54(mathematicalGozoShare,portions,d):portions.map(()=>0);
+ if(part.some((x,i)=>x>portions[i]))
+  fail54(d,'Rateio ilustrativo ultrapassa as verbas do respectivo mês.','COMPENSATION_MISMATCH');
  return {
-  declared_advance_cents:declared,compensation_review: snapshot.periods.map((p,i)=>({
+  declared_advance_cents:declared,mathematical_gozo_share_cents:mathematicalGozoShare,
+  mathematical_abono_share_cents:mathematicalAbonoShare,
+  compensation_review: snapshot.periods.map((p,i)=>({
    competence:p.competence,gozo_days:p.days,
    vacation_cents:p.vacation_cents,third_cents:p.constitutional_third_cents,
    taxable_gross_cents:p.taxable_gross_cents,
    mathematical_advance_allocation_cents:part[i],posting_authorized:false
   })),
-  notice:'Distribuição ilustrativa do adiantamento declarado; NÃO lançar estes valores no envelope. O abono e os descontos devem ser tratados separadamente.'
+  notice:'Rateio proporcional ilustrativo do adiantamento entre gozo e abono. NÃO lançar no envelope: a compensação real depende do pagamento, dos tributos e da conciliação financeira.'
  };
 }
 export async function payrollVacation54(action,c){
