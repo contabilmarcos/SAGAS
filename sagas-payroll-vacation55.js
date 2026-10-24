@@ -111,6 +111,8 @@ export async function payrollVacation55(action,c){
  if(!id||id.length>128)fail55(d,'Selecione a ocorrência de férias.','INVALID_OCCURRENCE',400);
  const active=await active55(env,companyId,id);
  if(action==='void'){
+  const registered=await env.DB.prepare("SELECT run_id FROM payroll_vacation_envelope_links58 WHERE company_id=? AND occurrence_id=? AND status='ACTIVE' LIMIT 1").bind(companyId,id).first();
+  if(registered)fail55(d,'Anule primeiro o envelope próprio de férias para cancelar a conciliação.','VACATION_ENVELOPE_ACTIVE');
   if(!active)fail55(d,'Não existe conciliação para anular.','NOT_FOUND',404);
   if(body.confirmation!=='ANULAR CONCILIACAO')fail55(d,'Confirme digitando ANULAR CONCILIACAO.','CONFIRMATION_REQUIRED',400);
   const reason=note55(body.notes,d);
