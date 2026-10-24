@@ -7,8 +7,8 @@ async function payrollLeave49Open(period){
  const treatmentNames=data.treatments||{};
  const rows=(data.items||[]).map(x=>'<tr><td>'+esc(x.employee_number==null?'—':String(x.employee_number).padStart(5,'0'))+' — '+esc(x.employee_name)+'</td>'+
   '<td>'+esc(x.kind)+'</td><td>'+esc(x.start_date)+' a '+esc(x.end_date)+'</td>'+
-  '<td>'+(x.kind==='FERIAS'?'Prévia disponível — apuração pendente':esc(treatmentNames[x.treatment]||'Pendente de classificação'))+'</td>'+
-  '<td>'+(x.kind==='FERIAS'?'<button class="btn secondary sm" type="button" data-vacation49="'+esc(x.id)+'">Prévia de férias</button>':
+  '<td>'+(x.kind==='FERIAS'?'Controle do período aquisitivo':esc(treatmentNames[x.treatment]||'Pendente de classificação'))+'</td>'+
+  '<td>'+(x.kind==='FERIAS'?'<button class="btn secondary sm" type="button" data-vacation49="'+esc(x.id)+'">Conferir férias</button>':
   '<button class="btn secondary sm" type="button" data-leave49="'+esc(x.id)+'">Classificar</button>')+'</td></tr>').join('');
  openModal('Afastamentos e licenças',
   'Classificação por ocorrência e impacto no cálculo mensal.',
@@ -20,7 +20,7 @@ async function payrollLeave49Open(period){
   '<p class="help">Liberação inicial: licença remunerada (sem desconto), licença sem remuneração (desconto por divisor selecionado) e doença de até 15 dias sob responsabilidade da empresa. Benefício previdenciário, acidente, maternidade e férias ainda exigem seus processos próprios.</p>',true);
  $('#leave49Search').onclick=()=>payrollLeave49Open($('#leave49Month').value).catch(e=>toast(e.message,'error'));
  $$('[data-vacation49]').forEach(btn=>{
-  btn.onclick=()=>payrollVacation49Preview(month,(data.items||[]).find(x=>x.id===btn.dataset.vacation49)).catch(e=>toast(e.message,'error'));
+  btn.onclick=()=>payrollVacation50Open(month,(data.items||[]).find(x=>x.id===btn.dataset.vacation49)).catch(e=>toast(e.message,'error'));
  });
  $$('[data-leave49]').forEach(btn=>{
   btn.disabled=!can('payroll.manage');
