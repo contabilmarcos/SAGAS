@@ -24,7 +24,9 @@ export async function payrollVacationStageSchema61(env){
  await env.DB.batch([
   env.DB.prepare("CREATE TABLE IF NOT EXISTS payroll_vacation_monthly_stage61 (id TEXT PRIMARY KEY,company_id TEXT NOT NULL,employee_id TEXT NOT NULL REFERENCES payroll_employees(id) ON DELETE RESTRICT,occurrence_id TEXT NOT NULL REFERENCES payroll_employee_occurrences(id) ON DELETE RESTRICT,vacation_run_id TEXT NOT NULL REFERENCES payroll_calc_runs(id) ON DELETE RESTRICT,competence_id TEXT NOT NULL REFERENCES payroll_competences(id) ON DELETE RESTRICT,competence TEXT NOT NULL,payment_date TEXT NOT NULL,source_fingerprint TEXT NOT NULL,events_json TEXT NOT NULL,snapshot_json TEXT NOT NULL,status TEXT NOT NULL CHECK(status IN ('STAGED','VOID')),created_by TEXT NOT NULL,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,voided_by TEXT,voided_at TEXT,void_reason TEXT)"),
   env.DB.prepare("CREATE UNIQUE INDEX IF NOT EXISTS ux_vacation_stage61_employee_month ON payroll_vacation_monthly_stage61(company_id,employee_id,competence_id) WHERE status='STAGED'"),
-  env.DB.prepare("CREATE INDEX IF NOT EXISTS ix_vacation_stage61_occurrence ON payroll_vacation_monthly_stage61(company_id,occurrence_id,status)")
+  env.DB.prepare("CREATE INDEX IF NOT EXISTS ix_vacation_stage61_occurrence ON payroll_vacation_monthly_stage61(company_id,occurrence_id,status)"),
+  env.DB.prepare("CREATE TRIGGER IF NOT EXISTS tr_vac_stage61_no_monthly BEFORE INSERT ON payroll_vacation_monthly_stage61 WHEN NOT EXISTS (SELECT 1 FROM payroll_competences WHERE id=NEW.competence_id AND company_id=NEW.company_id AND status='OPEN') OR EXISTS (SELECT 1 FROM payroll_calc_runs WHERE company_id=NEW.company_id AND competence_id=NEW.competence_id AND process_kind='MONTHLY') BEGIN SELECT RAISE(ABORT,'VACATION_STAGE_COMPETENCE_CONFLICT'); END"),
+  env.DB.prepare("CREATE TRIGGER IF NOT EXISTS tr_vac_stage61_block_monthly BEFORE INSERT ON payroll_calc_runs WHEN NEW.process_kind='MONTHLY' AND EXISTS (SELECT 1 FROM payroll_vacation_monthly_stage61 WHERE company_id=NEW.company_id AND competence_id=NEW.competence_id AND status='STAGED') BEGIN SELECT RAISE(ABORT,'VACATION_MONTHLY_STAGE_PENDING'); END")
  ]);
 }
 async function staged61(env,companyId,occurrenceId){
@@ -35,7 +37,7 @@ export async function payrollVacationStage61(action,c){
  if(!['read','record','void'].includes(action))
   error61(d,'Acao desconhecida.','NOT_FOUND',404);
  await d.requirePermission(env,auth.user.id,companyId,action==='read'?'payroll.read':'payroll.manage');
- await d.ensureSchemaRevision(env,'payroll-vacation-monthly-stage61',1,()=>payrollVacationStageSchema61(env));
+ await d.ensureSchemaRevision(env,'payroll-vacation-monthly-stage61',2,()=>payrollVacationStageSchema61(env));
  const occurrenceId=String(action==='read'?c.occurrenceId||'':body.occurrence_id||'').trim();
  if(!occurrenceId||occurrenceId.length>128)
   error61(d,'Informe uma ocorrencia valida.','INVALID_OCCURRENCE',400);
@@ -129,10 +131,9 @@ export async function payrollVacationStage61(action,c){
  if(body.confirmation!=='GRAVAR MEMORIA FERIAS')
   error61(d,'Confirme digitando GRAVAR MEMORIA FERIAS.','CONFIRMATION_REQUIRED',400);
  const insert=all.map(m=>env.DB.prepare(
-  "INSERT INTO payroll_vacation_monthly_stage61(id,company_id,employee_id,occurrence_id,vacation_run_id,competence_id,competence,payment_date,source_fingerprint,events_json,snapshot_json,status,created_by) SELECT ?,?,?,?,?,?,?,?,?,?,?,'STAGED',? WHERE EXISTS(SELECT 1 FROM payroll_competences WHERE company_id=? AND id=? AND status='OPEN') AND NOT EXISTS(SELECT 1 FROM payroll_calc_runs WHERE company_id=? AND competence_id=? AND process_kind='MONTHLY') AND NOT EXISTS(SELECT 1 FROM payroll_vacation_monthly_stage61 WHERE company_id=? AND employee_id=? AND competence_id=? AND status='STAGED')")
+  "INSERT INTO payroll_vacation_monthly_stage61(id,company_id,employee_id,occurrence_id,vacation_run_id,competence_id,competence,payment_date,source_fingerprint,events_json,snapshot_json,status,created_by) VALUES (?,?,?,?,?,?,?,?,?,?,?,'STAGED',?)")
   .bind(d.uuid(),companyId,employeeId,occurrenceId,preview.vacation_run_id,m.competence_id,m.competence,m.payment_date,m.hash,
-   JSON.stringify(m.lines),JSON.stringify(m.snapshot),auth.user.id,
-   companyId,m.competence_id,companyId,m.competence_id,companyId,employeeId,m.competence_id));
+   JSON.stringify(m.lines),JSON.stringify(m.snapshot),auth.user.id));
  let results;
  try{results=await env.DB.batch(insert)}
  catch(e){
