@@ -165,6 +165,8 @@ export async function payrollVacation54(action,c){
  const existingBefore=await getPrep54(env,companyId,id);
  const declaredBefore=await advance54(env,companyId,id);
  if(action==='cancel-advance'||action==='void'){
+  const registered=await env.DB.prepare("SELECT run_id FROM payroll_vacation_envelope_links58 WHERE company_id=? AND occurrence_id=? AND status='ACTIVE' LIMIT 1").bind(companyId,id).first();
+  if(registered)fail54(d,'Anule o envelope VACATION antes de cancelar o pagamento documentado ou a preparação.','VACATION_ENVELOPE_ACTIVE');
   const reconciled=await env.DB.prepare("SELECT id FROM payroll_vacation_reconciliations55 WHERE company_id=? AND occurrence_id=? AND status='RECONCILED' LIMIT 1").bind(companyId,id).first();
   if(reconciled)fail54(d,'Anule a conciliação do recibo antes de alterar a preparação ou a referência de adiantamento.','RECONCILIATION_ACTIVE');
  }
