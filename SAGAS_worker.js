@@ -12,8 +12,9 @@ import { payrollVacation89, payrollVacationSchema89 } from './sagas-payroll-vaca
 import { payrollVacation90 } from './sagas-payroll-vacation52.js';
 import { payrollVacationIntegration53 } from './sagas-payroll-vacation53.js';
 import { payrollVacation54, payrollVacationSchema54 } from './sagas-payroll-vacation54.js';
+import { payrollVacation55, payrollVacationSchema55 } from './sagas-payroll-vacation55.js';
 import { payrollProvisionAccounting44 } from './sagas-payroll-provisions44.js';
-// SAGAS Worker v92 - Processamento preliminar auditável e adiantamento documental de férias | cumulativo desde v49
+// SAGAS Worker v93 - Conciliação de recibo e proposta de rubricas da folha | cumulativo desde v49
 // ===== utils.js =====
 function json(data, status = 200, extraHeaders = {}) {
   return new Response(JSON.stringify(data), {
@@ -10626,6 +10627,20 @@ async function route(request, env) {
   p=routeMatch(path,"/api/financial-payables/:id/cancel"); if(p&&method==="POST")return ok({payable:await cancelFinancialPayable(env,request,auth,companyId,p.id)});
   p=routeMatch(path,"/api/financial-payables/:id"); if(p&&method==="GET"){await requirePermission(env,auth.user.id,companyId,"financial.payable.read");const payable=await getFinancialPayable(env,companyId,p.id);if(payable.source_type==="PAYROLL_MONTHLY")await requirePermission(env,auth.user.id,companyId,"payroll.read");return ok({payable});}
 
+  // Etapa 55 (v93): conciliação formal do recibo com rubricas por competência.
+  if(path==='/api/payroll/vacation-reconciliation'&&(method==='GET'||method==='POST')){
+    await ensureSchemaRevision(env,'payroll-employee-numbers',1,()=>ensurePayrollEmployeeNumbersSchema(env));
+    await ensureSchemaRevision(env,'payroll-calculation-foundation',1,()=>ensurePayrollCalculationFoundation34(env));
+    await ensureSchemaRevision(env,'payroll-vacation50',1,()=>payrollVacationSchema50(env));
+    await ensureSchemaRevision(env,'payroll-vacation89',1,()=>payrollVacationSchema89(env));
+    await ensureSchemaRevision(env,'payroll-vacation54',1,()=>payrollVacationSchema54(env));
+    await ensureSchemaRevision(env,'payroll-vacation55',1,()=>payrollVacationSchema55(env));
+    const body=method==='POST'?await readJson(request):{};
+    return ok(await payrollVacation55(method==='GET'?'read':String(body.action||''),{
+      env,companyId,auth,request,body,occurrenceId:url.searchParams.get('occurrence_id'),
+      d:{HttpError,requirePermission,ensureSchemaRevision,audit,uuid,hash:payrollProcessingSnapshotHash28}
+    }));
+  }
   // Etapa 54 (v92): preparação auditável e adiantamento documental, sem integração real.
   if(path==='/api/payroll/vacation-processing'&&(method==='GET'||method==='POST')){
     await requirePermission(env,auth.user.id,companyId,'payroll.read');
@@ -10634,6 +10649,7 @@ async function route(request, env) {
     await ensureSchemaRevision(env,'payroll-vacation50',1,()=>payrollVacationSchema50(env));
     await ensureSchemaRevision(env,'payroll-vacation89',1,()=>payrollVacationSchema89(env));
     await ensureSchemaRevision(env,'payroll-vacation54',1,()=>payrollVacationSchema54(env));
+    await ensureSchemaRevision(env,'payroll-vacation55',1,()=>payrollVacationSchema55(env));
     await payrollFinance39('catalog',{env,companyId,auth,d:{HttpError,requirePermission,ensureSchemaRevision,audit,uuid}});
     const body=method==='POST'?await readJson(request):{};
     return ok(await payrollVacation54(method==='GET'?'read':String(body.action||''),{
