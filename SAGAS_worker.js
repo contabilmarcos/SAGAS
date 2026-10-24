@@ -18,6 +18,7 @@ import { payrollVacationEnvelope58, payrollVacationSchema58 } from './sagas-payr
 import { payrollVacationReview59 } from './sagas-payroll-vacation59.js';
 import { payrollVacationBridge60 } from './sagas-payroll-vacation60.js';
 import { payrollVacationStage61, payrollVacationBlockMonthly61 } from './sagas-payroll-vacation61.js';
+import { payrollVacationMonthly100, payrollVacationMonthlySchema100 } from './sagas-payroll-vacation62.js';
 import { payrollProvisionAccounting44 } from './sagas-payroll-provisions44.js';
 // SAGAS Worker v96 - Registro auditável do envelope próprio VACATION de férias | cumulativo desde v49
 // ===== utils.js =====
@@ -9709,6 +9710,26 @@ async function payrollMonthlySource35(env,companyId,competenceId,paymentDate){
   const changedSalary=await payrollSalaryHistory47(env,companyId,employees,history,prep.first_date,prep.last_date,HttpError);
   const attendance=await payrollAbsenceSnapshot48(env,companyId,prep.competence.competence,{HttpError});
   const leave=await payrollLeaveSnapshot49(env,companyId,prep.competence.competence,{HttpError});
+  // v100: utilizacao apenas de memorias STAGED, com recibo VACATION aprovado,
+  // fontes e encargos conciliados. Demais empregados seguem motor v35.
+  const vacation100=await payrollVacationMonthly100(env,companyId,competenceId,paymentDate,{
+    HttpError,taxes:payrollTaxHistoricalWithDependents,
+    monthlyIrrf:(gross,inssBalance,dep,date)=>{
+      const t=histTable(HIST_IRRF,date.slice(0,7));
+      const legal=inssBalance+dep*18959;
+      const deduction=Math.max(legal,t[2]);
+      const taxable=Math.max(0,gross-deduction);
+      const band=t[1].find(x=>taxable<=x[0]);
+      const before=Math.max(0,payrollTaxRound(taxable*band[1],10000)-band[2]);
+      let reduction=0;
+      if(t[3]){
+        if(gross<=500000)reduction=Math.min(before,31289);
+        else if(gross<=735000)reduction=Math.min(before,Math.max(0,97862-payrollTaxRound(gross*133145,1000000)));
+      }
+      return {irrf_cents:Math.max(0,before-reduction),base_cents:taxable,deduction_cents:deduction};
+    }});
+  if(vacation100.records.some(r=>!ids.has(r.employee_id)))
+    throw new HttpError(409,'Férias preparadas para funcionário que não participa da folha mensal.','VACATION_EMPLOYEE_INELIGIBLE');
   const items=[];
   for(const emp of employees){
     const salary=history.salary.get(emp.employee_id)?.[0]||null;
@@ -9716,7 +9737,11 @@ async function payrollMonthlySource35(env,companyId,competenceId,paymentDate){
     if(!salary||!schedule)throw new HttpError(409,'Historico de salario e jornada foi alterado durante a preparacao.','SOURCE_CHANGED');
     const count=dependents.get(emp.employee_id)||0;
     const relevant=movements.filter(m=>m.employee_id===emp.employee_id);
-    const calculated=payrollMonthlyEmployeeCalc35({...emp,salary_cents:salary.salary_cents,
+    const staged=vacation100.byEmployee.get(emp.employee_id);
+    if(staged&&relevant.length)
+      throw new HttpError(409,'Movimentos manuais ainda não conciliados com férias.','VACATION_EXTRA_MOVEMENT');
+    const calculated=staged?{...staged,employee_code:emp.employee_code,employee_name:emp.employee_name}:
+      payrollMonthlyEmployeeCalc35({...emp,salary_cents:salary.salary_cents,
       monthly_hours_milli:schedule.monthly_hours_milli},relevant,rules,count,
       prep.competence.competence,paymentDate,prep.proration_settings?.mode||null,
       prep.salary_change_settings?.mode||'RM_NEXT_MONTH',changedSalary.get(emp.employee_id)||[],
@@ -9727,15 +9752,17 @@ async function payrollMonthlySource35(env,companyId,competenceId,paymentDate){
     x.irrf_cents,x.fgts_cents].every(n=>Number.isSafeInteger(n)&&n>=0));
   if(!financialSafe)throw new HttpError(409,'Total fora da faixa monetaria permitida.','DATA_INVALID');
   // O fingerprint inclui todas as entradas relevantes e a saida deterministica.
-  const fingerprint=await payrollProcessingSnapshotHash28({version:35,company_id:companyId,
+  const rawFingerprint=await payrollProcessingSnapshotHash28({version:100,company_id:companyId,
     competence_id:competenceId,competence:prep.competence.competence,payment_date:paymentDate,
     proration_settings:prep.proration_settings,salary_change_settings:prep.salary_change_settings,
     salary_changes:[...changedSalary.entries()],attendance:[...attendance.entries()],
     leave:[...leave.entries()],employee_inputs:employees,history_salary:items.map(x=>[x.employee_id,history.salary.get(x.employee_id)]),
     history_schedule:items.map(x=>[x.employee_id,history.schedule.get(x.employee_id)]),
     history_functional:items.map(x=>[x.employee_id,history.functional.get(x.employee_id)]),
-    movements,rules:[...rulesResult.results||[]],dependents:[...dependents.entries()],items});
-  return {prep,items,fingerprint,employee_count:items.length,
+    movements,rules:[...rulesResult.results||[]],dependents:[...dependents.entries()],
+    vacation_stages:vacation100.records,items});
+  const fingerprint=vacation100.records.length?'VACATION100:'+rawFingerprint:rawFingerprint;
+  return {prep,items,fingerprint,vacation_records:vacation100.records,employee_count:items.length,
     totals:{earnings_cents:items.reduce((a,x)=>a+x.earnings_cents,0),
       deductions_cents:items.reduce((a,x)=>a+x.deductions_cents,0),
       net_cents:items.reduce((a,x)=>a+x.net_cents,0),
@@ -9791,13 +9818,7 @@ async function payrollMonthlyRuns35(env,companyId,competenceId){
   return {runs:r.results||[]};
 }
 async function payrollMonthlyRunCreate35(env,request,auth,companyId,competenceId,paymentDate){
-  // v99: bloquear gravacao de MONTHLY enquanto ferias reconciliadas nao forem
-  // consideradas no motor salarial, INSS, IRRF e FGTS.
-  const vacationCompetence99=await env.DB.prepare(
-    "SELECT competence FROM payroll_competences WHERE id=? AND company_id=? LIMIT 1"
-  ).bind(competenceId,companyId).first();
-  if(vacationCompetence99)
-    await payrollVacationBlockMonthly61(env,companyId,vacationCompetence99.competence,{HttpError});
+  await ensureSchemaRevision(env,'payroll-vacation-monthly-use100',1,()=>payrollVacationMonthlySchema100(env));
 
   await requirePermission(env,auth.user.id,companyId,'payroll.manage');
   const date=payrollStrictDate(paymentDate,'Data prevista de pagamento');
@@ -9837,6 +9858,12 @@ async function payrollMonthlyRunCreate35(env,request,auth,companyId,competenceId
         VALUES (?,?,?,?,?,?,?,?,?,?,?)`).bind(uuid(),companyId,envelopeId,line.event_id,
           line.event_code,line.event_name,line.line_type,line.amount_cents,line.reference_text,line.rule_version,i+1));
     }
+  }
+  // Vinculo auditavel, na MESMA transacao dos envelopes MONTHLY.
+  for(const stage of source.vacation_records||[]){
+    statements.push(env.DB.prepare(
+      "INSERT INTO payroll_vacation_monthly_usage100(id,company_id,run_id,stage_id,employee_id,competence_id,source_fingerprint) VALUES (?,?,?,?,?,?,?)"
+    ).bind(uuid(),companyId,runId,stage.id,stage.employee_id,competenceId,stage.source_fingerprint));
   }
   try{await env.DB.batch(statements)}
   catch(err){
@@ -9901,6 +9928,14 @@ async function payrollMonthlyConference36(env,companyId,runId){
     ORDER BY revision DESC LIMIT 1`).bind(companyId,run.competence_id).first();
   const problems=[];
   const block=(code,message)=>problems.push({code,message});
+  // Um processamento de férias precisa ter vinculo auditavel por estágio.
+  const used=(await env.DB.prepare(
+    "SELECT u.stage_id,u.employee_id,u.source_fingerprint,s.source_fingerprint AS current_source,s.status AS stage_status FROM payroll_vacation_monthly_usage100 u JOIN payroll_vacation_monthly_stage61 s ON s.id=u.stage_id AND s.company_id=u.company_id WHERE u.company_id=? AND u.run_id=?"
+  ).bind(companyId,runId).all()).results||[];
+  if(run.source_fingerprint.startsWith('VACATION100:')&&!used.length)
+    block('FERIAS_SEM_VINCULO','Processamento com férias sem memória de compensação.');
+  if(used.some(x=>x.source_fingerprint!==x.current_source||x.stage_status!=='STAGED'))
+    block('FERIAS_ORIGEM_ALTERADA','Memória de férias usada no envelope foi anulada ou modificada.');
   if(!detail.employee_count)block('SEM_ENVELOPES','Nenhum envelope foi gravado.');
   if(!latest||latest.id!==runId)block('VERSAO_ANTERIOR','Somente a revisao mais recente pode ser conferida ou fechada.');
   for(const e of detail.envelopes){
@@ -9956,11 +9991,6 @@ async function payrollMonthlyConference36(env,companyId,runId){
       'Conferencia interna; revisar bases e direitos trabalhistas antes do fechamento. Nao autoriza pagamento.'};
 }
 async function payrollMonthlyReview36(env,request,auth,companyId,runId){
-  const vacationRun99=await env.DB.prepare(
-    "SELECT c.competence FROM payroll_calc_runs r JOIN payroll_competences c ON c.id=r.competence_id AND c.company_id=r.company_id WHERE r.company_id=? AND r.id=? AND r.process_kind='MONTHLY' LIMIT 1"
-  ).bind(companyId,runId).first();
-  if(vacationRun99)
-    await payrollVacationBlockMonthly61(env,companyId,vacationRun99.competence,{HttpError});
 
   await requirePermission(env,auth.user.id,companyId,'payroll.manage');
   await ensureSchemaRevision(env,'payroll-monthly-review',1,()=>ensurePayrollMonthlyReviewSchema36(env));
@@ -10002,11 +10032,6 @@ async function payrollMonthlyUndoReview36(env,request,auth,companyId,runId){
   return payrollMonthlyConference36(env,companyId,runId);
 }
 async function payrollMonthlyClose36(env,request,auth,companyId,runId,body){
-  const vacationRun99=await env.DB.prepare(
-    "SELECT c.competence FROM payroll_calc_runs r JOIN payroll_competences c ON c.id=r.competence_id AND c.company_id=r.company_id WHERE r.company_id=? AND r.id=? AND r.process_kind='MONTHLY' LIMIT 1"
-  ).bind(companyId,runId).first();
-  if(vacationRun99)
-    await payrollVacationBlockMonthly61(env,companyId,vacationRun99.competence,{HttpError});
 
   await requirePermission(env,auth.user.id,companyId,'payroll.manage');
   if(String(body?.confirmation||'').trim()!=='FECHAR')
