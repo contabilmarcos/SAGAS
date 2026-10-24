@@ -46,7 +46,9 @@ async function payrollVacation53Open(month,occ){
   '<ul class="help">'+problems+'</ul>'+
   '<p class="help"><b>Status: não liberado para folha, financeiro ou contabilidade.</b> Não foram criados eventos nos envelopes nem títulos a pagar.</p>'+
   '<div class="form-actions"><button class="btn secondary" type="button" id="vacation53Back">Voltar às férias</button>'+
-  '<button class="btn secondary" type="button" id="vacation53Refresh">Atualizar conferência</button></div>',true);
+  '<button class="btn secondary" type="button" id="vacation53Refresh">Atualizar conferência</button>'+ 
+  '<button class="btn primary" type="button" id="vacation54Open">Processamento preliminar</button></div>',true);
  $('#vacation53Back').onclick=()=>payrollVacation50Open(month,occ).catch(e=>toast(e.message,'error'));
  $('#vacation53Refresh').onclick=()=>payrollVacation53Open(month,occ).catch(e=>toast(e.message,'error'));
+ $('#vacation54Open').onclick=()=>payrollVacation54Open(month,occ).catch(e=>toast(e.message,'error'));
 }
