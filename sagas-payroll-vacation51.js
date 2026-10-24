@@ -84,7 +84,7 @@ function preview89(ctx,model,d){
   employee:{id:ctx.employee_id,name:ctx.employee_name,number:ctx.employee_number},
   occurrence_id:ctx.id,acquisition_start:ctx.link.acquisition_start,acquisition_end:ctx.link.acquisition_end,
   concession_deadline:ctx.link.concession_deadline,start_date:ctx.start_date,end_date:ctx.end_date,
-  gozo_days:ctx.gozo_days,abono_days:abonoDays,request_date:model.request_date,
+  gozo_days:ctx.gozo_days,entitled_days:ctx.link.entitled_days,abono_days:abonoDays,request_date:model.request_date,
   commission_months:ctx.commission_months,additional_months:ctx.additional_months,
   commission_monthly_cents:commission,additional_monthly_cents:additions,
   salary_cents:ctx.salary_cents,salary_effective_from:ctx.salary_effective_from,
@@ -121,6 +121,8 @@ export async function payrollVacation89(action,c){
  }
  if(action!=='save'&&action!=='delete')fail89(d,'Ação de férias inválida.','NOT_FOUND',404);
  await checkLocked89(env,companyId,x,d);
+ if(prior&&(prior.cycle_id!==x.link.cycle_id||prior.occurrence_start!==x.start_date||prior.occurrence_end!==x.end_date)&&action==='save')
+  fail89(d,'Ocorrência alterada desde a memória anterior. Exclua a memória e refaça.','VACATION_STALE');
  if(action==='delete'){
   if(!prior)fail89(d,'Não existe memória para excluir.','NOT_FOUND',404);
   if(body.confirmation!=='EXCLUIR MEMORIA')fail89(d,'Confirme digitando EXCLUIR MEMORIA.','CONFIRMATION_REQUIRED',400);
