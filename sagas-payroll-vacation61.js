@@ -42,14 +42,22 @@ export async function payrollVacationStage61(action,c){
  if(!occurrenceId||occurrenceId.length>128)
   error61(d,'Informe uma ocorrencia valida.','INVALID_OCCURRENCE',400);
  const existing=await staged61(env,companyId,occurrenceId);
- if(action==='read')return {
-  occurrence_id:occurrenceId,status:existing.length?'STAGED':'NOT_STAGED',
-  items:existing.map(x=>({id:x.id,competence:x.competence,payment_date:x.payment_date,
-   vacation_run_id:x.vacation_run_id,events:JSON.parse(x.events_json),snapshot:JSON.parse(x.snapshot_json),
-   source_fingerprint:x.source_fingerprint,created_at:x.created_at})),
-  ready_for_monthly_posting:false,ready_for_finance:false,ready_for_accounting:false,
-  note:'Memoria preparada; ainda nao altera envelopes MONTHLY.'
- };
+ if(action==='read'){
+  const hasUsage=!!(await env.DB.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='payroll_vacation_monthly_usage100' LIMIT 1").first());
+  const items=[];
+  for(const x of existing){
+   const links=hasUsage?(await env.DB.prepare(
+    "SELECT u.run_id,r.status,r.revision FROM payroll_vacation_monthly_usage100 u JOIN payroll_calc_runs r ON r.id=u.run_id AND r.company_id=u.company_id WHERE u.company_id=? AND u.stage_id=? ORDER BY r.revision DESC LIMIT 10"
+   ).bind(companyId,x.id).all()).results||[]:[];
+   items.push({id:x.id,competence:x.competence,payment_date:x.payment_date,
+    vacation_run_id:x.vacation_run_id,events:JSON.parse(x.events_json),snapshot:JSON.parse(x.snapshot_json),
+    source_fingerprint:x.source_fingerprint,created_at:x.created_at,
+    monthly_usage:links,integrated_in_monthly:links.length>0});
+  }
+  return {occurrence_id:occurrenceId,status:existing.length?'STAGED':'NOT_STAGED',
+   items,ready_for_monthly_posting:false,ready_for_finance:false,ready_for_accounting:false,
+   note:'As memorias podem estar vinculadas a processamentos MONTHLY; verifique monthly_usage antes de qualquer alteracao.'};
+ }
  if(action==='void'){
   if(!existing.length)error61(d,'Nao ha memoria ativa para anular.','NOT_FOUND',404);
   // Uma memória já consumida não pode ser anulada sem estorno formal.
