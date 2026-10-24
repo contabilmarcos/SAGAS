@@ -34,11 +34,13 @@ async function payrollVacation58Open(month,occ){
     '<button class="btn primary" type="button" id="vac58Record">Gravar envelope de férias</button>':'')+
   (can('payroll.manage')&&data.active?
     '<button class="btn danger" type="button" id="vac58Void">Anular envelope</button>':'')+
+  (data.active?'<button class="btn primary" type="button" id="vac58Review">Conferir/aprovar férias</button>':'')+
   '<button class="btn secondary" type="button" id="vac58Refresh">Atualizar conferência</button></div>',true);
  $('#vac58Back').onclick=()=>payrollVacation56Open(month,occ).catch(e=>toast(e.message,'error'));
  $('#vac58Refresh').onclick=()=>payrollVacation58Open(month,occ).catch(e=>toast(e.message,'error'));
  if($('#vac58Record'))$('#vac58Record').onclick=()=>payrollVacation58Confirm(month,occ,data.fingerprint);
  if($('#vac58Void'))$('#vac58Void').onclick=()=>payrollVacation58Void(month,occ);
+ if($('#vac58Review'))$('#vac58Review').onclick=()=>payrollVacation59Open(month,occ).catch(e=>toast(e.message,'error'));
 }
 function payrollVacation58Confirm(month,occ,fingerprint){
  openModal('Gravar envelope próprio de férias',
