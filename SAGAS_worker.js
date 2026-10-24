@@ -9752,7 +9752,7 @@ async function payrollMonthlySource35(env,companyId,competenceId,paymentDate){
     x.irrf_cents,x.fgts_cents].every(n=>Number.isSafeInteger(n)&&n>=0));
   if(!financialSafe)throw new HttpError(409,'Total fora da faixa monetaria permitida.','DATA_INVALID');
   // O fingerprint inclui todas as entradas relevantes e a saida deterministica.
-  const rawFingerprint=await payrollProcessingSnapshotHash28({version:100,company_id:companyId,
+  const rawFingerprint=await payrollProcessingSnapshotHash28({version:vacation100.records.length?100:35,company_id:companyId,
     competence_id:competenceId,competence:prep.competence.competence,payment_date:paymentDate,
     proration_settings:prep.proration_settings,salary_change_settings:prep.salary_change_settings,
     salary_changes:[...changedSalary.entries()],attendance:[...attendance.entries()],
@@ -9760,7 +9760,7 @@ async function payrollMonthlySource35(env,companyId,competenceId,paymentDate){
     history_schedule:items.map(x=>[x.employee_id,history.schedule.get(x.employee_id)]),
     history_functional:items.map(x=>[x.employee_id,history.functional.get(x.employee_id)]),
     movements,rules:[...rulesResult.results||[]],dependents:[...dependents.entries()],
-    vacation_stages:vacation100.records,items});
+    ...(vacation100.records.length?{vacation_stages:vacation100.records}:{}),items});
   const fingerprint=vacation100.records.length?'VACATION100:'+rawFingerprint:rawFingerprint;
   return {prep,items,fingerprint,vacation_records:vacation100.records,employee_count:items.length,
     totals:{earnings_cents:items.reduce((a,x)=>a+x.earnings_cents,0),
@@ -9929,9 +9929,10 @@ async function payrollMonthlyConference36(env,companyId,runId){
   const problems=[];
   const block=(code,message)=>problems.push({code,message});
   // Um processamento de férias precisa ter vinculo auditavel por estágio.
-  const used=(await env.DB.prepare(
-    "SELECT u.stage_id,u.employee_id,u.source_fingerprint,s.source_fingerprint AS current_source,s.status AS stage_status FROM payroll_vacation_monthly_usage100 u JOIN payroll_vacation_monthly_stage61 s ON s.id=u.stage_id AND s.company_id=u.company_id WHERE u.company_id=? AND u.run_id=?"
-  ).bind(companyId,runId).all()).results||[];
+  const used=run.source_fingerprint.startsWith('VACATION100:')?
+    (await env.DB.prepare(
+      "SELECT u.stage_id,u.employee_id,u.source_fingerprint,s.source_fingerprint AS current_source,s.status AS stage_status FROM payroll_vacation_monthly_usage100 u JOIN payroll_vacation_monthly_stage61 s ON s.id=u.stage_id AND s.company_id=u.company_id WHERE u.company_id=? AND u.run_id=?"
+    ).bind(companyId,runId).all()).results||[]:[];
   if(run.source_fingerprint.startsWith('VACATION100:')&&!used.length)
     block('FERIAS_SEM_VINCULO','Processamento com férias sem memória de compensação.');
   if(used.some(x=>x.source_fingerprint!==x.current_source||x.stage_status!=='STAGED'))
