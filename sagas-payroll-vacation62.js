@@ -40,7 +40,7 @@ export async function payrollVacationMonthly100(env,companyId,competenceId,payme
  if(stages.length&&period.status!=='OPEN')
   block100(d,'A competência com férias não está aberta.','COMPETENCE_CLOSED');
  if(!stages.length)return {byEmployee:new Map(),records:[]};
- await payrollVacationMonthlySchema100(env);
+ await d.ensureSchemaRevision(env,'payroll-vacation-monthly-use100',1,()=>payrollVacationMonthlySchema100(env));
  const byEmployee=new Map(),records=[];
  for(const s of stages){
   if(byEmployee.has(s.employee_id))block100(d,'Mais de uma férias do mesmo funcionário nesta competência requer cálculo conjunto.','VACATION_OVERLAP');
@@ -115,6 +115,19 @@ export async function payrollVacationMonthly100(env,companyId,competenceId,payme
   if(taxes.inss_cents!==snapshot.inss_total_competence_cents||taxes.fgts_cents!==snapshot.fgts_employer_cents||
      irrf.irrf_cents!==snapshot.irrf_monthly_cents)
    block100(d,'Impostos recalculados divergem da memória: refaça a conferência.','VACATION_TAXES_CHANGED');
+  // Preservar os IDs cadastrais dos eventos de férias para vincular a
+  // natureza orçamentária e, posteriormente, a conta pelo centro de custo.
+  const registered=(await env.DB.prepare(
+   "SELECT e.id,e.code,e.event_type,e.active FROM payroll_events e WHERE e.company_id=? AND e.code IN ('FERIAS_GOZO','TERCO_FERIAS','ADIANTAMENTO_FERIAS')"
+  ).bind(companyId).all()).results||[];
+  const mapped=new Map(registered.filter(x=>Number(x.active)===1).map(x=>[x.code,x]));
+  for(const code of ['FERIAS_GOZO','TERCO_FERIAS']){
+   const found=mapped.get(code);
+   if(!found||found.event_type!=='PROVENTO')
+    block100(d,'Evento de férias '+code+' não está ativo ou mudou de tipo.','VACATION_EVENT_CHANGED');
+  }
+  if(mapped.has('ADIANTAMENTO_FERIAS')&&mapped.get('ADIANTAMENTO_FERIAS').event_type!=='DESCONTO')
+   block100(d,'Evento ADIANTAMENTO_FERIAS não corresponde a desconto.','VACATION_ADVANCE_EVENT_INVALID');
   const item={employee_id:s.employee_id,cost_center_id:s.cost_center_id,
    earnings_cents:earnings,deductions_cents:discounts,net_cents:earnings-discounts,
    inss_cents:snapshot.inss_payroll_balance_cents,irrf_cents:snapshot.irrf_monthly_cents,
@@ -122,7 +135,7 @@ export async function payrollVacationMonthly100(env,companyId,competenceId,payme
    inss_base_cents:snapshot.base_inss_cents,fgts_base_cents:snapshot.base_fgts_cents,
    irrf_gross_cents:snapshot.salary_worked_cents,irrf_base_cents:irrf.base_cents,
    dependent_count:snapshot.dependent_count,
-   lines:lines.map(x=>({event_id:null,event_code:x.event_code,event_name:x.event_name,
+   lines:lines.map(x=>({event_id:mapped.get(x.event_code)?.id||null,event_code:x.event_code,event_name:x.event_name,
     line_type:x.line_type,amount_cents:x.amount_cents,reference_text:x.reference_text||'',
     rule_version:'FERIAS100#'+s.id}))};
   byEmployee.set(s.employee_id,item);
