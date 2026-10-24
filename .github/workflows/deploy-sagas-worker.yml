@@ -17,6 +17,9 @@ on:
       - 'sagas-payroll-provisions44-ui.js'
       - 'sagas-payroll-provisions45.js'
       - 'sagas-payroll-provisions45-ui.js'
+      - 'sagas-payroll-admission46.js'
+      - 'sagas-payroll-admission46-ui.js'
+      - 'tests/payroll-admission46.test.mjs'
       - '.github/workflows/deploy-sagas-worker.yml'
   workflow_dispatch:
     inputs:
@@ -54,6 +57,9 @@ jobs:
 
       - name: Verificar sintaxe do Worker
         run: node --check SAGAS_worker.js
+
+      - name: Testar salário proporcional (RM)
+        run: node --test tests/payroll-admission46.test.mjs
 
       - name: Validar configuração e gerar Wrangler temporário
         env:
