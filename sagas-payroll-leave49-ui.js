@@ -7,7 +7,7 @@ async function payrollLeave49Open(period){
  const treatmentNames=data.treatments||{};
  const rows=(data.items||[]).map(x=>'<tr><td>'+esc(x.employee_number==null?'—':String(x.employee_number).padStart(5,'0'))+' — '+esc(x.employee_name)+'</td>'+
   '<td>'+esc(x.kind)+'</td><td>'+esc(x.start_date)+' a '+esc(x.end_date)+'</td>'+
-  '<td>'+esc(treatmentNames[x.treatment]||'Pendente de classificação')+'</td>'+
+  '<td>'+(x.kind==='FERIAS'?'Prévia disponível — apuração pendente':esc(treatmentNames[x.treatment]||'Pendente de classificação'))+'</td>'+
   '<td>'+(x.kind==='FERIAS'?'<button class="btn secondary sm" type="button" data-vacation49="'+esc(x.id)+'">Prévia de férias</button>':
   '<button class="btn secondary sm" type="button" data-leave49="'+esc(x.id)+'">Classificar</button>')+'</td></tr>').join('');
  openModal('Afastamentos e licenças',
