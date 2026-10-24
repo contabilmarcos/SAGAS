@@ -207,6 +207,7 @@ export async function payrollVacation54(action,c){
  const declared=await advance54(env,companyId,id);
  const sourceChanged=!!existing&&(existing.source_fingerprint!==fingerprint||Number(existing.model_revision)!==model.revision);
  const blockers=await blockers54(env,companyId,fresh,d);
+ if(declared&&declared.payment_date>fresh.payment_deadline)blockers.push({code:'PAGAMENTO_FORA_DO_PRAZO',message:'O pagamento externo declarado ocorreu após os dois dias anteriores ao início das férias. Conferir a ocorrência com o DP.'});
  if(sourceChanged)blockers.push({code:'FONTE_ALTERADA',message:'A memória original foi modificada após o processamento. Anule o processamento para recalcular; não utilize valores antigos.'});
  if(action==='read'){
   const snapshot=existing?JSON.parse(existing.snapshot_json):fresh;
@@ -253,6 +254,8 @@ export async function payrollVacation54(action,c){
   const amount=cents54(body.amount_cents,'valor do comprovante',d);
   if(amount<=0||amount>fresh.gross_cents)fail54(d,'Informe o valor positivo efetivamente pago, limitado ao bruto das férias.','ADVANCE_AMOUNT');
   const paymentDate=day54(body.payment_date,d);
+  const today=new Intl.DateTimeFormat('en-CA',{timeZone:'America/Fortaleza',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
+  if(paymentDate>today)fail54(d,'A data informada é futura: só registre pagamento já realizado.','ADVANCE_FUTURE_DATE');
   if(paymentDate>fresh.end_date)fail54(d,'Data de pagamento posterior ao fim do gozo; revise o documento.','ADVANCE_DATE');
   const reference=String(body.external_reference||'').trim();
   if(reference.length<6||reference.length>160)fail54(d,'Informe o número ou identificação do comprovante (6–160 caracteres).','PAYMENT_REFERENCE');
