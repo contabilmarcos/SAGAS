@@ -59,11 +59,14 @@ async function employeeView50(env,companyId,employeeId,occurrenceId,d){
   x.push({...a,days:dayCount50(a.start_date,a.end_date)});
   byCycle.set(a.cycle_id,x);
  }
+ const reserved=(await env.DB.prepare("SELECT cycle_id,COALESCE(SUM(abono_days),0) AS days FROM payroll_vacation_models89 WHERE company_id=? AND employee_id=? AND abono_days>0 GROUP BY cycle_id").bind(companyId,employeeId).all()).results||[];
+ const abonos=new Map(reserved.map(x=>[x.cycle_id,Number(x.days)]));
  const enriched=cycles.map(p=>{
   const items=byCycle.get(p.id)||[],used=items.reduce((n,x)=>n+x.days,0);
-  const remaining=p.entitled_days-used;
+  const reserved_abono_days=abonos.get(p.id)||0;
+  const remaining=p.entitled_days-used-reserved_abono_days;
   const largest=items.reduce((n,x)=>Math.max(n,x.days),0);
-  return {...p,used_days:used,remaining_days:remaining,period_count:items.length,fragments:items,
+  return {...p,used_days:used,reserved_abono_days,remaining_days:remaining,period_count:items.length,fragments:items,
    warnings:[
     ...(remaining<0?['Saldo negativo: conferir alterações das ocorrências já vinculadas.']:[]),
     ...(items.length>3?['Há mais de três frações de gozo.']:[]),
@@ -140,13 +143,13 @@ export async function payrollVacation50(action,c){
   if(!group||group.period_count>=3||group.remaining_days<occ.days)
    vacationFail50(d,'Saldo insuficiente ou limite de três frações atingido.','VACATION_BALANCE');
   const lengths=group.fragments.map(x=>x.days).concat(occ.days);
-  const remainder=cycle.entitled_days-lengths.reduce((n,x)=>n+x,0);
+  const remainder=cycle.entitled_days-group.reserved_abono_days-lengths.reduce((n,x)=>n+x,0);
   if(lengths.some(x=>x<5)||lengths.length>1 && Math.max(...lengths)<14 && remainder<14 || lengths.length===1 && lengths[0]<cycle.entitled_days && Math.max(lengths[0],remainder)<14)
    vacationFail50(d,'O fracionamento impede um período mínimo de 14 dias. Reveja os dias e o saldo.','VACATION_FRACTION');
   // Uma instrução condicional atômica protege saldo e frações contra duas gravações simultâneas.
   const insert=await env.DB.prepare(
-   "INSERT INTO payroll_vacation_links50(occurrence_id,cycle_id,company_id,employee_id,notes,created_by) SELECT ?,?,?,?,?,? WHERE (SELECT COUNT(*) FROM payroll_vacation_links50 WHERE cycle_id=? AND company_id=?)<3 AND (SELECT COALESCE(SUM(CAST(julianday(o.end_date)-julianday(o.start_date)+1 AS INTEGER)),0) FROM payroll_vacation_links50 l JOIN payroll_employee_occurrences o ON o.id=l.occurrence_id AND o.company_id=l.company_id WHERE l.cycle_id=? AND l.company_id=?) + ? <= ?")
-   .bind(occurrenceId,cycleId,companyId,occ.employee_id,notes,auth.user.id,cycleId,companyId,cycleId,companyId,occ.days,cycle.entitled_days).run();
+   "INSERT INTO payroll_vacation_links50(occurrence_id,cycle_id,company_id,employee_id,notes,created_by) SELECT ?,?,?,?,?,? WHERE (SELECT COUNT(*) FROM payroll_vacation_links50 WHERE cycle_id=? AND company_id=?)<3 AND (SELECT COALESCE(SUM(CAST(julianday(o.end_date)-julianday(o.start_date)+1 AS INTEGER)),0) FROM payroll_vacation_links50 l JOIN payroll_employee_occurrences o ON o.id=l.occurrence_id AND o.company_id=l.company_id WHERE l.cycle_id=? AND l.company_id=?) + ? + (SELECT COALESCE(SUM(abono_days),0) FROM payroll_vacation_models89 WHERE cycle_id=? AND company_id=?) <= ?")
+   .bind(occurrenceId,cycleId,companyId,occ.employee_id,notes,auth.user.id,cycleId,companyId,cycleId,companyId,occ.days,cycleId,companyId,cycle.entitled_days).run();
   if(!insert.meta?.changes)vacationFail50(d,'Saldo ou frações foram modificados durante a conferência. Atualize a tela.','VACATION_CONCURRENT');
   await d.audit(env,{companyId,userId:auth.user.id,action:'LINK',entity:'payroll_vacation_links50',entityId:occurrenceId,request,before:null,after:{cycle_id:cycleId,days:occ.days,notes}});
   return {linked:true,occurrence_id:occurrenceId,cycle_id:cycleId};
@@ -157,6 +160,8 @@ export async function payrollVacation50(action,c){
   const existing=await env.DB.prepare("SELECT cycle_id,notes FROM payroll_vacation_links50 WHERE occurrence_id=? AND company_id=? AND employee_id=? LIMIT 1").bind(occurrenceId,companyId,occ.employee_id).first();
   if(!existing)vacationFail50(d,'Férias sem vínculo para desfazer.','NOT_FOUND',404);
   await openCompetences50(env,companyId,occ.start_date,occ.end_date,d);
+  const calc=await env.DB.prepare("SELECT occurrence_id FROM payroll_vacation_models89 WHERE occurrence_id=? AND company_id=? LIMIT 1").bind(occurrenceId,companyId).first();
+  if(calc)vacationFail50(d,'Exclua a memória de médias e abono antes de desvincular as férias.','VACATION_CALC_EXISTS');
   await env.DB.prepare("DELETE FROM payroll_vacation_links50 WHERE occurrence_id=? AND company_id=?").bind(occurrenceId,companyId).run();
   await d.audit(env,{companyId,userId:auth.user.id,action:'UNLINK',entity:'payroll_vacation_links50',entityId:occurrenceId,request,before:existing,after:null});
   return {unlinked:true,occurrence_id:occurrenceId};
