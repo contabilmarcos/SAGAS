@@ -164,6 +164,10 @@ export async function payrollVacation54(action,c){
  // mesmo que a origem tenha sido editada ou excluída; não exige modelo atual.
  const existingBefore=await getPrep54(env,companyId,id);
  const declaredBefore=await advance54(env,companyId,id);
+ if(action==='cancel-advance'||action==='void'){
+  const reconciled=await env.DB.prepare("SELECT id FROM payroll_vacation_reconciliations55 WHERE company_id=? AND occurrence_id=? AND status='RECONCILED' LIMIT 1").bind(companyId,id).first();
+  if(reconciled)fail54(d,'Anule a conciliação do recibo antes de alterar a preparação ou a referência de adiantamento.','RECONCILIATION_ACTIVE');
+ }
  if(action==='cancel-advance'){
   if(!declaredBefore)fail54(d,'Não existe declaração de adiantamento ativa.','NOT_FOUND',404);
   if(body.confirmation!=='CANCELAR REFERENCIA')
