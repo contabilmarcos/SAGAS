@@ -64,7 +64,8 @@ function payrollVacation90Result(month,occ,data){
  const rows=[
   ['Total bruto das férias e abono',data.gross_estimate_cents],
   ['Férias gozadas + 1/3 sujeitos à tributação',data.taxable_vacation_cents],
-  ['Abono + 1/3 excluídos da tributação',data.nontaxable_abono_cents],
+  ['Abono pecuniário excluído da tributação',data.nontaxable_abono_cents],
+  ['1/3 sobre abono sujeito ao IRRF',data.taxable_abono_third_cents],
   ['INSS incremental estimado (competências)',data.estimated_inss_cents],
   ['IRRF estimado no pagamento',data.irrf.irrf_cents],
   ['Líquido somente ilustrativo',data.estimated_net_cents],
