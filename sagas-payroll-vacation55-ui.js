@@ -48,9 +48,11 @@ async function payrollVacation55Open(month,occ){
   '<p class="help"><b>Nenhum desconto ou provento foi aplicado ao envelope mensal.</b> A apuração definitiva de INSS, FGTS e IRRF continua dependente da folha e do recibo homologado.</p>'+
   '<div class="form-actions"><button class="btn secondary" id="vac55Back" type="button">Voltar</button>'+
   (data.active&&can('payroll.manage')?'<button class="btn secondary" id="vac55Void" type="button">Anular conciliação</button>':'')+
+  (data.active?'<button class="btn primary" id="vac56Open" type="button">Prévia da folha mensal</button>':'')+
   '</div>',true);
  $('#vac55Back').onclick=()=>payrollVacation54Open(month,occ).catch(e=>toast(e.message,'error'));
  if($('#vac55Void'))$('#vac55Void').onclick=()=>payrollVacation55Void(month,occ);
+ if($('#vac56Open'))$('#vac56Open').onclick=()=>payrollVacation56Open(month,occ).catch(e=>toast(e.message,'error'));
  const form=$('#vac55Form');
  if(form)form.onsubmit=async ev=>{
   ev.preventDefault();const btn=form.querySelector('[type=submit]');btn.disabled=true;
