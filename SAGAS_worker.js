@@ -9713,7 +9713,7 @@ async function payrollMonthlySource35(env,companyId,competenceId,paymentDate){
   // v100: utilizacao apenas de memorias STAGED, com recibo VACATION aprovado,
   // fontes e encargos conciliados. Demais empregados seguem motor v35.
   const vacation100=await payrollVacationMonthly100(env,companyId,competenceId,paymentDate,{
-    HttpError,taxes:payrollTaxHistoricalWithDependents,
+    HttpError,ensureSchemaRevision,taxes:payrollTaxHistoricalWithDependents,
     monthlyIrrf:(gross,inssBalance,dep,date)=>{
       const t=histTable(HIST_IRRF,date.slice(0,7));
       const legal=inssBalance+dep*18959;
