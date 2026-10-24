@@ -121,6 +121,8 @@ export async function payrollVacation89(action,c){
  }
  if(action!=='save'&&action!=='delete')fail89(d,'Ação de férias inválida.','NOT_FOUND',404);
  await checkLocked89(env,companyId,x,d);
+ const preparation=await env.DB.prepare("SELECT id FROM payroll_vacation_processings54 WHERE company_id=? AND occurrence_id=? AND status='PREPARED' LIMIT 1").bind(companyId,occId).first();
+ if(preparation)fail89(d,'Existe preparação de férias ativa. Anule-a e cancele a referência de pagamento antes de alterar as médias ou o abono.','VACATION_PREPARATION_LOCK');
  if(prior&&(prior.cycle_id!==x.link.cycle_id||prior.occurrence_start!==x.start_date||prior.occurrence_end!==x.end_date)&&action==='save')
   fail89(d,'Ocorrência alterada desde a memória anterior. Exclua a memória e refaça.','VACATION_STALE');
  if(action==='delete'){
