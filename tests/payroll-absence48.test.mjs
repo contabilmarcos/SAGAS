@@ -40,13 +40,13 @@ test('não presume desconto se ocorrência não estiver classificada',async()=>{
  const snapshot=await payrollAbsenceSnapshot48({DB:db},'comp','2026-10',d);
  assert.match(snapshot.get('e1').blockers[0],/sem classificação/);
 });
-test('férias e afastamentos continuam bloqueados',async()=>{
+test('etapa 48 ignora férias que serão bloqueadas pela etapa 49',async()=>{
  const db={prepare(sql){return {bind(){return this},async all(){
   if(sql.includes('payroll_employee_occurrences o'))return{results:[{id:'o1',kind:'FERIAS',employee_id:'e1',start_date:'2026-10-07',end_date:'2026-10-07'}]};
   return{results:[]};
  }}}};
  const snapshot=await payrollAbsenceSnapshot48({DB:db},'comp','2026-10',d);
- assert.match(snapshot.get('e1').blockers[0],/processo específico/);
+ assert.equal(snapshot.size,0);
 });
 test('reajuste proporcional e falta simultânea exigem conferência de vigências',()=>{
  assert.throws(()=>payrollAbsenceAmounts48(salary,hours,'2026-10',{absences:[absence('2026-10-07')],adjustments:[],blockers:[]},[{effective_from:'2026-10-16',salary_cents:320000}],'PRORATE_CALENDAR',d),e=>e.code==='ABSENCE_SALARY_CHANGE_UNSUPPORTED');

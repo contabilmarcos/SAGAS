@@ -55,8 +55,8 @@ export async function payrollAbsenceSnapshot48(env,companyId,competence,d){
  const byEmployee=new Map();
  const get=id=>{if(!byEmployee.has(id))byEmployee.set(id,{absences:[],adjustments:[],blockers:[],warnings:[]});return byEmployee.get(id)};
  for(const o of data.occurrences){
+  if(o.kind!=='FALTA')continue; // Outras ocorrências tratadas na etapa 49, inclusive férias bloqueadas.
   const record=get(o.employee_id);
-  if(o.kind!=='FALTA'){record.blockers.push('Ocorrência de '+o.kind+' exige processo específico: '+o.start_date+'.');continue;}
   if(o.start_date!==o.end_date){record.blockers.push('Divida a falta de '+o.start_date+' a '+o.end_date+' em dias individuais antes de calcular.');continue;}
   if(o.start_date.slice(0,7)!==competence)continue;
   if(!['JUSTIFICADA','INJUSTIFICADA'].includes(o.classification)){

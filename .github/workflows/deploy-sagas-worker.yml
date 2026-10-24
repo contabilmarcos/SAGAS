@@ -23,6 +23,9 @@ on:
       - 'sagas-payroll-salary47-ui.js'
       - 'sagas-payroll-absence48.js'
       - 'sagas-payroll-absence48-ui.js'
+      - 'sagas-payroll-leave49.js'
+      - 'sagas-payroll-leave49-ui.js'
+      - 'tests/payroll-leave49.test.mjs'
       - 'tests/payroll-absence48.test.mjs'
       - 'tests/payroll-salary47.test.mjs'
       - 'tests/payroll-admission46.test.mjs'
@@ -72,6 +75,9 @@ jobs:
 
       - name: Testar faltas, atrasos e DSR confirmados
         run: node --test tests/payroll-absence48.test.mjs
+
+      - name: Testar licenças e afastamentos
+        run: node --test tests/payroll-leave49.test.mjs
 
       - name: Validar configuração e gerar Wrangler temporário
         env:
