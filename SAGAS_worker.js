@@ -5,8 +5,9 @@ import { payrollProvisions43, ensureProvisionLedger43 } from './sagas-payroll-pr
 import { payrollProvisionAccounting45 } from './sagas-payroll-provisions45.js';
 import { payrollAdmission46, payrollAdmissionSchema46, payrollAdmissionRead46, payrollAdmissionHistory46, payrollAdmissionSalary46 } from './sagas-payroll-admission46.js';
 import { payrollSalarySettings47, payrollSalarySchema47, payrollSalaryRead47, payrollSalaryHistory47, payrollSalaryAmount47 } from './sagas-payroll-salary47.js';
+import { payrollAbsence48, payrollAbsenceSchema48, payrollAbsenceSnapshot48, payrollAbsenceAmounts48 } from './sagas-payroll-absence48.js';
 import { payrollProvisionAccounting44 } from './sagas-payroll-provisions44.js';
-// SAGAS Worker v84 - Histórico salarial com padrão RM e fórmula proporcional opt-in | cumulativo desde v49
+// SAGAS Worker v85 - Falta, atraso e DSR confirmado com bases fiscais | cumulativo desde v49
 // ===== utils.js =====
 function json(data, status = 200, extraHeaders = {}) {
   return new Response(JSON.stringify(data), {
@@ -5692,7 +5693,7 @@ async function savePayroll(env,request,auth,companyId,kind,id,body){
   const table=payrollKindTable(kind);
   await requirePermission(env,auth.user.id,companyId,'payroll.manage');
   const before=id?await getPayroll(env,companyId,kind,id):null;
-  if(kind==='events'&&before&&['SALARIO_BASE','INSS_EMP','IRRF_EMP','FGTS_PATRONAL'].includes(before.code))
+  if(kind==='events'&&before&&['SALARIO_BASE','INSS_EMP','IRRF_EMP','FGTS_PATRONAL','FALTA_INJUSTIFICADA','ATRASO_MINUTOS','DSR_DESCONTO'].includes(before.code))
     throw new HttpError(409,'Evento automático da folha: não é permitido alterar seu cadastro. Configure apenas a contabilização.','AUTO_EVENT_LOCKED');
   const entryId=id||uuid();
   const name=cleanText(required(body.name,'nome'),200);
@@ -5717,7 +5718,7 @@ async function savePayroll(env,request,auth,companyId,kind,id,body){
     values.push(position.id,categoryId,departmentId,position.salary_cents,admissionDate,cc.id);
   }else if(kind==='events'){
     const code=cleanText(required(body.code,'código do evento'),30).toUpperCase();
-    if(['SALARIO_BASE','INSS_EMP','IRRF_EMP','FGTS_PATRONAL'].includes(code))
+    if(['SALARIO_BASE','INSS_EMP','IRRF_EMP','FGTS_PATRONAL','FALTA_INJUSTIFICADA','ATRASO_MINUTOS','DSR_DESCONTO'].includes(code))
       throw new HttpError(409,'Código reservado ao cálculo automático da folha. O evento já aparece no cadastro.','AUTO_EVENT_RESERVED');
     const type=payrollEventType(body.event_type),unit=payrollReferenceUnit(body.reference_unit);
     columns.push('code','event_type','reference_unit');values.push(code,type,unit);
@@ -5765,7 +5766,7 @@ async function deletePayroll(env,request,auth,companyId,kind,id){
   const table=payrollKindTable(kind);
   await requirePermission(env,auth.user.id,companyId,'payroll.manage');
   const before=await getPayroll(env,companyId,kind,id);
-  if(kind==='events'&&['SALARIO_BASE','INSS_EMP','IRRF_EMP','FGTS_PATRONAL'].includes(before.code))
+  if(kind==='events'&&['SALARIO_BASE','INSS_EMP','IRRF_EMP','FGTS_PATRONAL','FALTA_INJUSTIFICADA','ATRASO_MINUTOS','DSR_DESCONTO'].includes(before.code))
     throw new HttpError(409,'Evento automático da folha não pode ser excluído.','AUTO_EVENT_LOCKED');
   if(kind==='categories'||kind==='departments'||kind==='positions'){
     const column={categories:'category_id',departments:'department_id',positions:'position_id'}[kind];
@@ -9415,6 +9416,8 @@ async function payrollMonthlyPreparation34(env,companyId,competenceId,paymentDat
   const salarySettings=await payrollSalaryRead47(env,companyId,period.competence);
   const salaryMode=salarySettings?.mode||'RM_NEXT_MONTH';
   const salaryChangesByEmployee=await payrollSalaryHistory47(env,companyId,candidates,history,first,last,HttpError);
+  await ensureSchemaRevision(env,'payroll-absence48',1,()=>payrollAbsenceSchema48(env));
+  const absenceSnapshot=await payrollAbsenceSnapshot48(env,companyId,period.competence,{HttpError});
   // Funcionarios ja desligados no inicio da competencia nao compoem a folha mensal.
   // Quem foi desligado DURANTE o mes permanece para conferencia das verbas proporcionais.
   const allEmployees=candidates.filter(e=>history.functional.get(e.id)?.[0]?.situation!=='DESLIGADO');
@@ -9459,7 +9462,14 @@ async function payrollMonthlyPreparation34(env,companyId,competenceId,paymentDat
     const changedSalary=salaryChangesByEmployee.get(emp.id)||[];
     const otherChanges=[...(history.changesSchedule.get(emp.id)||[]),...(history.changesFunctional.get(emp.id)||[])];
     const occurrences=history.occurrences.get(emp.id)||[];
+    const absence=absenceSnapshot.get(emp.id)||null;
+    if(absence?.blockers?.length)for(const message of absence.blockers)add('FREQUENCIA',message);
+    if(absence?.warnings?.length)for(const message of absence.warnings)note('FREQUENCIA',message);
     const events=byEmployee.get(emp.id)||[];
+    if(absence&&((absence.absences||[]).some(x=>x.classification==='INJUSTIFICADA')||(absence.adjustments||[]).length)){
+      for(const m of events)if(m.event_type==='DESCONTO'&&/falta|atraso|dsr|repouso semanal/i.test((m.event_name||'')+' '+(m.event_code||'')))
+        add('DUPLICIDADE_FREQUENCIA','O evento '+m.event_code+' parece descontar falta, atraso ou DSR já lançado automaticamente. Remova a duplicidade antes de calcular.');
+    }
     if(!/^\d{5}$/.test(String(emp.employee_code||'')))add('ID_FUNCIONARIO','Funcionario sem ID sequencial valido.');
     if(!emp.cost_center_id||!emp.cost_center_code)
       add('CENTRO_CUSTO','Cadastre um centro de custo analítico para este funcionário antes do cálculo.');
@@ -9491,7 +9501,8 @@ async function payrollMonthlyPreparation34(env,companyId,competenceId,paymentDat
         note('REAJUSTE_PROPORCIONAL','Salário-base proporcional aos períodos do histórico, com divisor dos dias reais do mês.');
       }
     }
-    if(occurrences.length)add('OCORRENCIAS','Existem faltas, ferias, licencas ou afastamentos a tratar antes do calculo.');
+    // Faltas individuais confirmadas entram no desconto. Férias, licenças e
+    // afastamentos seguem bloqueados pelo controle de frequência acima.
     for(const ev of events){
       const rule=latest.get(ev.event_id);
       const evLabel=(ev.event_code||'?')+' ('+(ev.event_name||'evento')+')';
@@ -9515,7 +9526,9 @@ async function payrollMonthlyPreparation34(env,companyId,competenceId,paymentDat
       employee_name:emp.name,admission_date:emp.admission_date,
       salary_history:salary?centsToMoney(salary.salary_cents):null,
       monthly_hours:schedule?Number(schedule.monthly_hours_milli)/1000:null,
-      movement_count:events.length,salary_changes:changedSalary.length,
+      movement_count:events.length,absence_days:absence?.absences?.filter(x=>x.classification==='INJUSTIFICADA').length||0,
+      lateness_count:absence?.adjustments?.filter(x=>x.kind==='LATE').length||0,
+      dsr_count:absence?.adjustments?.filter(x=>x.kind==='DSR_LOSS').length||0,salary_changes:changedSalary.length,
       salary_change_mode:salaryMode,status:issues.length||common.length?'PENDENTE':'CADASTROS_COMPLETOS',
       blockers:issues,warnings:notes,blocker_count:issues.length});
   }
@@ -9535,7 +9548,7 @@ async function payrollMonthlyPreparation34(env,companyId,competenceId,paymentDat
 // ===== SAGAS Folha Etapa 35: processamento mensal versionado e NAO homologado =====
 // O cálculo mensal aceita admissão proporcional e histórico salarial conforme
 // parâmetros por empresa. Ocorrências e mudanças de jornada permanecem bloqueadas.
-function payrollMonthlyEmployeeCalc35(employee, movements, rules, dependents, competence, paymentDate, prorationMode,salaryMode,salaryChanges){
+function payrollMonthlyEmployeeCalc35(employee, movements, rules, dependents, competence, paymentDate, prorationMode,salaryMode,salaryChanges,attendance){
   const moneySafe=(value,label)=>{
     if(!Number.isSafeInteger(value)||value<0||value>99999999999)
       throw new HttpError(409,'Valor invalido no calculo de '+label+'.','DATA_INVALID');
@@ -9594,6 +9607,15 @@ function payrollMonthlyEmployeeCalc35(employee, movements, rules, dependents, co
       reference_text:mov.unit==='VALOR'?'Valor informado':mov.unit+': '+(mov.quantity_milli/1000),
       rule_version:rule.effective_from+'#'+rule.revision});
   }
+  // Frequência: descontos automáticos com classificação documental e DSR explícito.
+  const abs=payrollAbsenceAmounts48(salary,hours,competence,attendance,salaryChanges,salaryMode,{HttpError});
+  if(abs.discount_cents>paid)throw new HttpError(409,'Descontos de faltas, atrasos e DSR excedem o salário devido no período.','ABSENCE_EXCEEDS_PAY');
+  for(const x of abs.entries){
+    manualDiscounts+=x.amount_cents;
+    baseInss-=x.amount_cents; baseIrrf-=x.amount_cents; baseFgts-=x.amount_cents;
+    lines.push({event_id:null,event_code:x.event_code,event_name:x.event_name,
+      line_type:'DESCONTO',amount_cents:x.amount_cents,reference_text:x.reference_text,rule_version:'FREQUENCIA48'});
+  }
   for(const [n,v] of Object.entries({earnings,manualDiscounts,baseInss,baseIrrf,baseFgts}))moneySafe(v,n);
   // Para o caso mensal padrao, INSS do segurado incide sobre o total da base
   // contribuinte e IRRF sobre rendimentos tributaveis no mes de pagamento.
@@ -9647,6 +9669,7 @@ async function payrollMonthlySource35(env,companyId,competenceId,paymentDate){
   const history=await payrollEmployeeHistoricalContext(env,companyId,prep.first_date,prep.last_date);
   await payrollAdmissionHistory46(env,companyId,employees,prep.first_date,prep.last_date,history,HttpError);
   const changedSalary=await payrollSalaryHistory47(env,companyId,employees,history,prep.first_date,prep.last_date,HttpError);
+  const attendance=await payrollAbsenceSnapshot48(env,companyId,prep.competence.competence,{HttpError});
   const items=[];
   for(const emp of employees){
     const salary=history.salary.get(emp.employee_id)?.[0]||null;
@@ -9657,7 +9680,7 @@ async function payrollMonthlySource35(env,companyId,competenceId,paymentDate){
     const calculated=payrollMonthlyEmployeeCalc35({...emp,salary_cents:salary.salary_cents,
       monthly_hours_milli:schedule.monthly_hours_milli},relevant,rules,count,
       prep.competence.competence,paymentDate,prep.proration_settings?.mode||null,
-      prep.salary_change_settings?.mode||'RM_NEXT_MONTH',changedSalary.get(emp.employee_id)||[]);
+      prep.salary_change_settings?.mode||'RM_NEXT_MONTH',changedSalary.get(emp.employee_id)||[],attendance.get(emp.employee_id)||null);
     items.push(calculated);
   }
   const financialSafe=items.every(x=>[x.earnings_cents,x.deductions_cents,x.net_cents,x.inss_cents,
@@ -9667,7 +9690,7 @@ async function payrollMonthlySource35(env,companyId,competenceId,paymentDate){
   const fingerprint=await payrollProcessingSnapshotHash28({version:35,company_id:companyId,
     competence_id:competenceId,competence:prep.competence.competence,payment_date:paymentDate,
     proration_settings:prep.proration_settings,salary_change_settings:prep.salary_change_settings,
-    salary_changes:[...changedSalary.entries()],employee_inputs:employees,history_salary:items.map(x=>[x.employee_id,history.salary.get(x.employee_id)]),
+    salary_changes:[...changedSalary.entries()],attendance:[...attendance.entries()],employee_inputs:employees,history_salary:items.map(x=>[x.employee_id,history.salary.get(x.employee_id)]),
     history_schedule:items.map(x=>[x.employee_id,history.schedule.get(x.employee_id)]),
     history_functional:items.map(x=>[x.employee_id,history.functional.get(x.employee_id)]),
     movements,rules:[...rulesResult.results||[]],dependents:[...dependents.entries()],items});
@@ -10190,7 +10213,7 @@ async function payrollMovementCreate(env,request,auth,companyId,body){
   const period=await payrollReadOpenCompetence(env,companyId,required(body.competence_id,'competência'));
   const employee=await payrollReference(env,companyId,'employees',required(body.employee_id,'funcionário'),'Funcionário');
   const event=await payrollReference(env,companyId,'events',required(body.event_id,'evento'),'Evento');
-  if(['SALARIO_BASE','INSS_EMP','IRRF_EMP','FGTS_PATRONAL'].includes(event.code))
+  if(['SALARIO_BASE','INSS_EMP','IRRF_EMP','FGTS_PATRONAL','FALTA_INJUSTIFICADA','ATRASO_MINUTOS','DSR_DESCONTO'].includes(event.code))
     throw new HttpError(409,'Este evento é calculado automaticamente: não lance manualmente.','AUTO_EVENT_MOVEMENT_BLOCKED');
   const unit=event.reference_unit;
   const requestKey=String(required(body.request_key,'identificador da operação'));
@@ -10568,6 +10591,20 @@ async function route(request, env) {
   p=routeMatch(path,"/api/financial-payables/:id/cancel"); if(p&&method==="POST")return ok({payable:await cancelFinancialPayable(env,request,auth,companyId,p.id)});
   p=routeMatch(path,"/api/financial-payables/:id"); if(p&&method==="GET"){await requirePermission(env,auth.user.id,companyId,"financial.payable.read");const payable=await getFinancialPayable(env,companyId,p.id);if(payable.source_type==="PAYROLL_MONTHLY")await requirePermission(env,auth.user.id,companyId,"payroll.read");return ok({payable});}
 
+  // Etapa 48: conferência de falta, atraso e DSR com comprovação.
+  if(path==='/api/payroll/absences'&&(method==='GET'||method==='POST')){
+    await ensureSchemaRevision(env,'payroll-employee-numbers',1,()=>ensurePayrollEmployeeNumbersSchema(env));
+    return ok(await payrollAbsence48(method==='GET'?'list':
+      String(url.searchParams.get('action')||'add')==='classify'?'classify':'add',{
+      env,companyId,auth,request,competence:url.searchParams.get('competence'),
+      body:method==='POST'?await readJson(request):{},
+      d:{HttpError,requirePermission,ensureSchemaRevision,audit,uuid}
+    }));
+  }
+  p=routeMatch(path,'/api/payroll/absences/:id');
+  if(p&&method==='DELETE')return ok(await payrollAbsence48('delete',{
+    env,companyId,auth,request,id:p.id,d:{HttpError,requirePermission,ensureSchemaRevision,audit,uuid}
+  }));
   // Etapa 47: reajustes no mês — padrão RM ou fórmula proporcional explícita.
   if(path==='/api/payroll/salary-change-settings'&&(method==='GET'||method==='POST')){
     return ok(await payrollSalarySettings47(method==='GET'?'read':'save',{

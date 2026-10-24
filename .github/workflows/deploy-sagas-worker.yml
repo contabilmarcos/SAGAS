@@ -21,6 +21,9 @@ on:
       - 'sagas-payroll-admission46-ui.js'
       - 'sagas-payroll-salary47.js'
       - 'sagas-payroll-salary47-ui.js'
+      - 'sagas-payroll-absence48.js'
+      - 'sagas-payroll-absence48-ui.js'
+      - 'tests/payroll-absence48.test.mjs'
       - 'tests/payroll-salary47.test.mjs'
       - 'tests/payroll-admission46.test.mjs'
       - '.github/workflows/deploy-sagas-worker.yml'
@@ -66,6 +69,9 @@ jobs:
 
       - name: Testar mudanças salariais dentro do mês
         run: node --test tests/payroll-salary47.test.mjs
+
+      - name: Testar faltas, atrasos e DSR confirmados
+        run: node --test tests/payroll-absence48.test.mjs
 
       - name: Validar configuração e gerar Wrangler temporário
         env:

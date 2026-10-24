@@ -4,7 +4,10 @@ const AUTO_EVENTS38 = [
   ['SALARIO_BASE','Salário mensal','PROVENTO'],
   ['INSS_EMP','INSS do empregado','DESCONTO'],
   ['IRRF_EMP','IRRF do empregado','DESCONTO'],
-  ['FGTS_PATRONAL','FGTS patronal','INFORMATIVO']
+  ['FGTS_PATRONAL','FGTS patronal','INFORMATIVO'],
+  ['FALTA_INJUSTIFICADA','Falta não justificada','DESCONTO'],
+  ['ATRASO_MINUTOS','Atraso não justificado','DESCONTO'],
+  ['DSR_DESCONTO','Perda de DSR confirmada','DESCONTO']
 ];
 const codes38 = new Set(AUTO_EVENTS38.map(e=>e[0]));
 const fail38=(d,message,code='PAYROLL_EVENT_ACCOUNTING_BLOCKED',status=409)=>{
