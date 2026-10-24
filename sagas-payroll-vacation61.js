@@ -26,7 +26,7 @@ export async function payrollVacationStageSchema61(env){
   env.DB.prepare("CREATE UNIQUE INDEX IF NOT EXISTS ux_vacation_stage61_employee_month ON payroll_vacation_monthly_stage61(company_id,employee_id,competence_id) WHERE status='STAGED'"),
   env.DB.prepare("CREATE INDEX IF NOT EXISTS ix_vacation_stage61_occurrence ON payroll_vacation_monthly_stage61(company_id,occurrence_id,status)"),
   env.DB.prepare("CREATE TRIGGER IF NOT EXISTS tr_vac_stage61_no_monthly BEFORE INSERT ON payroll_vacation_monthly_stage61 WHEN NOT EXISTS (SELECT 1 FROM payroll_competences WHERE id=NEW.competence_id AND company_id=NEW.company_id AND status='OPEN') OR EXISTS (SELECT 1 FROM payroll_calc_runs WHERE company_id=NEW.company_id AND competence_id=NEW.competence_id AND process_kind='MONTHLY') BEGIN SELECT RAISE(ABORT,'VACATION_STAGE_COMPETENCE_CONFLICT'); END"),
-  env.DB.prepare("CREATE TRIGGER IF NOT EXISTS tr_vac_stage61_block_monthly BEFORE INSERT ON payroll_calc_runs WHEN NEW.process_kind='MONTHLY' AND EXISTS (SELECT 1 FROM payroll_vacation_monthly_stage61 WHERE company_id=NEW.company_id AND competence_id=NEW.competence_id AND status='STAGED') BEGIN SELECT RAISE(ABORT,'VACATION_MONTHLY_STAGE_PENDING'); END")
+  env.DB.prepare("CREATE TRIGGER IF NOT EXISTS tr_vac_stage61_block_monthly BEFORE INSERT ON payroll_calc_runs WHEN NEW.process_kind='MONTHLY' AND EXISTS (SELECT 1 FROM payroll_vacation_monthly_stage61 WHERE company_id=NEW.company_id AND competence_id=NEW.competence_id AND status='STAGED') AND NEW.source_fingerprint NOT LIKE 'VACATION100:%' BEGIN SELECT RAISE(ABORT,'VACATION_MONTHLY_NOT_SIGNED'); END")
  ]);
 }
 async function staged61(env,companyId,occurrenceId){
