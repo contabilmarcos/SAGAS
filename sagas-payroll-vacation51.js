@@ -163,11 +163,14 @@ export async function payrollVacation89(action,c){
  const jsonCommission=JSON.stringify(commission),jsonAdditions=JSON.stringify(additions);
  const args=[occId,x.link.cycle_id,companyId,x.employee_id,x.start_date,x.end_date,jsonCommission,jsonAdditions,abono,requestDate,notes,revision,auth.user.id];
  try{
+  // A condição é reavaliada pelo próprio SQLite na instrução de gravação,
+  // evitando que uma reserva ultrapasse o direito após outra sessão vincular dias.
+  const guard="(SELECT COALESCE(SUM(CAST(julianday(o.end_date)-julianday(o.start_date)+1 AS INTEGER)),0) FROM payroll_vacation_links50 l JOIN payroll_employee_occurrences o ON o.id=l.occurrence_id AND o.company_id=l.company_id WHERE l.company_id=? AND l.cycle_id=?) + ? <= ?";
   const sql=prior?
-   "UPDATE payroll_vacation_models89 SET commission_json=?,additional_json=?,abono_days=?,request_date=?,notes=?,revision=?,updated_by=?,updated_at=CURRENT_TIMESTAMP WHERE occurrence_id=? AND company_id=? AND cycle_id=? AND revision=?":
-   "INSERT INTO payroll_vacation_models89(occurrence_id,cycle_id,company_id,employee_id,occurrence_start,occurrence_end,commission_json,additional_json,abono_days,request_date,notes,revision,updated_by) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)";
-  const write=prior?await env.DB.prepare(sql).bind(jsonCommission,jsonAdditions,abono,requestDate,notes,revision,auth.user.id,occId,companyId,x.link.cycle_id,prior.revision).run():
-    await env.DB.prepare(sql).bind(...args).run();
+   "UPDATE payroll_vacation_models89 SET commission_json=?,additional_json=?,abono_days=?,request_date=?,notes=?,revision=?,updated_by=?,updated_at=CURRENT_TIMESTAMP WHERE occurrence_id=? AND company_id=? AND cycle_id=? AND revision=? AND "+guard:
+   "INSERT INTO payroll_vacation_models89(occurrence_id,cycle_id,company_id,employee_id,occurrence_start,occurrence_end,commission_json,additional_json,abono_days,request_date,notes,revision,updated_by) SELECT ?,?,?,?,?,?,?,?,?,?,?,?,? WHERE "+guard;
+  const write=prior?await env.DB.prepare(sql).bind(jsonCommission,jsonAdditions,abono,requestDate,notes,revision,auth.user.id,occId,companyId,x.link.cycle_id,prior.revision,companyId,x.link.cycle_id,abono,x.link.entitled_days).run():
+    await env.DB.prepare(sql).bind(...args,companyId,x.link.cycle_id,abono,x.link.entitled_days).run();
   if(!write.meta?.changes)fail89(d,'Não foi possível gravar devido à alteração concorrente.','VERSION_CONFLICT');
  }catch(e){
   if(String(e?.message||'').includes('UNIQUE'))fail89(d,'Memória/abono já registrado por outro usuário. Recarregue a tela.','ABONO_CONFLICT');
