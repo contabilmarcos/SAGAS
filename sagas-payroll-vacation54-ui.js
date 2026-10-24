@@ -29,10 +29,12 @@ async function payrollVacation54Open(month,occ){
   (adv?'<p class="help"><b>Pagamento externo declarado:</b> '+esc(payrollVacation54Money(adv.amount_cents))+
    ', em '+esc(adv.date)+', comprovante '+esc(adv.external_reference)+'. Informação declaratória, ainda não conciliada ao financeiro.</p>':
    '<p class="help">Nenhum adiantamento externo declarado neste processamento.</p>')+
+  (adv?'<p class="help">Distribuição exclusivamente matemática: gozo '+esc(payrollVacation54Money(res.mathematical_gozo_share_cents))+
+   ' · abono '+esc(payrollVacation54Money(res.mathematical_abono_share_cents))+'. Sem lançamento no envelope.</p>':'')+
   '<p class="section-title">Proposta de compensação por competência — NÃO LANÇAR</p>'+
   '<div class="table-wrap"><table class="table"><thead><tr><th>Competência</th><th>Dias</th><th>Férias</th><th>1/3</th><th>Bruto gozo</th><th>Rateio ilustrativo adiantamento</th></tr></thead><tbody>'+
   (rows||'<tr><td colspan="6">Sem divisão disponível.</td></tr>')+'</tbody></table></div>'+
-  '<p class="help">Rateio ilustrativo por bruto de férias gozadas. O pagamento antecipado, o abono e os tributos exigem conciliação própria antes da compensação real.</p>'+
+  '<p class="help">Rateio ilustrativo. O valor declarado é separado proporcionalmente entre gozo e abono; tributos e pagamento exigem conciliação antes da compensação real. NÃO LANÇAR na folha.</p>'+
   '<p class="section-title">Pendências e restrições</p><ul class="help">'+
   (blockerRows||'<li>Sem alertas adicionais de cadastro; a homologação tributária e financeira continua pendente.</li>')+'</ul>'+
   (res.note?'<p class="help">'+esc(res.note)+'</p>':'')+
