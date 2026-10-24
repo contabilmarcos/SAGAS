@@ -88,6 +88,8 @@ async function source55(c,d){
   const period=await env.DB.prepare("SELECT id,status FROM payroll_competences WHERE company_id=? AND competence=? LIMIT 1").bind(companyId,p.competence).first();
   if(!period){blockers.push({code:'COMPETENCIA_NAO_CADASTRADA',message:'Cadastre a competência '+p.competence+'.'});continue;}
   if(period.status!=='OPEN')blockers.push({code:'COMPETENCIA_FECHADA',message:'A competência '+p.competence+' está fechada.'});
+  const manual=await env.DB.prepare("SELECT v.code FROM payroll_movements m JOIN payroll_events v ON v.id=m.event_id AND v.company_id=m.company_id WHERE m.company_id=? AND m.competence_id=? AND m.employee_id=? AND (v.code IN ('FERIAS_GOZO','TERCO_FERIAS','ABONO_FERIAS','TERCO_ABONO_FERIAS','ADIANTAMENTO_FERIAS','INSS_FERIAS','IRRF_FERIAS','FGTS_FERIAS') OR UPPER(v.code) LIKE '%FERIA%') LIMIT 1").bind(companyId,period.id,record.snapshot.employee.id).first();
+  if(manual)blockers.push({code:'MOVIMENTO_FERIAS_EXISTENTE',message:'Há movimento manual de férias ('+manual.code+') na competência '+p.competence+'. Remova/concilie antes de gerar o plano.'});
   const run=await env.DB.prepare("SELECT id,status,revision FROM payroll_calc_runs WHERE company_id=? AND competence_id=? AND process_kind='MONTHLY' ORDER BY revision DESC LIMIT 1").bind(companyId,period.id).first();
   if(run?.status==='APPROVED'||run?.status==='REVIEWED')
    blockers.push({code:'FOLHA_JA_CONFERIDA',message:'A folha de '+p.competence+' já foi revisada/aprovada.'});
@@ -120,7 +122,7 @@ export async function payrollVacation55(action,c){
  const reference=await source55({...c,id},d);
  const prepared=reference.record?.prepared||false,advance=reference.record?.advance||null;
  const stored=active?JSON.parse(active.plan_json):null;
- const stale=!!active&&(
+ const stale=!!active&&(reference.blockers.some(x=>x.code!=='PAGAMENTO_FORA_DO_PRAZO')||
   !reference.source || active.processing_fingerprint!==reference.source.source_fingerprint ||
   active.processing_id!==reference.record?.processing?.id ||
   active.advance_id!==advance?.id ||
