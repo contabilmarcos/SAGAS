@@ -117,7 +117,7 @@ export async function payrollVacation56(action,c){
   periods.push(await baseMonth56(env,companyId,employeeId,id,period.competence,period,d));
  }
  const signature=await d.hash({
-  code_version:56,plan,receipt_recorded_at:details.reconciled.recorded_at,
+  code_version:56,plan,reconciliation_id:details.reconciled.id,receipt_recorded_at:details.reconciled.recorded_at,
   processing_id:original.processing.id,original_model:original.snapshot.model_revision,
   months:periods.map(x=>({competence:x.competence,salary:x.salary_cents,dependents:x.dependents,
    existing_run:x.existing_run,center:x.existing_center,blockers:x.blockers}))
@@ -138,6 +138,10 @@ export async function payrollVacation56(action,c){
  for(let i=0;i<plan.periods.length;i++){
   const item=plan.periods[i],month=periods[i],payment=actualDate56(body.payment_dates[i],d);
   month.pay_date=payment;
+  const exact=await env.DB.prepare("SELECT COUNT(*) AS total FROM payroll_employee_dependents WHERE company_id=? AND employee_id=? AND irrf_eligible=1 AND effective_from<=? AND (effective_to IS NULL OR effective_to>=?)").bind(companyId,employeeId,payment,payment).first();
+  month.dependents=Number(exact?.total||0);
+  if(!Number.isInteger(month.dependents)||month.dependents<0||month.dependents>100)
+   blockers.add('DEPENDENTES_IRRF',month.competence+': dependentes inválidos na data efetiva de pagamento.');
   if(month.blockers.length){for(const issue of month.blockers)blockers.add(issue.code,month.competence+': '+issue.message);continue}
   if(payment.slice(0,4)!=='2026'){
    blockers.add('TABELA_PAGAMENTO',month.competence+': somente pagamento em 2026 nesta fase.');continue;
