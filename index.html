@@ -474,6 +474,7 @@ async function renderPayrollMovements(){
 <div class="sagas-payroll-process-group" role="group" aria-label="Pré-fechamento e protocolos">
         <div class="sagas-payroll-process-heading">Pré-fechamento e protocolos</div>
         <button type="button" id="pmvAdmission46" class="sagas-payroll-process-item" role="menuitem">Parâmetros de admissão proporcional</button>
+        <button type="button" id="pmvSalary47" class="sagas-payroll-process-item" role="menuitem">Alterações salariais no mês</button>
         <button type="button" id="pmvPrepare34" class="sagas-payroll-process-item" role="menuitem">Preparar folha mensal</button>
         <button type="button" id="pmvCalc35" class="sagas-payroll-process-item" role="menuitem">Calcular folha mensal</button>
         <button type="button" id="pmvProvisions42" class="sagas-payroll-process-item" role="menuitem">Prévia de provisões (férias e 13º)</button>
@@ -556,6 +557,7 @@ async function renderPayrollMovements(){
   if($('#pmvPrepare34'))$('#pmvPrepare34').onclick=()=>payrollPreparationScreen34().catch(err=>toast(err.message,'error'));
   if($('#pmvCalc35'))$('#pmvCalc35').onclick=()=>payrollMonthlyCalcScreen35().catch(err=>toast(err.message,'error'));
   if($('#pmvAdmission46'))$('#pmvAdmission46').onclick=()=>payrollAdmission46Open().catch(err=>toast(err.message,'error'));
+  if($('#pmvSalary47'))$('#pmvSalary47').onclick=()=>payrollSalary47Open().catch(err=>toast(err.message,'error'));
   if($('#pmvProvisions42'))$('#pmvProvisions42').onclick=()=>payrollProvisions42Open().catch(err=>toast(err.message,'error'));
   if($('#pmvLedger43'))$('#pmvLedger43').onclick=()=>payrollProvision43Ledger().catch(err=>toast(err.message,'error'));
   $$('[data-pmv-delete]').forEach(b=>b.onclick=()=>payrollMovementDelete(b.dataset.pmvDelete));
@@ -7059,5 +7061,6 @@ setInterval(()=>checkSessionAccess(),180000);
 <script src="sagas-payroll-provisions44-ui.js"></script>
 <script src="sagas-payroll-provisions45-ui.js"></script>
 <script src="sagas-payroll-admission46-ui.js"></script>
+<script src="sagas-payroll-salary47-ui.js"></script>
 </body>
 </html>

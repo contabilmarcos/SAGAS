@@ -4,8 +4,9 @@ import { payrollProvisions42 } from './sagas-payroll-provisions42.js';
 import { payrollProvisions43, ensureProvisionLedger43 } from './sagas-payroll-provisions43.js';
 import { payrollProvisionAccounting45 } from './sagas-payroll-provisions45.js';
 import { payrollAdmission46, payrollAdmissionSchema46, payrollAdmissionRead46, payrollAdmissionHistory46, payrollAdmissionSalary46 } from './sagas-payroll-admission46.js';
+import { payrollSalarySettings47, payrollSalarySchema47, payrollSalaryRead47, payrollSalaryHistory47, payrollSalaryAmount47 } from './sagas-payroll-salary47.js';
 import { payrollProvisionAccounting44 } from './sagas-payroll-provisions44.js';
-// SAGAS Worker v83 - Admissão proporcional parametrizada por empresa e vigência | cumulativo desde v49
+// SAGAS Worker v84 - Histórico salarial com padrão RM e fórmula proporcional opt-in | cumulativo desde v49
 // ===== utils.js =====
 function json(data, status = 200, extraHeaders = {}) {
   return new Response(JSON.stringify(data), {
@@ -9410,6 +9411,10 @@ async function payrollMonthlyPreparation34(env,companyId,competenceId,paymentDat
   await ensureSchemaRevision(env,'payroll-admission-proration46',1,()=>payrollAdmissionSchema46(env));
   const prorationSettings=await payrollAdmissionRead46(env,companyId,period.competence);
   await payrollAdmissionHistory46(env,companyId,candidates,first,last,history,HttpError);
+  await ensureSchemaRevision(env,'payroll-salary-change47',1,()=>payrollSalarySchema47(env));
+  const salarySettings=await payrollSalaryRead47(env,companyId,period.competence);
+  const salaryMode=salarySettings?.mode||'RM_NEXT_MONTH';
+  const salaryChangesByEmployee=await payrollSalaryHistory47(env,companyId,candidates,history,first,last,HttpError);
   // Funcionarios ja desligados no inicio da competencia nao compoem a folha mensal.
   // Quem foi desligado DURANTE o mes permanece para conferencia das verbas proporcionais.
   const allEmployees=candidates.filter(e=>history.functional.get(e.id)?.[0]?.situation!=='DESLIGADO');
@@ -9451,8 +9456,8 @@ async function payrollMonthlyPreparation34(env,companyId,competenceId,paymentDat
     const salary=history.salary.get(emp.id)?.[0]||null;
     const schedule=history.schedule.get(emp.id)?.[0]||null;
     const functional=history.functional.get(emp.id)?.[0]||null;
-    const changes=[...(history.changesSalary.get(emp.id)||[]),
-      ...(history.changesSchedule.get(emp.id)||[]),...(history.changesFunctional.get(emp.id)||[])];
+    const changedSalary=salaryChangesByEmployee.get(emp.id)||[];
+    const otherChanges=[...(history.changesSchedule.get(emp.id)||[]),...(history.changesFunctional.get(emp.id)||[])];
     const occurrences=history.occurrences.get(emp.id)||[];
     const events=byEmployee.get(emp.id)||[];
     if(!/^\d{5}$/.test(String(emp.employee_code||'')))add('ID_FUNCIONARIO','Funcionario sem ID sequencial valido.');
@@ -9475,7 +9480,17 @@ async function payrollMonthlyPreparation34(env,companyId,competenceId,paymentDat
         add('ADMISSAO_DIA_31','Admissão no dia 31 com mês comercial exige tratamento específico; consulte o departamento pessoal.');
       else note('ADMISSAO_PROPORCIONAL','Salário proporcional por '+(prorationSettings.mode==='COMMERCIAL_30'?'30 dias comerciais':'dias efetivos do mês')+'.');
     }
-    if(changes.length)add('ALTERACAO_NO_MES','Alteracao de salario, jornada ou situacao durante o mes: exige calculo por vigencias.');
+    if(otherChanges.length)add('ALTERACAO_FUNCIONAL_OU_JORNADA','Mudança de jornada ou situação no mês ainda exige processamento específico.');
+    if(changedSalary.length){
+      if(salaryMode==='RM_NEXT_MONTH')note('REAJUSTE_MES_SEGUINTE','Padrão RM: '+changedSalary.length+' alteração(ões) salarial(is) aplicadas na folha seguinte.');
+      else {
+        if(emp.admission_date>first&&prorationSettings?.mode!=='CALENDAR')
+          add('ADMISSAO_REAJUSTE','Para admissão com reajuste no mesmo mês, configure admissão pelos dias do calendário.');
+        if(events.some(x=>x.unit!=='VALOR'))
+          add('FORMULAS_COM_REAJUSTE','Existem eventos por hora, dia ou percentual: confira as fórmulas por vigência antes de proporcionalizar.');
+        note('REAJUSTE_PROPORCIONAL','Salário-base proporcional aos períodos do histórico, com divisor dos dias reais do mês.');
+      }
+    }
     if(occurrences.length)add('OCORRENCIAS','Existem faltas, ferias, licencas ou afastamentos a tratar antes do calculo.');
     for(const ev of events){
       const rule=latest.get(ev.event_id);
@@ -9500,12 +9515,14 @@ async function payrollMonthlyPreparation34(env,companyId,competenceId,paymentDat
       employee_name:emp.name,admission_date:emp.admission_date,
       salary_history:salary?centsToMoney(salary.salary_cents):null,
       monthly_hours:schedule?Number(schedule.monthly_hours_milli)/1000:null,
-      movement_count:events.length,status:issues.length||common.length?'PENDENTE':'CADASTROS_COMPLETOS',
+      movement_count:events.length,salary_changes:changedSalary.length,
+      salary_change_mode:salaryMode,status:issues.length||common.length?'PENDENTE':'CADASTROS_COMPLETOS',
       blockers:issues,warnings:notes,blocker_count:issues.length});
   }
   const totalBlockers=items.reduce((n,x)=>n+x.blocker_count,0)+common.length;
   return {kind:'PREPARACAO_MENSAL_ETAPA_34',competence:period,payment_date:payment,
     proration_settings:prorationSettings?{effective_from:prorationSettings.effective_from,revision:prorationSettings.revision,mode:prorationSettings.mode}:null,
+    salary_change_settings:salarySettings?{effective_from:salarySettings.effective_from,revision:salarySettings.revision,mode:salarySettings.mode}:{mode:'RM_NEXT_MONTH',default:true},
     first_date:first,last_date:last,employees:items,employee_count:items.length,
     complete_employee_count:common.length?0:items.filter(x=>x.blocker_count===0).length,
     pending_employee_count:items.filter(x=>x.blocker_count>0).length,
@@ -9516,9 +9533,9 @@ async function payrollMonthlyPreparation34(env,companyId,competenceId,paymentDat
 }
 
 // ===== SAGAS Folha Etapa 35: processamento mensal versionado e NAO homologado =====
-// O processamento usa somente a competencia normal integral. Excecoes ou dados
-// incompletos sao bloqueados antes de qualquer gravacao; nao gera titulos ou contabilidade.
-function payrollMonthlyEmployeeCalc35(employee, movements, rules, dependents, competence, paymentDate, prorationMode){
+// O cálculo mensal aceita admissão proporcional e histórico salarial conforme
+// parâmetros por empresa. Ocorrências e mudanças de jornada permanecem bloqueadas.
+function payrollMonthlyEmployeeCalc35(employee, movements, rules, dependents, competence, paymentDate, prorationMode,salaryMode,salaryChanges){
   const moneySafe=(value,label)=>{
     if(!Number.isSafeInteger(value)||value<0||value>99999999999)
       throw new HttpError(409,'Valor invalido no calculo de '+label+'.','DATA_INVALID');
@@ -9528,16 +9545,19 @@ function payrollMonthlyEmployeeCalc35(employee, movements, rules, dependents, co
   if(salary===0)throw new HttpError(409,'Salario historico zerado.','CALCULATION_BLOCKED');
   const hours=Number(employee.monthly_hours_milli);
   if(!Number.isSafeInteger(hours)||hours<=0)throw new HttpError(409,'Jornada mensal ausente.','CALCULATION_BLOCKED');
-  const admissionPay=payrollAdmissionSalary46(salary,employee.admission_date,competence,prorationMode,HttpError);
-  const paid=admissionPay.salary_cents;
+  const computedPay=payrollSalaryAmount47(salary,employee.admission_date,competence,prorationMode,
+    salaryMode,salaryChanges,payrollAdmissionSalary46,HttpError);
+  const paid=computedPay.salary_cents;
   let earnings=paid,manualDiscounts=0,baseInss=paid,baseIrrf=paid,baseFgts=paid;
   const lines=[{event_id:null,event_code:'SALARIO_BASE',event_name:'Salario mensal',
-    line_type:'PROVENTO',amount_cents:paid,reference_text:admissionPay.reference_text,rule_version:null}];
+    line_type:'PROVENTO',amount_cents:paid,reference_text:computedPay.reference_text,rule_version:null}];
   for(const mov of movements){
     const rule=rules.get(mov.event_id);
     if(!rule||[rule.inss,rule.irrf,rule.fgts].some(x=>!['SIM','NAO'].includes(x)))
       throw new HttpError(409,'Evento sem parametros fiscais vigentes: '+mov.event_code+'.','CALCULATION_BLOCKED');
     let value;
+    if(salaryMode==='PRORATE_CALENDAR'&&salaryChanges?.length&&mov.unit!=='VALOR')
+      throw new HttpError(409,'Evento com fórmula depende de vigências salariais: '+mov.event_code+'. Confira antes de calcular.','SALARY_FORMULA_REQUIRES_REVIEW');
     if(mov.unit==='VALOR')value=moneySafe(Number(mov.amount_cents),mov.event_code);
     else{
       if(Number(rule.calculation_code)!==0||!String(rule.formula_text||'').trim())
@@ -9626,6 +9646,7 @@ async function payrollMonthlySource35(env,companyId,competenceId,paymentDate){
   const dependents=new Map((depResult.results||[]).map(x=>[x.employee_id,Number(x.total)]));
   const history=await payrollEmployeeHistoricalContext(env,companyId,prep.first_date,prep.last_date);
   await payrollAdmissionHistory46(env,companyId,employees,prep.first_date,prep.last_date,history,HttpError);
+  const changedSalary=await payrollSalaryHistory47(env,companyId,employees,history,prep.first_date,prep.last_date,HttpError);
   const items=[];
   for(const emp of employees){
     const salary=history.salary.get(emp.employee_id)?.[0]||null;
@@ -9635,7 +9656,8 @@ async function payrollMonthlySource35(env,companyId,competenceId,paymentDate){
     const relevant=movements.filter(m=>m.employee_id===emp.employee_id);
     const calculated=payrollMonthlyEmployeeCalc35({...emp,salary_cents:salary.salary_cents,
       monthly_hours_milli:schedule.monthly_hours_milli},relevant,rules,count,
-      prep.competence.competence,paymentDate,prep.proration_settings?.mode||null);
+      prep.competence.competence,paymentDate,prep.proration_settings?.mode||null,
+      prep.salary_change_settings?.mode||'RM_NEXT_MONTH',changedSalary.get(emp.employee_id)||[]);
     items.push(calculated);
   }
   const financialSafe=items.every(x=>[x.earnings_cents,x.deductions_cents,x.net_cents,x.inss_cents,
@@ -9644,7 +9666,8 @@ async function payrollMonthlySource35(env,companyId,competenceId,paymentDate){
   // O fingerprint inclui todas as entradas relevantes e a saida deterministica.
   const fingerprint=await payrollProcessingSnapshotHash28({version:35,company_id:companyId,
     competence_id:competenceId,competence:prep.competence.competence,payment_date:paymentDate,
-    proration_settings:prep.proration_settings,employee_inputs:employees,history_salary:items.map(x=>[x.employee_id,history.salary.get(x.employee_id)]),
+    proration_settings:prep.proration_settings,salary_change_settings:prep.salary_change_settings,
+    salary_changes:[...changedSalary.entries()],employee_inputs:employees,history_salary:items.map(x=>[x.employee_id,history.salary.get(x.employee_id)]),
     history_schedule:items.map(x=>[x.employee_id,history.schedule.get(x.employee_id)]),
     history_functional:items.map(x=>[x.employee_id,history.functional.get(x.employee_id)]),
     movements,rules:[...rulesResult.results||[]],dependents:[...dependents.entries()],items});
@@ -10545,6 +10568,14 @@ async function route(request, env) {
   p=routeMatch(path,"/api/financial-payables/:id/cancel"); if(p&&method==="POST")return ok({payable:await cancelFinancialPayable(env,request,auth,companyId,p.id)});
   p=routeMatch(path,"/api/financial-payables/:id"); if(p&&method==="GET"){await requirePermission(env,auth.user.id,companyId,"financial.payable.read");const payable=await getFinancialPayable(env,companyId,p.id);if(payable.source_type==="PAYROLL_MONTHLY")await requirePermission(env,auth.user.id,companyId,"payroll.read");return ok({payable});}
 
+  // Etapa 47: reajustes no mês — padrão RM ou fórmula proporcional explícita.
+  if(path==='/api/payroll/salary-change-settings'&&(method==='GET'||method==='POST')){
+    return ok(await payrollSalarySettings47(method==='GET'?'read':'save',{
+      env,companyId,auth,request,competence:url.searchParams.get('competence'),
+      body:method==='POST'?await readJson(request):{},
+      d:{HttpError,requirePermission,ensureSchemaRevision,audit,uuid}
+    }));
+  }
   // Etapa 46: divisor do salário proporcional na admissão (mensalista).
   if(path==='/api/payroll/monthly-proration'&&(method==='GET'||method==='POST')){
     return ok(await payrollAdmission46(method==='GET'?'read':'save',{
