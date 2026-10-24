@@ -148,3 +148,28 @@ export async function payrollVacationStage61(action,c){
   ready_for_monthly_posting:false,ready_for_finance:false,ready_for_accounting:false,
   note:'Memoria de eventos armazenada, SEM inclusao nos envelopes MONTHLY. Proxima etapa: adaptar calculo e fechamento com incidencias e hash de origem.'};
 }
+
+
+// Protecao temporaria do calculo MONTHLY enquanto a integracao integral
+// das incidencias de ferias nao estiver implementada e homologada.
+export async function payrollVacationBlockMonthly61(env,companyId,competence,d){
+ const name=String(competence||'');
+ if(!/^(19|20)\d{2}-(0[1-9]|1[0-2])$/.test(name))
+  error61(d,'Competencia invalida.','INVALID_COMPETENCE');
+ const existence=(await env.DB.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('payroll_vacation_monthly_stage61','payroll_vacation_envelope_links58')").all()).results||[];
+ const has=x=>existence.some(t=>t.name===x);
+ if(has('payroll_vacation_monthly_stage61')){
+  const stage=await env.DB.prepare("SELECT id FROM payroll_vacation_monthly_stage61 WHERE company_id=? AND competence=? AND status='STAGED' LIMIT 1").bind(companyId,name).first();
+  if(stage)error61(d,'A competencia '+name+' possui memoria de ferias ainda nao integrada ao calculo mensal. Nao calcule, revise ou feche a folha sem conciliacao.','VACATION_STAGE_NOT_INTEGRATED');
+ }
+ if(has('payroll_vacation_envelope_links58')){
+  const rows=(await env.DB.prepare("SELECT r.plan_json FROM payroll_vacation_envelope_links58 l JOIN payroll_vacation_reconciliations55 r ON r.id=l.reconciliation_id AND r.company_id=l.company_id JOIN payroll_calc_runs v ON v.id=l.run_id AND v.company_id=l.company_id AND v.process_kind='VACATION' WHERE l.company_id=? AND l.status='ACTIVE' AND v.status IN ('CALCULATED','REVIEWED','APPROVED')").bind(companyId).all()).results||[];
+  for(const row of rows){
+   let plan;
+   try{plan=JSON.parse(row.plan_json)}catch{error61(d,'Recibo de ferias registrado com dados invalidos.','VACATION_PLAN_INVALID')}
+   if(plan?.periods?.some(p=>p.competence===name))
+    error61(d,'Ha ferias de '+name+' registradas fora da folha mensal. A integracao tributaria precisa ser concluida antes de calcular ou fechar MONTHLY.','VACATION_MONTHLY_INTEGRATION_PENDING');
+  }
+ }
+ return {blocked:false};
+}
