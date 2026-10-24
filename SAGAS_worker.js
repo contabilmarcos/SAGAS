@@ -9965,6 +9965,12 @@ async function payrollMonthlyConference36(env,companyId,runId){
       source=await payrollMonthlySource35(env,companyId,run.competence_id,run.payment_date);
       if(source.fingerprint!==run.source_fingerprint)
         block('FONTES_ALTERADAS','Cadastros, eventos ou parametros mudaram apos o calculo. Recalcule antes de conferir.');
+      if(run.source_fingerprint.startsWith('VACATION100:')){
+        const expectedStages=source.vacation_records||[];
+        if(expectedStages.length!==used.length||
+           expectedStages.some(x=>!used.some(u=>u.stage_id===x.id&&u.employee_id===x.employee_id&&u.source_fingerprint===x.source_fingerprint)))
+          block('FERIAS_VINCULOS_INCOMPLETOS','Faltam vínculos entre o cálculo mensal e as memórias de férias.');
+      }
       if(source.items.length!==detail.envelopes.length)block('FUNCIONARIOS_DIVERGENTES','Numero de funcionarios foi alterado.');
       const expected=new Map(source.items.map(x=>[x.employee_id,x]));
       for(const saved of detail.envelopes){
@@ -11019,9 +11025,18 @@ async function route(request, env) {
   const payroll37Deps={HttpError,requirePermission,audit,ensureSchemaRevision,
     payrollMonthlyRunDetail35,payrollMonthlyConference36,
     buildInternalPostedEntry,centsToMoney,nextPayableNumber,uuid};
-  const payroll37Call=(action,runId,body,eventId)=>payrollFinance39(action,{
-    env,companyId,auth,request,runId,body,eventId,d:payroll37Deps
-  });
+  const payroll37Call=async(action,runId,body,eventId)=>{
+    // v100: integracao de ferias na FOLHA nao homologa novos pagamentos,
+    // financeiro ou contabilizacao. A liberacao dessas partidas exige a etapa propria.
+    if(runId&&['preview','integrate'].includes(action)){
+      const use=await env.DB.prepare("SELECT source_fingerprint FROM payroll_calc_runs WHERE company_id=? AND id=? LIMIT 1").bind(companyId,runId).first();
+      if(String(use?.source_fingerprint||'').startsWith('VACATION100:'))
+        throw new HttpError(409,'Esta folha contém férias conciliadas; financeiro e contabilidade exigem homologação própria.','VACATION_FINANCE_NOT_READY');
+    }
+    return payrollFinance39(action,{
+      env,companyId,auth,request,runId,body,eventId,d:payroll37Deps
+    });
+  };
   p=routeMatch(path,'/api/payroll/events/:id/accounting');
   if(p){
     // A natureza usa o cadastro de Compras. Garantir que ele exista mesmo
