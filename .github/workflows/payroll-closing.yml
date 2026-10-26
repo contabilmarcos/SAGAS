@@ -4,8 +4,13 @@ on:
     branches: [main]
     paths:
       - 'sagas-payroll-closing69.js'
+      - 'sagas-payroll-provisions42.js'
+      - 'sagas-payroll-provisions43.js'
+      - 'sagas-payroll-provisions42-ui.js'
+      - 'sagas-payroll-provisions43-ui.js'
       - 'sagas-payroll-vacation67.js'
       - 'tests/payroll-closing-v107.test.mjs'
+      - 'tests/payroll-provisions-v108.test.mjs'
       - '.github/workflows/payroll-closing.yml'
   workflow_dispatch:
 jobs:
@@ -20,6 +25,12 @@ jobs:
         with:
           node-version: '22'
       - name: Conferir sintaxe do modulo
-        run: node --check sagas-payroll-closing69.js
+        run: |
+          node --check sagas-payroll-closing69.js
+          node --check sagas-payroll-provisions42.js
+          node --check sagas-payroll-provisions43.js
+          node --check sagas-payroll-provisions42-ui.js
+          node --check sagas-payroll-provisions43-ui.js
+          node --check SAGAS_worker.js
       - name: Executar testes do fechamento
-        run: node --test tests/payroll-closing-v107.test.mjs
+        run: node --test tests/payroll-closing-v107.test.mjs tests/payroll-provisions-v108.test.mjs
