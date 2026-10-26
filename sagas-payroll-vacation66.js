@@ -77,6 +77,8 @@ async function active66(env,companyId,occurrenceId){
  ).bind(companyId,occurrenceId).first();
 }
 export async function payrollVacationAdvanceEvidence66(env,companyId,occurrenceId,d){
+ const exists=await env.DB.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='payroll_vacation_advance_payments66' LIMIT 1").first();
+ if(!exists)return {linked:false,payment_verified:false,status:'NOT_CONFIGURED'};
  const current=await active66(env,companyId,occurrenceId);
  if(!current)return {linked:false,payment_verified:false};
  try{
