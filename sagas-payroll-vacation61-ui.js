@@ -196,7 +196,57 @@ async function payrollVacation63Open(month,occ,runId){
    '<p class="help">Prévia patronal será verificada após fechamento da competência.</p>')+
   '<p class="help"><b>Financeiro e contabilidade permanecem bloqueados nesta versão.</b></p>'+
   '<div class="form-actions"><button type="button" class="btn secondary" id="vac101Back">Voltar</button>'+
+  '<button type="button" class="btn primary" id="vac102Preview">Prévia contábil das férias</button>'+
   '<button type="button" class="btn secondary" id="vac101Reload">Atualizar</button></div>',true);
  $('#vac101Back').onclick=()=>payrollVacation61Open(month,occ).catch(e=>toast(e.message,'error'));
  $('#vac101Reload').onclick=()=>payrollVacation63Open(month,occ,runId).catch(e=>toast(e.message,'error'));
+ if($('#vac102Preview'))$('#vac102Preview').onclick=()=>payrollVacation64Open(month,occ,runId).catch(e=>toast(e.message,'error'));
+}
+
+async function payrollVacation64Open(month,occ,runId){
+ const x=await api('/api/payroll/monthly-runs/'+encodeURIComponent(runId)+'/vacation-accounting-preview');
+ if(!x.applicable){
+  openModal('Férias — prévia contábil (v102)',esc(occ.employee_name||''),
+   '<p class="help">'+esc(x.note||'Sem férias integradas neste processamento.')+'</p>'+
+   '<div class="form-actions"><button class="btn secondary" id="vac102Back" type="button">Voltar</button></div>',true);
+  $('#vac102Back').onclick=()=>payrollVacation63Open(month,occ,runId).catch(e=>toast(e.message,'error'));
+  return;
+ }
+ const rows=(x.items||[]).map(item=>{
+  const reserve=(item.provisions||[]).map(comp=>{
+   const p=comp.provision;
+   return '<tr><td>'+esc(item.employee_name||item.employee_code||'')+'</td>'+
+    '<td>'+esc(comp.description)+'</td>'+
+    '<td>'+esc(vacation99Money(comp.earned_cents))+'</td>'+
+    '<td>'+esc(p?vacation99Money(p.remaining_operational_cents):'Não disponível')+'</td>'+
+    '<td>'+esc(p?vacation99Money(p.used_cents):'Não disponível')+'</td>'+
+    '<td>'+esc(p?vacation99Money(p.unposted_use_cents):'Não disponível')+'</td></tr>';
+  }).join('');
+  return '<p class="section-title">'+esc(item.employee_name||item.employee_code||'Funcionário')+'</p>'+
+   '<p class="help">Líquido do recibo externo: '+esc(vacation99Money(item.advance.receipt_net_cents))+
+   ' · Pagamento informado: '+esc(item.advance.paid_at_declared||'Sem data')+
+   ' · Referência: '+esc(item.advance.document_ref||'Não informada')+
+   '. A declaração não é comprovação bancária.</p>'+
+   '<p class="help">Nesta competência: férias '+esc(vacation99Money(item.current_competence.vacation_cents))+
+   ', terço '+esc(vacation99Money(item.current_competence.third_cents))+
+   ', adiantamento bruto compensado '+esc(vacation99Money(item.current_competence.gross_compensation_cents))+
+   ', INSS residual '+esc(vacation99Money(item.current_competence.inss_monthly_residual_cents))+
+   ', líquido da folha '+esc(vacation99Money(item.current_competence.net_monthly_cents))+'.</p>'+
+   '<div class="table-wrap"><table class="table"><thead><tr><th>Funcionário</th><th>Componente</th>'+
+   '<th>Verba do mês</th><th>Saldo operacional</th><th>Baixas registradas</th>'+
+   '<th>Baixas não contabilizadas</th></tr></thead><tbody>'+reserve+'</tbody></table></div>';
+ }).join('');
+ const issues=(x.problems||[]).map(p=>'<li><b>'+esc(p.code)+'</b> — '+esc(p.message)+'</li>').join('');
+ const warnings=(x.warnings||[]).map(m=>'<li>'+esc(m)+'</li>').join('');
+ openModal('Férias — prévia contábil (v102)',
+  esc(occ.employee_name||'Funcionário')+' · '+esc(x.run?.competence||''),
+  '<p class="help"><b>Somente conferência.</b> Nenhum lançamento, pagamento, guia ou baixa de provisão será criado.</p>'+
+  rows+
+  '<p class="section-title">Pendências</p>'+
+  (issues?'<ul class="help">'+issues+'</ul>':'<p class="help">Nenhuma pendência detectada nos controles consultados.</p>')+
+  '<p class="section-title">Cuidados de contabilização</p><ul class="help">'+warnings+'</ul>'+
+  '<div class="form-actions"><button class="btn secondary" id="vac102Back" type="button">Voltar</button>'+
+  '<button class="btn secondary" id="vac102Reload" type="button">Atualizar prévia</button></div>',true);
+ $('#vac102Back').onclick=()=>payrollVacation63Open(month,occ,runId).catch(e=>toast(e.message,'error'));
+ $('#vac102Reload').onclick=()=>payrollVacation64Open(month,occ,runId).catch(e=>toast(e.message,'error'));
 }
