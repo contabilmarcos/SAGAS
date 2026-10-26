@@ -26,6 +26,7 @@ import { payrollVacationAdvance66, payrollVacationAdvanceSchema66 } from './saga
 import { payrollVacationProvision67 } from './sagas-payroll-vacation67.js';
 import { payrollVacationUseLink68, payrollVacationUseLinkSchema68 } from './sagas-payroll-vacation68.js';
 import { payrollMonthlyEndToEnd69 } from './sagas-payroll-closing69.js';
+import { payrollThirteenth70 } from './sagas-payroll-thirteenth70.js';
 import { payrollProvisionAccounting44 } from './sagas-payroll-provisions44.js';
 // SAGAS Worker v96 - Registro auditável do envelope próprio VACATION de férias | cumulativo desde v49
 // ===== utils.js =====
@@ -10965,6 +10966,22 @@ async function route(request, env) {
       competence:url.searchParams.get('competence'),
       body:method==='POST'?await readJson(request):{},
       d:{HttpError,requirePermission,ensureSchemaRevision,audit,uuid}
+    }));
+  }
+  // v109: apuracao separada do 13o, com registro documental de adiantamento externo.
+  if(path==='/api/payroll/thirteenth/preview'&&method==='GET'||
+     path==='/api/payroll/thirteenth/advances'&&(method==='GET'||method==='POST')||
+     path==='/api/payroll/thirteenth/advances/void'&&method==='POST'){
+    await ensureSchemaRevision(env,'payroll-employee-history',1,()=>ensurePayrollEmployeeRecordsSchema(env));
+    await ensureSchemaRevision(env,'payroll-employee-cost-center39',1,()=>ensurePayrollCostCenter39(env));
+    await ensureSchemaRevision(env,'payroll-employee-numbers',1,()=>ensurePayrollEmployeeNumbersSchema(env));
+    const action=path.endsWith('/preview')?'preview':path.endsWith('/void')?'void':method==='POST'?'declare':'advances';
+    const body=method==='POST'?await readJson(request):{};
+    return ok(await payrollThirteenth70(action,{
+      env,companyId,auth,request,body,
+      year:url.searchParams.get('year'),phase:url.searchParams.get('phase'),
+      d:{HttpError,requirePermission,ensureSchemaRevision,audit,uuid,
+       hash:payrollProcessingSnapshotHash28,taxes:payrollTaxHistoricalWithDependents}
     }));
   }
   // v106: roteiro completo de fechamento de folha em uma consulta.
