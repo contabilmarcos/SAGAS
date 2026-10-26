@@ -10992,6 +10992,7 @@ async function route(request, env) {
         provision:id=>payrollProvisions42({
           env,companyId,auth,request,runId:id,
           d:{HttpError,requirePermission,payrollMonthlyRunDetail35,payrollMonthlyConference36,
+            hash:payrollProcessingSnapshotHash28,
             readEmployerSettings:competence=>payrollEmployer40('read',{
               env,companyId,auth,request,competence,
               d:{HttpError,requirePermission,ensureSchemaRevision,audit,uuid}
@@ -11074,6 +11075,7 @@ async function route(request, env) {
         preview42:run=>payrollProvisions42({
           env,companyId,auth,request,runId:run,
           d:{HttpError,requirePermission,payrollMonthlyRunDetail35,payrollMonthlyConference36,
+            hash:payrollProcessingSnapshotHash28,
             readEmployerSettings:competence=>payrollEmployer40('read',{
               env,companyId,auth,request,competence,
               d:{HttpError,requirePermission,ensureSchemaRevision,audit,uuid}
@@ -11088,6 +11090,7 @@ async function route(request, env) {
     await ensureSchemaRevision(env,'payroll-calculation-foundation',1,()=>ensurePayrollCalculationFoundation34(env));
     await ensureSchemaRevision(env,'payroll-monthly-review',1,()=>ensurePayrollMonthlyReviewSchema36(env));
     const d={HttpError,requirePermission,payrollMonthlyRunDetail35,payrollMonthlyConference36,
+      hash:payrollProcessingSnapshotHash28,
       readEmployerSettings:competence=>payrollEmployer40('read',{
         env,companyId,auth,request,competence,
         d:{HttpError,requirePermission,ensureSchemaRevision,audit,uuid}
