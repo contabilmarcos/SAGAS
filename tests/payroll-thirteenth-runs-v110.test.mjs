@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {payrollThirteenth71} from '../sagas-payroll-thirteenth71.js';
 
 function mock(){
- const writes=[],saved=[],logs=[];
+ const writes=[],saved=[],envelopes=[],logs=[];
  const employee={id:'employee1',name:'Funcionário',admission_date:'2026-01-01',active:1,
   cost_center_id:'cc1',cost_center_code:'001',employee_number:1,salary_cents:300000,situation:'ATIVO'};
  const context={
@@ -17,6 +17,7 @@ function mock(){
       if(sql.includes('FROM payroll_employee_dependents'))return {results:[]};
       if(sql.includes('FROM payroll_thirteenth_advances70 WHERE'))return {results:[]};
       if(sql.includes('FROM payroll_thirteenth_runs71 WHERE'))return {results:saved};
+      if(sql.includes('FROM payroll_thirteenth_envelopes71 WHERE'))return {results:envelopes};
       throw Error('SQL inesperado em all: '+sql);
      },
      first:async()=>{
@@ -40,7 +41,7 @@ function mock(){
    taxes:()=>({inss_cents:0,irrf_cents:0,inss_table_from:'2026-01',irrf_table_from:'2026-01'})
   }
  };
- return {context,writes,saved,logs};
+ return {context,writes,saved,envelopes,logs};
 }
 test('registrar calculo de 13 cria memoria e envelopes mas nao cria financeiro',async()=>{
  const t=mock();
@@ -73,4 +74,29 @@ test('historico retorna lista do ano e fase sem efeitos financeiros',async()=>{
  assert.equal(result.year,'2026');
  assert.deepEqual(result.runs,[]);
  assert.equal(t.writes.length,0);
+});
+
+test('aprova ultima revisao imutavel conferida sem gerar pagamento',async()=>{
+ const t=mock();
+ const {payrollThirteenth70}=await import('../sagas-payroll-thirteenth70.js');
+ const preview=await payrollThirteenth70('preview',t.context);
+ t.saved.push({
+  id:'r1',company_id:'company1',calendar_year:'2026',phase:'FIRST',
+  revision:1,status:'CALCULATED',source_fingerprint:preview.source_fingerprint,
+  employee_count:1,gross_cents:300000,advance_cents:150000,
+  inss_cents:0,irrf_cents:0,fgts_cents:12000,net_cents:150000
+ });
+ t.envelopes.push({
+  employee_id:'employee1',employee_code:'00001',employee_name:'Funcionário',
+  cost_center_id:'cc1',avos:12,salary_cents:300000,gross_cents:300000,
+  advance_cents:150000,inss_cents:0,irrf_cents:0,fgts_cents:12000,
+  net_cents:150000,snapshot_json:JSON.stringify(preview.items[0])
+ });
+ const approved=await payrollThirteenth71('approve',{...t.context,body:{
+  run_id:'r1',confirmation:'APROVAR CALCULO 13'
+ }});
+ assert.equal(approved.approved,true);
+ assert.equal(approved.payment_generated,false);
+ assert.equal(approved.accounting_generated,false);
+ assert.equal(t.writes.length,1);
 });
