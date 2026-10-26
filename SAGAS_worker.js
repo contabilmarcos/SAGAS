@@ -20,6 +20,7 @@ import { payrollVacationBridge60 } from './sagas-payroll-vacation60.js';
 import { payrollVacationStage61, payrollVacationBlockMonthly61 } from './sagas-payroll-vacation61.js';
 import { payrollVacationMonthly100, payrollVacationMonthlySchema100 } from './sagas-payroll-vacation62.js';
 import { payrollVacationClosure63 } from './sagas-payroll-vacation63.js';
+import { payrollVacationAccounting64 } from './sagas-payroll-vacation64.js';
 import { payrollProvisionAccounting44 } from './sagas-payroll-provisions44.js';
 // SAGAS Worker v96 - Registro auditável do envelope próprio VACATION de férias | cumulativo desde v49
 // ===== utils.js =====
@@ -11095,6 +11096,29 @@ async function route(request, env) {
     });
     await payroll37Call('settings');
     return ok(await payrollVacationClosure63({
+      env,companyId,auth,request,runId:p.id,
+      d:{HttpError,requirePermission,
+        monthlyRunDetail:payrollMonthlyRunDetail35,
+        monthlyConference:payrollMonthlyConference36,
+        employerPreview:runId=>payrollEmployer40('preview',{
+          env,companyId,auth,request,runId,
+          d:{HttpError,requirePermission,ensureSchemaRevision,
+            payrollMonthlyRunDetail35,payrollMonthlyConference36}
+        })}
+    }));
+  }
+  // v102: concilia pagamento externo, folha mensal, provisões e
+  // naturezas por centro de custo, apenas consulta documental (GET).
+  p=routeMatch(path,'/api/payroll/monthly-runs/:id/vacation-accounting-preview');
+  if(p&&method==='GET'){
+    await ensureSchemaRevision(env,'payroll-calculation-foundation',1,()=>ensurePayrollCalculationFoundation34(env));
+    await ensureSchemaRevision(env,'payroll-monthly-review',1,()=>ensurePayrollMonthlyReviewSchema36(env));
+    await ensureSchemaRevision(env,'payroll-vacation-monthly-use100',1,()=>payrollVacationMonthlySchema100(env));
+    await ensureSchemaRevision(env,'purchasing',1,async()=>{
+      await ensurePurchasingSchema(env);await ensurePurchaseIntegrationSchema(env);await ensureRmPurchasingSchema(env);
+    });
+    await payroll37Call('settings');
+    return ok(await payrollVacationAccounting64({
       env,companyId,auth,request,runId:p.id,
       d:{HttpError,requirePermission,
         monthlyRunDetail:payrollMonthlyRunDetail35,
