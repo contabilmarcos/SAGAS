@@ -246,7 +246,86 @@ async function payrollVacation64Open(month,occ,runId){
   (issues?'<ul class="help">'+issues+'</ul>':'<p class="help">Nenhuma pendência detectada nos controles consultados.</p>')+
   '<p class="section-title">Cuidados de contabilização</p><ul class="help">'+warnings+'</ul>'+
   '<div class="form-actions"><button class="btn secondary" id="vac102Back" type="button">Voltar</button>'+
+  '<button class="btn primary" id="vac103Open" type="button">Conferir partidas (v103)</button>'+
   '<button class="btn secondary" id="vac102Reload" type="button">Atualizar prévia</button></div>',true);
  $('#vac102Back').onclick=()=>payrollVacation63Open(month,occ,runId).catch(e=>toast(e.message,'error'));
  $('#vac102Reload').onclick=()=>payrollVacation64Open(month,occ,runId).catch(e=>toast(e.message,'error'));
+ if($('#vac103Open'))$('#vac103Open').onclick=()=>payrollVacation65Open(month,occ,runId).catch(e=>toast(e.message,'error'));
+}
+
+async function payrollVacation65Open(month,occ,runId){
+ const url='/api/payroll/monthly-runs/'+encodeURIComponent(runId)+'/vacation-accounting-package';
+ const data=await api(url);
+ if(!data.applicable){
+  openModal('Férias — memória contábil (v103)',esc(occ.employee_name||''),
+   '<p class="help">'+esc(data.note||'Sem férias integradas no cálculo mensal.')+'</p>'+
+   '<div class="form-actions"><button type="button" id="vac103Back" class="btn secondary">Voltar</button></div>',true);
+  $('#vac103Back').onclick=()=>payrollVacation64Open(month,occ,runId).catch(e=>toast(e.message,'error'));
+  return;
+ }
+ const issues=(data.problems||[]).map(p=>'<li><b>'+esc(p.code)+'</b> — '+esc(p.message)+'</li>').join('');
+ const warnings=(data.warnings||[]).map(w=>'<li>'+esc(w)+'</li>').join('');
+ const rows=(data.lines||[]).map(l=>'<tr>'+
+  '<td>'+esc(l.employee_code||'—')+'</td><td>'+esc(l.event_code||'')+'</td>'+
+  '<td>'+esc(l.nature_code||'')+'</td><td>'+esc(l.cost_center_code||'')+'</td>'+
+  '<td>'+esc(l.side)+'</td><td>'+esc(l.account_code||'')+'</td>'+
+  '<td>'+esc(vacation99Money(l.amount_cents))+'</td></tr>').join('');
+ const documented=data.recorded;
+ const current=data.recorded_current;
+ openModal('Férias — memória das partidas (v103)',esc(occ.employee_name||'')+
+  ' · competência '+esc(data.run?.competence||''),
+  '<p class="help"><b>Preparação, não contabilização.</b> As partidas abaixo são propostas com base na natureza orçamentária de cada evento e no centro de custo. Nenhum lançamento, baixa, título financeiro ou pagamento será criado.</p>'+
+  '<p>Conferência: <b>'+esc(!documented?'Não registrada':current?'Registrada':'Registrada com fonte alterada')+'</b></p>'+
+  '<p>Débitos <b>'+esc(vacation99Money(data.sums?.debit_cents))+'</b> · Créditos <b>'+
+  esc(vacation99Money(data.sums?.credit_cents))+'</b> · Líquido da folha <b>'+
+  esc(vacation99Money(data.sums?.monthly_net_cents))+'</b>.</p>'+
+  '<div class="table-wrap"><table class="table"><thead><tr><th>Funcionário</th><th>Evento</th>'+
+  '<th>Natureza</th><th>Centro de custo</th><th>D/C</th><th>Conta</th><th>Valor</th></tr></thead>'+
+  '<tbody>'+rows+'</tbody></table></div>'+
+  '<p class="section-title">Pendências</p>'+
+  (issues?'<ul class="help">'+issues+'</ul>':'<p class="help">Sem pendências nos controles consultados.</p>')+
+  '<p class="section-title">Observações</p><ul class="help">'+warnings+'</ul>'+
+  '<div class="form-actions"><button type="button" class="btn secondary" id="vac103Back">Voltar</button>'+
+  (!documented&&can('payroll.manage')?
+   '<button type="button" class="btn primary" id="vac103Record">Registrar conferência</button>':'')+
+  (documented&&can('payroll.manage')?
+   '<button type="button" class="btn danger" id="vac103Void">Anular conferência</button>':'')+
+  '<button type="button" class="btn secondary" id="vac103Reload">Atualizar</button></div>',true);
+ $('#vac103Back').onclick=()=>payrollVacation64Open(month,occ,runId).catch(e=>toast(e.message,'error'));
+ $('#vac103Reload').onclick=()=>payrollVacation65Open(month,occ,runId).catch(e=>toast(e.message,'error'));
+ if($('#vac103Record'))$('#vac103Record').onclick=()=>{
+  openModal('Registrar memória contábil',esc(occ.employee_name||''),
+   '<p class="help">Será salvo apenas o histórico de conferência. Esta ação não cria lançamento contábil nem pagamento.</p>'+
+   '<form id="vac103RecordForm"><label class="field"><span>Digite REGISTRAR CONFERENCIA FERIAS</span>'+
+   '<input name="confirmation" autocomplete="off" required></label>'+
+   '<div class="form-actions"><button type="button" class="btn secondary" id="vac103Cancel">Cancelar</button>'+
+   '<button type="submit" class="btn primary">Registrar memória</button></div></form>',true);
+  $('#vac103Cancel').onclick=()=>payrollVacation65Open(month,occ,runId).catch(e=>toast(e.message,'error'));
+  $('#vac103RecordForm').onsubmit=async e=>{
+   e.preventDefault();const form=e.currentTarget,button=form.querySelector('[type="submit"]');button.disabled=true;
+   try{
+    await api(url,{method:'POST',body:{action:'record',run_id:runId,
+     expected_fingerprint:data.fingerprint,confirmation:form.elements.confirmation.value}});
+    toast('Memória de conferência contábil registrada. Sem lançamento ou pagamento.');
+    await payrollVacation65Open(month,occ,runId);
+   }catch(err){toast(err.message||String(err),'error');button.disabled=false}
+  };
+ };
+ if($('#vac103Void'))$('#vac103Void').onclick=()=>{
+  openModal('Anular memória de conferência',esc(occ.employee_name||''),
+   '<form id="vac103VoidForm"><label class="field"><span>Justificativa</span>'+
+   '<textarea name="notes" minlength="15" maxlength="600" required></textarea></label>'+
+   '<label class="field"><span>Digite ANULAR CONFERENCIA FERIAS</span>'+
+   '<input name="confirmation" autocomplete="off" required></label>'+
+   '<div class="form-actions"><button type="submit" class="btn danger">Anular memória</button></div></form>',true);
+  $('#vac103VoidForm').onsubmit=async e=>{
+   e.preventDefault();const form=e.currentTarget,button=form.querySelector('[type="submit"]');button.disabled=true;
+   try{
+    await api(url,{method:'POST',body:{action:'void',run_id:runId,
+     notes:form.elements.notes.value,confirmation:form.elements.confirmation.value}});
+    toast('Memória anulada, preservando histórico.');
+    await payrollVacation65Open(month,occ,runId);
+   }catch(err){toast(err.message||String(err),'error');button.disabled=false}
+  };
+ };
 }
