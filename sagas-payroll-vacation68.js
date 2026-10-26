@@ -1,5 +1,6 @@
 // SAGAS Folha v105 — vínculo explícito entre ocorrência e baixa de provisão.
 // Não constitui, baixa ou contabiliza provisões: associa movimento já registrado.
+import { payrollVacationProvisionJournal67 } from './sagas-payroll-vacation67.js';
 function fail68(d,code,message,status=409){throw new d.HttpError(status,message,code)}
 const AMOUNTS68={FERIAS:'remuneration_cents',TERCO_FERIAS:'constitutional_third_cents'};
 export async function payrollVacationUseLinkSchema68(env){
@@ -83,6 +84,11 @@ export async function payrollVacationUseLink68(action,c){
     movement.posting_kind!=='USE'||movement.journal_status!=='POSTED'||
     movement.document_ref!==source.document_ref)
   fail68(d,'MOVEMENT_NOT_ELIGIBLE','Baixa precisa corresponder ao funcionário, documento, competência, componente e lançamento postado.');
+ // Validação contábil idêntica à v105: total do lançamento e partidas
+ // D/C por centro de custo precisam coincidir com todas as origens postadas.
+ const checked=await payrollVacationProvisionJournal67(env,companyId,movement.posting_id,d);
+ if(!checked.valid)fail68(d,'POSTED_JOURNAL_MISMATCH',
+  'O diário da baixa possui divergência: '+(checked.problems?.[0]?.message||'origem inválida')+'.');
  const amount=-Number(movement.amount_cents);
  if(!Number.isSafeInteger(amount)||amount<=0||amount>status.remaining_cents)
   fail68(d,'AMOUNT_EXCEEDS','Baixa excede o saldo do direito a vincular.');
