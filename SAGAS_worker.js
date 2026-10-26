@@ -27,6 +27,7 @@ import { payrollVacationProvision67 } from './sagas-payroll-vacation67.js';
 import { payrollVacationUseLink68, payrollVacationUseLinkSchema68 } from './sagas-payroll-vacation68.js';
 import { payrollMonthlyEndToEnd69 } from './sagas-payroll-closing69.js';
 import { payrollThirteenth70 } from './sagas-payroll-thirteenth70.js';
+import { payrollThirteenth71 } from './sagas-payroll-thirteenth71.js';
 import { payrollProvisionAccounting44 } from './sagas-payroll-provisions44.js';
 // SAGAS Worker v96 - Registro auditável do envelope próprio VACATION de férias | cumulativo desde v49
 // ===== utils.js =====
@@ -10966,6 +10967,26 @@ async function route(request, env) {
       competence:url.searchParams.get('competence'),
       body:method==='POST'?await readJson(request):{},
       d:{HttpError,requirePermission,ensureSchemaRevision,audit,uuid}
+    }));
+  }
+  // v110: calculos versionados do 13o; aprovacao nao gera pagamento ou contabilizacao.
+  const thirteenthRun=routeMatch(path,'/api/payroll/thirteenth/runs/:id');
+  if(path==='/api/payroll/thirteenth/runs'&&method==='GET'||
+     path==='/api/payroll/thirteenth/runs/calculate'&&method==='POST'||
+     path==='/api/payroll/thirteenth/runs/approve'&&method==='POST'||
+     thirteenthRun&&method==='GET'){
+    await ensureSchemaRevision(env,'payroll-employee-history',1,()=>ensurePayrollEmployeeRecordsSchema(env));
+    await ensureSchemaRevision(env,'payroll-employee-cost-center39',1,()=>ensurePayrollCostCenter39(env));
+    await ensureSchemaRevision(env,'payroll-employee-numbers',1,()=>ensurePayrollEmployeeNumbersSchema(env));
+    const action=thirteenthRun?'detail':path.endsWith('/calculate')?'calculate':
+      path.endsWith('/approve')?'approve':'history';
+    return ok(await payrollThirteenth71(action,{
+      env,companyId,auth,request,
+      runId:thirteenthRun?.id,
+      year:url.searchParams.get('year'),phase:url.searchParams.get('phase'),
+      body:method==='POST'?await readJson(request):{},
+      d:{HttpError,requirePermission,ensureSchemaRevision,audit,uuid,
+       hash:payrollProcessingSnapshotHash28,taxes:payrollTaxHistoricalWithDependents}
     }));
   }
   // v109: apuracao separada do 13o, com registro documental de adiantamento externo.
