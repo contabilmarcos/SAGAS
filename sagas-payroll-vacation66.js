@@ -35,7 +35,7 @@ async function paid66(env,companyId,payableId,origin,d){
   "SELECT p.id,p.number,p.source_type,p.source_id,p.status,p.amount_cents,p.balance_cents,p.payment_cash_cents,p.payment_date,p.document_number,p.payment_cash_account_id,p.payment_journal_entry_id,p.payment_discount_cents,p.payment_advance_cents,p.payment_interest_cents,p.paid_by,p.paid_at,s.name AS beneficiary_name FROM financial_payables p LEFT JOIN purchase_suppliers s ON s.id=p.supplier_id AND s.company_id=p.company_id WHERE p.company_id=? AND p.id=? LIMIT 1"
  ).bind(companyId,payableId).first();
  if(!p)fail66(d,'Título financeiro inexistente nesta empresa.','PAYABLE_NOT_FOUND',404);
- const name=s=>String(s||'').normalize('NFD').replace(/[\\u0300-\\u036f]/g,'').replace(/\\s+/g,' ').trim().toLocaleUpperCase('pt-BR');
+ const name=s=>String(s||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/\s+/g,' ').trim().toLocaleUpperCase('pt-BR');
  if(!p.beneficiary_name||name(p.beneficiary_name)!==name(origin.employee_name))
   fail66(d,'O favorecido do título não corresponde ao funcionário do recibo de férias.','BENEFICIARY_MISMATCH');
  if(p.source_type==='PAYROLL_MONTHLY'||p.status!=='PAID'||Number(p.balance_cents)!==0||
@@ -122,8 +122,8 @@ export async function payrollVacationAdvance66(action,c){
    "SELECT p.id,p.number,p.document_number,p.payment_date,p.payment_cash_cents,p.payment_journal_entry_id,s.name AS beneficiary_name FROM financial_payables p JOIN purchase_suppliers s ON s.id=p.supplier_id AND s.company_id=p.company_id WHERE p.company_id=? AND p.status='PAID' AND p.source_type<>'PAYROLL_MONTHLY' AND p.amount_cents=? AND p.payment_cash_cents=? AND p.payment_date=? AND p.document_number=? AND p.payment_journal_entry_id IS NOT NULL ORDER BY p.number LIMIT 51"
   ).bind(companyId,origin.amount_cents,origin.amount_cents,origin.payment_date,origin.document_ref).all()).results||[];
   if(rows.length>50)fail66(d,'Mais de 50 títulos candidatos; detalhe o documento.','CANDIDATE_LIMIT');
-  const canonical=String(origin.employee_name||'').normalize('NFD').replace(/[\\u0300-\\u036f]/g,'').replace(/\\s+/g,' ').trim().toLocaleUpperCase('pt-BR');
-  return {...response,candidates:rows.filter(x=>String(x.beneficiary_name||'').normalize('NFD').replace(/[\\u0300-\\u036f]/g,'').replace(/\\s+/g,' ').trim().toLocaleUpperCase('pt-BR')===canonical)};
+  const canonical=String(origin.employee_name||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/\s+/g,' ').trim().toLocaleUpperCase('pt-BR');
+  return {...response,candidates:rows.filter(x=>String(x.beneficiary_name||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/\s+/g,' ').trim().toLocaleUpperCase('pt-BR')===canonical)};
  }
  if(action==='void'){
   if(!current)fail66(d,'Não há vínculo ativo para desfazer.','LINK_NOT_FOUND',404);
