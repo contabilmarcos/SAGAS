@@ -16,7 +16,7 @@ async function exists67(env,t){
  return !!(await env.DB.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=? LIMIT 1").bind(t).first());
 }
 const abs67=n=>Math.abs(n);
-async function journal67(env,companyId,postingId,d){
+export async function payrollVacationProvisionJournal67(env,companyId,postingId,d){
  const posting=await env.DB.prepare(
   "SELECT p.id,p.kind,p.competence,p.cycle_id,p.source_fingerprint,p.total_cents,p.line_count,p.journal_entry_id,p.accounting_batch_id,j.status AS journal_status,j.source_module,j.source_reference,j.total_debit_cents,j.total_credit_cents,j.official_status FROM payroll_provision_postings45 p LEFT JOIN journal_entries j ON j.id=p.journal_entry_id AND j.company_id=p.company_id WHERE p.company_id=? AND p.id=? LIMIT 1"
  ).bind(companyId,postingId).first();
@@ -141,7 +141,7 @@ export async function payrollVacationProvision67(c){
     }else add('MOVEMENT_KIND_INVALID','Tipo de movimentação não reconhecido.',employeeId,entry.component);
     if(m.movement_kind!=='OPENING'&&m.posting_id){
      if(!cache.has(m.posting_id))
-      cache.set(m.posting_id,await journal67(env,companyId,m.posting_id,d));
+      cache.set(m.posting_id,await payrollVacationProvisionJournal67(env,companyId,m.posting_id,d));
      const posted=cache.get(m.posting_id);
      journals.add(posted.journal_entry_id||'');
      if(!posted.valid)
