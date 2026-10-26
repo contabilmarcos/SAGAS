@@ -1,6 +1,7 @@
 // SAGAS Folha v103 — memória auditável das partidas contábeis de férias.
 // Não registra lançamentos contábeis, títulos, baixas, pagamentos nem guias.
 import { payrollVacationAccounting64 } from './sagas-payroll-vacation64.js';
+import { payrollVacationAdvanceEvidence66 } from './sagas-payroll-vacation66.js';
 
 function stop65(d,code,message,status=409){throw new d.HttpError(status,message,code)}
 function amount65(v,d,what){
@@ -152,14 +153,20 @@ async function build65(c){
     recognized_journal_entry_ids:journalId,recognized_movement_ids:postedIds,
     verified_posted:journalRows.length===postedUses.length&&!journalRows.some(x=>x.status!=='POSTED')});
   }
+  const advanceEvidence=await payrollVacationAdvanceEvidence66(env,companyId,emp.occurrence_id,d);
+  if(!advanceEvidence.payment_verified)
+    add('ADIANTAMENTO_SEM_BAIXA_VALIDADA','O adiantamento externo não está vinculado a um título PAID com baixa contábil bancária validada.',emp.employee_id);
   sources.push({employee_id:emp.employee_id,cost_center:cc,advance:emp.advance,
-   month:emp.current_competence,components});
+   advance_evidence:advanceEvidence,month:emp.current_competence,components});
  }
  const sumCheck=check.sums||{};
  if(sumPayables!==Number(detail.totals.net_cents))
   add('LIQUIDO_FOLHA_DIVERGENTE','O líquido dos envelopes diverge do total da folha.');
- // O recibo externo é apenas DECLARED e nunca configura comprovante bancário.
- add('ADIANTAMENTO_SEM_COMPROVACAO_BANCARIA','O recibo de férias foi declarado externamente. A baixa bancária e o lançamento do adiantamento não estão comprovados por esta fonte.');
+ // Vinculo validado confirma apenas os registros internos do financeiro.
+ // Extrato bancário externo ainda exige reconciliação independente.
+ if(sources.some(x=>!x.advance_evidence.payment_verified))
+  warnings.push('Falta conciliação interna da baixa financeira de um ou mais adiantamentos de férias.');
+ warnings.push('Um título PAID vinculado comprova registro interno da baixa e sua partida bancária, não a confirmação por extrato externo.');
  if(sources.some(x=>x.components.some(c=>c.unposted_use_cents>0)))
   warnings.push('Regularize as baixas de provisão já existentes antes de criar novas partidas.');
  warnings.push('Esta memória contém partidas previstas por evento e CC. Ainda não distingue automaticamente realização de provisão e despesa sem conferir o diário já contabilizado.');
