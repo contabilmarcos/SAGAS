@@ -23,18 +23,20 @@ async function payrollProvisions42Open(){
     table+'<p class="help"><b>Verbas provisionadas de referência:</b> '+fmt(total.labor_total_cents)+
     ' · <b>Encargos estimados:</b> '+fmt(total.charges_estimate_cents)+
     ' · <b>Total estimado:</b> '+fmt(total.combined_estimate_cents)+
-    '</p><p class="help"><b>Proventos variáveis que requerem conferência:</b> '+esc(d.unresolved_employee_count)+' funcionário(s).</p>'+
+    '</p><p class="help"><b>Funcionários com pendências de cálculo:</b> '+esc(d.unresolved_employee_count)+' funcionário(s). Avos não adquiridos no mês (menos de 15 dias): '+esc(d.ineligible_15_day_count||0)+'.</p>'+
     '<h4>Critérios e pendências</h4>'+d.warnings.map(w=>'<p class="help">'+esc(w)+'</p>').join('')+
     '<div class="form-actions"><button type="button" id="p43ledger" class="btn secondary">Consultar saldos</button>'+
-    (can('payroll.manage')&&d.unresolved_employee_count===0?'<button type="button" id="p43constitute" class="btn primary">Constituir provisões</button>':'')+
+    (can('payroll.manage')&&d.unresolved_employee_count===0&&d.fingerprint?'<button type="button" id="p43constitute" class="btn primary">Constituir provisões</button>':'')+
     '<button type="button" id="p42close" class="btn secondary">Fechar</button></div>',true);
   $('#p42close').onclick=closeModal;
   $('#p43ledger').onclick=()=>payrollProvision43Ledger(d.run.competence).catch(err=>toast(err.message,'error'));
-  if($('#p43constitute'))$('#p43constitute').onclick=()=>payrollProvision43Constitute(d.run.id,d.run.competence).catch(err=>toast(err.message,'error'));
+  if($('#p43constitute'))$('#p43constitute').onclick=()=>payrollProvision43Constitute(d.run.id,d.run.competence,d.fingerprint).catch(err=>toast(err.message,'error'));
   $$('[data-p42-employee]').forEach(btn=>btn.onclick=()=>{
     const x=d.items[Number(btn.dataset.p42Employee)];if(!x)return;
     const breakdown=[
-      ['Salário-base de referência',x.salary_base_cents],
+      ['Salário contratual de referência',x.salary_base_cents],
+      ['Salário-base pago na folha',x.payroll_salary_snapshot_cents],
+      ['Dias considerados na competência',x.eligible_days],
       ['Férias — 1/12',x.vacation_cents],['Adicional de férias — 1/36',x.vacation_third_cents],
       ['Décimo terceiro — 1/12',x.thirteenth_cents],
       ['INSS patronal estimado',x.cpp_estimate_cents],['RAT/FAP estimado',x.rat_estimate_cents],
@@ -44,8 +46,9 @@ async function payrollProvisions42Open(){
     openModal('Provisão — '+esc(x.employee_name),
       'Funcionário '+esc(x.employee_code||'—')+' · Centro de custo '+esc(x.cost_center_code||'—'),
       '<div class="table-wrap"><table class="table"><thead><tr><th>Componente</th><th>Valor</th></tr></thead><tbody>'+
-      breakdown.map(([name,value])=>'<tr><td>'+esc(name)+'</td><td>'+fmt(value)+'</td></tr>').join('')+
+      breakdown.map(([name,value])=>'<tr><td>'+esc(name)+'</td><td>'+ (name==='Dias considerados na competência'?esc(value??'Não validado'):fmt(value))+'</td></tr>').join('')+
       '</tbody></table></div>'+
+      '<p class="help"><b>Admissão:</b> '+esc(x.admission_date||'Não informada')+' · <b>Avo neste mês:</b> '+esc(x.counts_for_13th?'Sim':'Não')+'</p>'+
       (x.flags||[]).map(f=>'<p class="help">'+esc(f)+'</p>').join('')+
       '<p class="help">Valores de referência para conferência. Não houve lançamento contábil ou financeiro.</p>'+
       '<div class="form-actions"><button type="button" class="btn secondary" id="p42back">Voltar</button></div>',true);
