@@ -23,6 +23,8 @@ import { payrollVacationClosure63 } from './sagas-payroll-vacation63.js';
 import { payrollVacationAccounting64 } from './sagas-payroll-vacation64.js';
 import { payrollVacationPosting65 } from './sagas-payroll-vacation65.js';
 import { payrollVacationAdvance66, payrollVacationAdvanceSchema66 } from './sagas-payroll-vacation66.js';
+import { payrollVacationProvision67 } from './sagas-payroll-vacation67.js';
+import { payrollVacationUseLink68, payrollVacationUseLinkSchema68 } from './sagas-payroll-vacation68.js';
 import { payrollProvisionAccounting44 } from './sagas-payroll-provisions44.js';
 // SAGAS Worker v96 - Registro auditável do envelope próprio VACATION de férias | cumulativo desde v49
 // ===== utils.js =====
@@ -11175,6 +11177,44 @@ async function route(request, env) {
       occurrenceId:url.searchParams.get('occurrence_id'),
       d:{HttpError,requirePermission,ensureSchemaRevision,audit,uuid}
     }));
+  }
+  // v105: conciliação da baixa de provisão com o diário real e com a
+  // ocorrência específica de férias. Não efetua lançamento contábil.
+  p=routeMatch(path,'/api/payroll/monthly-runs/:id/vacation-provision-reconciliation');
+  const useLinkRoute=routeMatch(path,'/api/payroll/monthly-runs/:id/vacation-provision-use-links');
+  if((p&&method==='GET')||(useLinkRoute&&(method==='GET'||method==='POST'))){
+    await ensureSchemaRevision(env,'payroll-calculation-foundation',1,()=>ensurePayrollCalculationFoundation34(env));
+    await ensureSchemaRevision(env,'payroll-monthly-review',1,()=>ensurePayrollMonthlyReviewSchema36(env));
+    await ensureSchemaRevision(env,'payroll-vacation-monthly-use100',1,()=>payrollVacationMonthlySchema100(env));
+    await ensureSchemaRevision(env,'payroll-provision-ledger43',1,()=>ensureProvisionLedger43(env));
+    await ensureSchemaRevision(env,'purchasing',1,async()=>{
+      await ensurePurchasingSchema(env);await ensurePurchaseIntegrationSchema(env);await ensureRmPurchasingSchema(env);
+    });
+    await payroll37Call('settings');
+    await payrollProvisionAccounting45('use-settings',{
+      env,companyId,auth,request,
+      d:{HttpError,requirePermission,ensureSchemaRevision,audit,uuid}
+    });
+    await ensureSchemaRevision(env,'payroll-vacation-use-link68',1,()=>payrollVacationUseLinkSchema68(env));
+    if(useLinkRoute){
+      const body=method==='POST'?await readJson(request):{};
+      return ok(await payrollVacationUseLink68(method==='GET'?'read':String(body.action||'link'),{
+        env,companyId,auth,request,runId:useLinkRoute.id,body,
+        occurrenceId:url.searchParams.get('occurrence_id'),
+        component:url.searchParams.get('component'),
+        d:{HttpError,requirePermission,ensureSchemaRevision,audit,uuid}
+      }));
+    }
+    const d={HttpError,requirePermission,ensureSchemaRevision,audit,uuid,
+      hash:payrollProcessingSnapshotHash28,
+      monthlyRunDetail:payrollMonthlyRunDetail35,
+      monthlyConference:payrollMonthlyConference36,
+      employerPreview:runId=>payrollEmployer40('preview',{
+        env,companyId,auth,request,runId,
+        d:{HttpError,requirePermission,ensureSchemaRevision,
+          payrollMonthlyRunDetail35,payrollMonthlyConference36}
+      })};
+    return ok(await payrollVacationProvision67({env,companyId,auth,request,runId:p.id,d}));
   }
   // v103: construir ou guardar conferência imutável de partidas propostas.
   // Não gera título financeiro, diário, provisão, pagamento nem guia.
