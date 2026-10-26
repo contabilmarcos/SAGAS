@@ -106,7 +106,7 @@ export async function payrollVacationAccounting64(c){
    const balance=hasProvision&&hasPostedProvision?
     await provision64(env,companyId,id,closure.run.competence,cfg.code,d):null;
    if(balance&&balance.remaining_operational_cents<corresponding)
-    add('SALDO_PROVISAO_INSUFICIENTE','Saldo de provisão '+cfg.label+' inferior à verba gozada. Avalie a diferença como despesa, sem baixa automática.',id);
+    add('SALDO_PROVISAO_INSUFICIENTE','Saldo operacional de '+cfg.label+' inferior à verba da competência. Confira baixas anteriores e o saldo contábil antes de classificar qualquer diferença.',id);
    if(balance&&balance.unposted_use_cents)
     add('BAIXA_PENDENTE','Existem movimentos de baixa ainda não contabilizados. Confira o documento antes de lançar novamente.',id);
    components.push({component:cfg.code,description:cfg.label,earned_cents:corresponding,
