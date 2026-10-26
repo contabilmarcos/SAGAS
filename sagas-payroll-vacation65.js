@@ -170,11 +170,25 @@ async function build65(c){
  if(sources.some(x=>x.components.some(c=>c.unposted_use_cents>0)))
   warnings.push('Regularize as baixas de provisão já existentes antes de criar novas partidas.');
  warnings.push('Esta memória contém partidas previstas por evento e CC. Ainda não distingue automaticamente realização de provisão e despesa sem conferir o diário já contabilizado.');
- const fingerprint=await d.hash({version:103,company_id:companyId,run_id:runId,
+ const signature={version:103,company_id:companyId,run_id:runId,
    source_fingerprint:evidence.source_fingerprint,stage:check.items.map(x=>({
      employee_id:x.employee_id,occurrence_id:x.occurrence_id,stage_id:x.stage_id,
      advance:x.advance,provisions:x.provisions})),
-   lines,source_journals:sources.map(x=>({id:x.employee_id,components:x.components}))});
+   lines,source_journals:sources.map(x=>({id:x.employee_id,components:x.components}))};
+ const financialLinks=sources.filter(x=>x.advance_evidence?.linked).map(x=>({
+   employee_id:x.employee_id,occurrence_id:x.occurrence_id,
+   payment_evidence:x.advance_evidence}));
+ if(financialLinks.length)signature.financial_links=financialLinks;
+ const useLinksAvailable=await env.DB.prepare(
+  "SELECT name FROM sqlite_master WHERE type='table' AND name='payroll_vacation_provision_use_links68' LIMIT 1"
+ ).first();
+ if(useLinksAvailable){
+  const useLinks=(await env.DB.prepare(
+   "SELECT l.id,l.occurrence_id,l.component,l.competence,l.movement_id,l.amount_cents FROM payroll_vacation_provision_use_links68 l JOIN payroll_vacation_monthly_stage61 s ON s.company_id=l.company_id AND s.occurrence_id=l.occurrence_id AND s.competence=l.competence JOIN payroll_vacation_monthly_usage100 u ON u.company_id=s.company_id AND u.stage_id=s.id WHERE l.company_id=? AND u.run_id=? AND l.status='ACTIVE' ORDER BY l.occurrence_id,l.component,l.movement_id"
+  ).bind(companyId,runId).all()).results||[];
+  if(useLinks.length)signature.posted_provision_use_links=useLinks;
+ }
+ const fingerprint=await d.hash(signature);
  return {applicable:true,kind:'VACATION_ACCOUNTING_PACKAGE_V103',
   run:{id:runId,competence:evidence.competence,status:evidence.status,revision:evidence.revision,source_fingerprint:evidence.source_fingerprint},
   sources,lines,problems,warnings,
