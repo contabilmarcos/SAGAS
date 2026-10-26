@@ -22,6 +22,7 @@ import { payrollVacationMonthly100, payrollVacationMonthlySchema100 } from './sa
 import { payrollVacationClosure63 } from './sagas-payroll-vacation63.js';
 import { payrollVacationAccounting64 } from './sagas-payroll-vacation64.js';
 import { payrollVacationPosting65 } from './sagas-payroll-vacation65.js';
+import { payrollVacationAdvance66, payrollVacationAdvanceSchema66 } from './sagas-payroll-vacation66.js';
 import { payrollProvisionAccounting44 } from './sagas-payroll-provisions44.js';
 // SAGAS Worker v96 - Registro auditável do envelope próprio VACATION de férias | cumulativo desde v49
 // ===== utils.js =====
@@ -5117,6 +5118,14 @@ async function cancelFinancialPayable(env,request,auth,companyId,id){
 }
 
 async function undoFinancialPayablePayment(env,request,auth,companyId,id){
+  // v104: não desfaça a baixa de um recibo de férias vinculado sem
+  // remover primeiro a associação auditável à origem.
+  const vac66Exists=await env.DB.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='payroll_vacation_advance_payments66' LIMIT 1").first();
+  if(vac66Exists){
+    const vac66Link=await env.DB.prepare("SELECT id FROM payroll_vacation_advance_payments66 WHERE company_id=? AND payable_id=? AND status='ACTIVE' LIMIT 1").bind(companyId,id).first();
+    if(vac66Link)throw new HttpError(409,'A baixa está vinculada a um recibo de férias. Desvincule o adiantamento antes de estornar o pagamento.','VACATION_PAYMENT_LINKED');
+  }
+
   await requirePermission(env,auth.user.id,companyId,'financial.payable.manage');
   const before=await getFinancialPayable(env,companyId,id);
   if(before.source_type==='PAYROLL_MONTHLY')await requirePermission(env,auth.user.id,companyId,'payroll.manage');
@@ -11129,6 +11138,19 @@ async function route(request, env) {
           d:{HttpError,requirePermission,ensureSchemaRevision,
             payrollMonthlyRunDetail35,payrollMonthlyConference36}
         })}
+    }));
+  }
+  // v104: vincular adiantamento de férias apenas a título já pago e
+  // lançamento de baixa validado. Nenhum novo desembolso nesta rota.
+  if(path==='/api/payroll/vacation-advance-finance-link'&&(method==='GET'||method==='POST')){
+    await ensureSchemaRevision(env,'payroll-vacation-reconciliation55',1,()=>payrollVacationSchema55(env));
+    await ensureSchemaRevision(env,'payroll-vacation-advance-link66',1,()=>payrollVacationAdvanceSchema66(env));
+    await ensureSchemaRevision(env,'financial_payment_columns',1,()=>ensureFinancialCashAccountSchema(env));
+    const body=method==='POST'?await readJson(request):{};
+    return ok(await payrollVacationAdvance66(method==='GET'?'read':String(body.action||'link'),{
+      env,companyId,auth,request,body,
+      occurrenceId:url.searchParams.get('occurrence_id'),
+      d:{HttpError,requirePermission,ensureSchemaRevision,audit,uuid}
     }));
   }
   // v103: construir ou guardar conferência imutável de partidas propostas.
