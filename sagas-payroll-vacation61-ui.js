@@ -287,6 +287,7 @@ async function payrollVacation65Open(month,occ,runId){
   '<p class="section-title">Observações</p><ul class="help">'+warnings+'</ul>'+
   '<div class="form-actions"><button type="button" class="btn secondary" id="vac103Back">Voltar</button>'+
   '<button type="button" class="btn secondary" id="vac104Link">Vincular pagamento antecipado</button>'+
+  '<button type="button" class="btn secondary" id="vac105Preview">Conferir provisões (v105)</button>'+
   (!documented&&can('payroll.manage')?
    '<button type="button" class="btn primary" id="vac103Record">Registrar conferência</button>':'')+
   (documented&&can('payroll.manage')?
@@ -295,6 +296,7 @@ async function payrollVacation65Open(month,occ,runId){
  $('#vac103Back').onclick=()=>payrollVacation64Open(month,occ,runId).catch(e=>toast(e.message,'error'));
  $('#vac103Reload').onclick=()=>payrollVacation65Open(month,occ,runId).catch(e=>toast(e.message,'error'));
  if($('#vac104Link'))$('#vac104Link').onclick=()=>payrollVacation66Open(month,occ,runId).catch(e=>toast(e.message,'error'));
+ if($('#vac105Preview'))$('#vac105Preview').onclick=()=>payrollVacation67Open(month,occ,runId).catch(e=>toast(e.message,'error'));
  if($('#vac103Record'))$('#vac103Record').onclick=()=>{
   openModal('Registrar memória contábil',esc(occ.employee_name||''),
    '<p class="help">Será salvo apenas o histórico de conferência. Esta ação não cria lançamento contábil nem pagamento.</p>'+
@@ -385,4 +387,107 @@ async function payrollVacation66Open(month,occ,runId){
    await payrollVacation66Open(month,occ,runId);
   }catch(err){toast(err.message||String(err),'error');button.disabled=false}
  };
+}
+
+async function payrollVacation67Open(month,occ,runId){
+ const base='/api/payroll/monthly-runs/'+encodeURIComponent(runId);
+ const data=await api(base+'/vacation-provision-reconciliation');
+ if(!data.applicable){
+  openModal('Férias — provisões (v105)',esc(occ.employee_name||''),
+   '<p class="help">'+esc(data.note||'Não aplicável.')+'</p>'+
+   '<div class="form-actions"><button id="vac105Back" class="btn secondary" type="button">Voltar</button></div>',true);
+  $('#vac105Back').onclick=()=>payrollVacation65Open(month,occ,runId).catch(e=>toast(e.message,'error'));
+  return;
+ }
+ const rows=(data.items||[]).flatMap(item=>(item.components||[]).map(comp=>
+  '<tr><td>'+esc(item.employee_id)+'</td><td>'+esc(comp.component)+'</td>'+
+  '<td>'+esc(vacation99Money(comp.earned_cents))+'</td>'+
+  '<td>'+esc(vacation99Money(comp.accrual_posted_cents))+'</td>'+
+  '<td>'+esc(vacation99Money(comp.use_posted_cents))+'</td>'+
+  '<td>'+esc(vacation99Money(comp.explicitly_linked_use_cents))+'</td>'+
+  '<td>'+esc(comp.linked_to_occurrence?'Vinculado':'Pendente')+'</td>'+
+  '<td><button type="button" class="btn secondary vac105UseLink" data-occ="'+
+   esc(comp.occurrence_id||'')+'" data-component="'+esc(comp.component)+'">Vincular baixa</button></td></tr>')).join('');
+ const problems=(data.problems||[]).map(p=>'<li><b>'+esc(p.code)+'</b> — '+esc(p.message)+'</li>').join('');
+ const warnings=(data.warnings||[]).map(w=>'<li>'+esc(w)+'</li>').join('');
+ const journals=(data.verified_journals||[]).map(j=>'<tr><td>'+esc(j.journal_entry_id||'Não encontrado')+
+  '</td><td>'+esc(j.kind||'')+'</td><td>'+esc(vacation99Money(j.amount_cents))+'</td>'+
+  '<td>'+esc(j.valid?'Conferido':'Divergente')+'</td></tr>').join('');
+ openModal('Férias — conciliação de provisões (v105)',
+  esc(occ.employee_name||'Funcionário')+' · '+esc(data.run?.competence||''),
+  '<p class="help"><b>Conferência do diário.</b> Compara origem, funcionário, centro de custo, débito e crédito do lançamento já contabilizado. Não cria lançamentos nem pagamentos.</p>'+
+  '<div class="table-wrap"><table class="table"><thead><tr><th>Funcionário</th><th>Componente</th><th>Verba do mês</th>'+
+  '<th>Constituído contabilizado</th><th>Baixa contabilizada</th><th>Vinculado à ocorrência</th>'+
+  '<th>Situação</th><th>Ação</th></tr></thead><tbody>'+rows+'</tbody></table></div>'+
+  '<p class="section-title">Lançamentos de provisões conferidos</p>'+
+  '<div class="table-wrap"><table class="table"><thead><tr><th>Diário</th><th>Tipo</th><th>Valor</th>'+
+  '<th>Situação</th></tr></thead><tbody>'+journals+'</tbody></table></div>'+
+  '<p class="section-title">Pendências</p>'+
+  (problems?'<ul class="help">'+problems+'</ul>':'<p class="help">Sem divergências detectadas nos registros consultados.</p>')+
+  '<p class="section-title">Observações</p><ul class="help">'+warnings+'</ul>'+
+  '<p class="help"><b>A contabilização definitiva permanece bloqueada.</b> É necessário conciliar o passivo no balancete e verificar a natureza contábil de cada verba.</p>'+
+  '<div class="form-actions"><button type="button" id="vac105Back" class="btn secondary">Voltar</button>'+
+  '<button type="button" id="vac105Reload" class="btn secondary">Atualizar</button></div>',true);
+ $('#vac105Back').onclick=()=>payrollVacation65Open(month,occ,runId).catch(e=>toast(e.message,'error'));
+ $('#vac105Reload').onclick=()=>payrollVacation67Open(month,occ,runId).catch(e=>toast(e.message,'error'));
+ document.querySelectorAll('.vac105UseLink').forEach(el=>{
+  el.onclick=()=>payrollVacation68Open(month,occ,runId,el.dataset.occ,el.dataset.component).catch(e=>toast(e.message,'error'));
+ });
+}
+async function payrollVacation68Open(month,occ,runId,occurrenceId,component){
+ const url='/api/payroll/monthly-runs/'+encodeURIComponent(runId)+'/vacation-provision-use-links';
+ const data=await api(url+'?occurrence_id='+encodeURIComponent(occurrenceId)+'&component='+encodeURIComponent(component));
+ const options=(data.candidates||[]).map(m=>'<option value="'+esc(m.id)+'">'+
+  esc(m.document_ref||'')+' · '+esc(vacation99Money(Math.abs(Number(m.amount_cents))))+
+  ' · diário '+esc(m.journal_entry_id||'')+'</option>').join('');
+ const linked=(data.links||[]).map(x=>
+  '<tr><td>'+esc(x.movement_id)+'</td><td>'+esc(vacation99Money(x.amount_cents))+'</td>'+
+  '<td>'+esc(x.journal_entry_id||'')+'</td><td>'+
+  (can('payroll.manage')?
+   '<button class="btn danger vac105Unlink" type="button" data-id="'+esc(x.id)+'">Desvincular</button>':'—')+
+  '</td></tr>').join('');
+ openModal('Férias — vínculo da baixa de provisão (v105)',esc(component)+' · '+esc(data.competence),
+  '<p class="help">Associe somente uma baixa de provisão já contabilizada, do mesmo funcionário, competência e documento. Esta ação não altera o lançamento.</p>'+
+  '<p>Verba do mês: <b>'+esc(vacation99Money(data.expected_cents))+'</b> · '+
+  'Vinculado: <b>'+esc(vacation99Money(data.linked_cents))+'</b> · '+
+  'Pendente: <b>'+esc(vacation99Money(data.remaining_cents))+'</b></p>'+
+  '<div class="table-wrap"><table class="table"><thead><tr><th>Movimento</th><th>Valor</th><th>Diário</th><th>Ação</th>'+
+  '</tr></thead><tbody>'+linked+'</tbody></table></div>'+
+  (can('payroll.manage')&&data.remaining_cents>0?
+   '<form id="vac105UseForm"><label class="field"><span>Baixa de provisão contabilizada</span>'+
+   '<select name="movement_id" required><option value="">Selecione</option>'+options+'</select></label>'+
+   '<label class="field"><span>Digite VINCULAR BAIXA FERIAS</span>'+
+   '<input name="confirmation" autocomplete="off" required></label>'+
+   '<div class="form-actions"><button class="btn primary" type="submit">Vincular baixa existente</button></div></form>':'')+
+  '<div class="form-actions"><button id="vac105UseBack" class="btn secondary" type="button">Voltar</button></div>',true);
+ $('#vac105UseBack').onclick=()=>payrollVacation67Open(month,occ,runId).catch(e=>toast(e.message,'error'));
+ if($('#vac105UseForm'))$('#vac105UseForm').onsubmit=async e=>{
+  e.preventDefault();const form=e.currentTarget,button=form.querySelector('[type="submit"]');button.disabled=true;
+  try{
+   await api(url,{method:'POST',body:{action:'link',occurrence_id:occurrenceId,component,
+    movement_id:form.elements.movement_id.value,confirmation:form.elements.confirmation.value}});
+   toast('Baixa vinculada à ocorrência. Nenhum novo lançamento criado.');
+   await payrollVacation68Open(month,occ,runId,occurrenceId,component);
+  }catch(err){toast(err.message||String(err),'error');button.disabled=false;}
+ };
+ document.querySelectorAll('.vac105Unlink').forEach(button=>{
+  button.onclick=()=>{
+   const id=button.dataset.id;
+   openModal('Desvincular baixa',esc(component),
+    '<form id="vac105UnlinkForm"><label class="field"><span>Justificativa</span>'+
+    '<textarea name="notes" minlength="15" maxlength="600" required></textarea></label>'+
+    '<label class="field"><span>Digite DESVINCULAR BAIXA FERIAS</span>'+
+    '<input name="confirmation" autocomplete="off" required></label>'+
+    '<div class="form-actions"><button class="btn danger" type="submit">Desvincular</button></div></form>',true);
+   $('#vac105UnlinkForm').onsubmit=async e=>{
+    e.preventDefault();const form=e.currentTarget,submit=form.querySelector('[type="submit"]');submit.disabled=true;
+    try{
+     await api(url,{method:'POST',body:{action:'void',occurrence_id:occurrenceId,component,link_id:id,
+      notes:form.elements.notes.value,confirmation:form.elements.confirmation.value}});
+     toast('Vínculo desfeito, sem estorno contábil.');
+     await payrollVacation68Open(month,occ,runId,occurrenceId,component);
+    }catch(err){toast(err.message||String(err),'error');submit.disabled=false;}
+   };
+  };
+ });
 }
