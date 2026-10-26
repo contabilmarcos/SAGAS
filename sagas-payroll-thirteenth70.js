@@ -40,7 +40,7 @@ export function amounts70(base,avos,advance,taxes,phase){
  if(phase==='FIRST'){
   const estimated=half70(full);
   return {gross_cents:full,estimated_advance_cents:estimated,advance_cents:0,
-   inss_cents:0,irrf_cents:0,fgts_cents:half70(estimated*16/100),
+   inss_cents:0,irrf_cents:0,fgts_cents:Math.floor((estimated*8+50)/100),
    net_cents:estimated,second_gross_cents:full-estimated};
  }
  const already=integerPlain70(advance);
@@ -168,6 +168,7 @@ export async function payrollThirteenth70(action,c){
   const year=year70(body.year,d),employeeId=String(body.employee_id||'').trim();
   const value=integer70(body.amount_cents,d,'adiantamento',true);
   const paidDate=date70(body.payment_date,d);
+  if(paidDate>new Date().toISOString().slice(0,10))bad70(d,'FUTURE_PAYMENT','Nao declare como realizado um pagamento futuro.',400);
   if(paidDate<year+'-02-01'||paidDate>year+'-11-30')bad70(d,'PAYMENT_DATE_INVALID','O adiantamento comum deve ocorrer entre fevereiro e novembro.',400);
   const document=String(body.document_ref||'').trim(),notes=String(body.notes||'').trim();
   if(document.length<8||document.length>160||notes.length<15||notes.length>500)
@@ -178,6 +179,7 @@ export async function payrollThirteenth70(action,c){
   const employee=preview.items.find(x=>x.employee_id===employeeId);
   if(!employee||!employee.ready)
    bad70(d,'EMPLOYEE_BLOCKED','Funcionario com pendencia na previa do 13o.');
+  if(preview.problems.length)bad70(d,'PREVIEW_GLOBAL_BLOCK','Existem pendencias globais no adiantamento.');
   if(value!==employee.calculation?.estimated_advance_cents)
    bad70(d,'ADVANCE_DIFFERS','Adiantamento divergente da referencia calculada; requer conferência especifica.');
   const existing=(await advances70(env,companyId,year)).find(x=>x.employee_id===employeeId);
