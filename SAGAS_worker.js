@@ -25,6 +25,7 @@ import { payrollVacationPosting65 } from './sagas-payroll-vacation65.js';
 import { payrollVacationAdvance66, payrollVacationAdvanceSchema66 } from './sagas-payroll-vacation66.js';
 import { payrollVacationProvision67 } from './sagas-payroll-vacation67.js';
 import { payrollVacationUseLink68, payrollVacationUseLinkSchema68 } from './sagas-payroll-vacation68.js';
+import { payrollMonthlyEndToEnd69 } from './sagas-payroll-closing69.js';
 import { payrollProvisionAccounting44 } from './sagas-payroll-provisions44.js';
 // SAGAS Worker v96 - Registro auditável do envelope próprio VACATION de férias | cumulativo desde v49
 // ===== utils.js =====
@@ -10964,6 +10965,48 @@ async function route(request, env) {
       competence:url.searchParams.get('competence'),
       body:method==='POST'?await readJson(request):{},
       d:{HttpError,requirePermission,ensureSchemaRevision,audit,uuid}
+    }));
+  }
+  // v106: roteiro completo de fechamento de folha em uma consulta.
+  p=routeMatch(path,'/api/payroll/monthly-runs/:id/closing-audit');
+  if(p&&method==='GET'){
+    await ensureSchemaRevision(env,'payroll-calculation-foundation',1,()=>ensurePayrollCalculationFoundation34(env));
+    await ensureSchemaRevision(env,'payroll-monthly-review',1,()=>ensurePayrollMonthlyReviewSchema36(env));
+    await ensureSchemaRevision(env,'payroll-provision-ledger43',1,()=>ensureProvisionLedger43(env));
+    await ensureSchemaRevision(env,'purchasing',1,async()=>{
+      await ensurePurchasingSchema(env);await ensurePurchaseIntegrationSchema(env);await ensureRmPurchasingSchema(env);
+    });
+    await payroll37Call('settings');
+    return ok(await payrollMonthlyEndToEnd69({
+      env,companyId,auth,runId:p.id,
+      d:{
+        HttpError,requirePermission,
+        detail:id=>payrollMonthlyRunDetail35(env,companyId,id),
+        conference:id=>payrollMonthlyConference36(env,companyId,id),
+        finance:id=>payroll37Call('preview',id),
+        employer:id=>payrollEmployer40('preview',{
+          env,companyId,auth,request,runId:id,
+          d:{HttpError,requirePermission,ensureSchemaRevision,audit,uuid,
+            payrollMonthlyRunDetail35,payrollMonthlyConference36,payrollMonthlySource35}
+        }),
+        provision:id=>payrollProvisions42({
+          env,companyId,auth,request,runId:id,
+          d:{HttpError,requirePermission,payrollMonthlyRunDetail35,payrollMonthlyConference36,
+            readEmployerSettings:competence=>payrollEmployer40('read',{
+              env,companyId,auth,request,competence,
+              d:{HttpError,requirePermission,ensureSchemaRevision,audit,uuid}
+            })}
+        }),
+        provisionPosting:(competence,kind)=>payrollProvisionAccounting45('preview',{
+          env,companyId,auth,request,competence,kind,
+          d:{HttpError,requirePermission,ensureSchemaRevision,audit,uuid,
+            hash:payrollProcessingSnapshotHash28,
+            preview44:competence=>payrollProvisionAccounting44('preview',{
+              env,companyId,auth,request,competence,
+              d:{HttpError,requirePermission,ensureSchemaRevision,audit,uuid}
+            })}
+        })
+      }
     }));
   }
   // Etapa 45: contabilização explícita da constituição ou baixas; idempotência por movimento.
