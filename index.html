@@ -671,11 +671,39 @@ function payrollMonthlyCalcResults35(data){
     <p class="help"><b>Totais:</b> Proventos ${payroll35Money(x.earnings_cents)} · Descontos ${payroll35Money(x.deductions_cents)} · Líquido ${payroll35Money(x.net_cents)} · FGTS informativo ${payroll35Money(x.fgts_cents)}.</p>
     <div class="section-title">Totais por centro de custo</div>
     <div class="table-wrap"><table class="table"><thead><tr><th>Centro de custo</th><th>Funcionários</th><th>Proventos</th><th>Descontos</th><th>Líquido</th></tr></thead><tbody>${centerRows}</tbody></table></div>
-    <div class="toolbar"><button type="button" class="btn primary sm" id="payroll36Conference">Conferir / fechar folha</button></div>
+    <div class="toolbar"><button type="button" class="btn primary sm" id="payroll36Conference">Conferir / fechar folha</button> <button type="button" class="btn secondary sm" id="payroll106Closing">Fechamento integrado</button></div>
     <p class="help">Conferencia interna e fechamento nao geram pagamentos nem contabilizacao. O holerite nao comprova deposito.</p>`;
   $$('[data-payroll35-detail]',target).forEach(btn=>btn.onclick=()=>payrollMonthlyDetail35(Number(btn.dataset.payroll35Detail)));
   $$('[data-payroll36-receipt]',target).forEach(btn=>btn.onclick=()=>{const emp=data.envelopes[Number(btn.dataset.payroll36Receipt)];if(emp)payroll36OpenReceipt(r.id,emp.employee_id)});
   if($('#payroll36Conference'))$('#payroll36Conference').onclick=()=>payroll36ConferenceScreen(r.id).catch(err=>toast(err.message,'error'));
+  if($('#payroll106Closing'))$('#payroll106Closing').onclick=()=>payrollMonthlyClosing106(r.id).catch(err=>toast(err.message,'error'));
+}
+async function payrollMonthlyClosing106(runId){
+ const data=await api('/api/payroll/monthly-runs/'+encodeURIComponent(runId)+'/closing-audit');
+ const labels={CONCLUIDO:'Concluído',PRONTO:'Pronto para executar',PENDENTE:'Pendente',CONFERIR:'Conferir',SEM_MOVIMENTOS:'Sem movimentações'};
+ const rows=(data.sections||[]).map(x=>{
+  const pending=(x.problems||[]).map(p=>'<li>'+esc(p.message)+'</li>').join('');
+  return '<tr><td><b>'+esc(x.title)+'</b></td><td>'+esc(labels[x.status]||x.status)+'</td>'+
+   '<td>'+(pending?'<ul class="help">'+pending+'</ul>':'<span class="help">Nenhum impedimento detectado nesta consulta.</span>')+'</td></tr>';
+ }).join('');
+ const actions=(data.next_actions||[]).map(a=>'<li>'+esc(a.stage)+': '+
+  esc(a.first_problem||'Verifique a configuração e execute o procedimento correspondente.')+'</li>').join('');
+ openModal('Fechamento integrado — '+esc(data.competence||''),
+  esc(String(data.employee_count||0))+' funcionário(s) · conferência da folha, financeiro, encargos e provisões.',
+  '<p class="help"><b>Diagnóstico integrado de consulta.</b> Esta tela não calcula novamente a folha, constitui provisões, cria títulos ou contabiliza.</p>'+
+  '<div class="table-wrap"><table class="table"><thead><tr><th>Processo</th><th>Situação</th><th>Conferência</th></tr></thead>'+
+  '<tbody>'+rows+'</tbody></table></div>'+
+  '<p><b>Fechamento mensal:</b> '+esc(data.monthly_operational_ready?'Conciliação básica satisfeita — requer homologação.':'Pendências a resolver')+'</p>'+
+  '<p class="section-title">O que falta resolver</p>'+
+  (actions?'<ul class="help">'+actions+'</ul>':'<p class="help">Nenhuma pendência operacional identificada.</p>')+
+  '<p class="help">O cálculo das provisões ainda requer aperfeiçoamentos para médias, períodos aquisitivos e afastamentos. Encargos estimados sobre provisões não são contabilizados por esta integração.</p>'+
+  '<div class="form-actions"><button type="button" class="btn secondary" id="payroll106Back">Voltar à folha</button>'+
+  '<button type="button" class="btn secondary" id="payroll106Refresh">Atualizar conferência</button></div>',true);
+ $('#payroll106Back').onclick=async()=>{
+  const previous=window.sagasPayrollCalculation35;
+  if(previous?.data){await payrollMonthlyCalcScreen35();payrollMonthlyCalcResults35(previous.data);}
+ };
+ $('#payroll106Refresh').onclick=()=>payrollMonthlyClosing106(runId).catch(e=>toast(e.message,'error'));
 }
 function payrollMonthlyDetail35(i){
   const previous=window.sagasPayrollCalculation35;
