@@ -156,7 +156,7 @@ async function build65(c){
   const advanceEvidence=await payrollVacationAdvanceEvidence66(env,companyId,emp.occurrence_id,d);
   if(!advanceEvidence.payment_verified)
     add('ADIANTAMENTO_SEM_BAIXA_VALIDADA','O adiantamento externo não está vinculado a um título PAID com baixa contábil bancária validada.',emp.employee_id);
-  sources.push({employee_id:emp.employee_id,cost_center:cc,advance:emp.advance,
+  sources.push({employee_id:emp.employee_id,occurrence_id:emp.occurrence_id,cost_center:cc,advance:emp.advance,
    advance_evidence:advanceEvidence,month:emp.current_competence,components});
  }
  const sumCheck=check.sums||{};
