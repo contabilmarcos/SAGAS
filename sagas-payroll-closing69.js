@@ -47,7 +47,7 @@ export async function payrollMonthlyEndToEnd69(c){
  const provisionConfirmed=!!cycle&&cycle.run_id===runId;
  if(cycle&&cycle.run_id!==runId)pProblems.push({code:'OUTRA_REVISAO',message:'Provisões constituídas a partir de outra revisão da folha.'});
  sections.push(step69('PROVISOES','Constituição mensal de férias, terço e 13º',
-  provisionConfirmed?'CONCLUIDO':provision&&!pProblems.length?'PRONTO':'PENDENTE',pProblems,
+  provisionConfirmed&&!pProblems.length?'CONCLUIDO':provisionConfirmed?'CONFERIR':provision&&!pProblems.length?'PRONTO':'PENDENTE',pProblems,
   {cycle_id:cycle?.id||null,confirmed:provisionConfirmed,estimated_totals:provision?.totals||null,
    note:'A prévia é simplificada: remuneração variável, períodos aquisitivos e alterações salariais dependem de apuração específica.'}));
  const [accrual,uses]=await Promise.all([
@@ -59,6 +59,7 @@ export async function payrollMonthlyEndToEnd69(c){
   "SELECT p.id,p.journal_entry_id,j.status AS journal_status,p.total_cents FROM payroll_provision_postings45 p LEFT JOIN journal_entries j ON j.id=p.journal_entry_id AND j.company_id=p.company_id WHERE p.company_id=? AND p.kind='ACCRUAL' AND p.cycle_id=?"
  ).bind(companyId,cycle?.id||'').first());
  const postingDone=!!postedProvision&&postedProvision.journal_status==='POSTED';
+ if(postingDone){const n=accountingProblems.findIndex(x=>x.code==='ALREADY_POSTED');if(n>=0)accountingProblems.splice(n,1);}
  if(postedProvision&&postedProvision.journal_status!=='POSTED')accountingProblems.push({code:'DIARIO_NAO_POSTADO',message:'Diário de constituição não está postado.'});
  sections.push(step69('CONTABILIZACAO_PROVISOES','Contabilização das provisões',
   postingDone?'CONCLUIDO':accrual?.ready?'PRONTO':'PENDENTE',accountingProblems,
@@ -74,11 +75,11 @@ export async function payrollMonthlyEndToEnd69(c){
  if(hasVacations)sections.push(step69('FERIAS','Conciliação de férias com o fechamento',
   'PENDENTE',[{code:'FERIAS_INTEGRACAO_PROTEGIDA',message:'O fluxo de férias v100 ainda exige homologação integrada antes da liberação financeira/contábil.'}],
   {note:'Não repetir pagamento antecipado nem a despesa já provisionada.'}));
- const critical=sections.filter(x=>x.status==='PENDENTE').map(x=>x.id);
+ const critical=sections.filter(x=>x.status==='PENDENTE'||x.status==='CONFERIR'&&x.problems.length).map(x=>x.id);
  const finished=sections.filter(x=>x.status==='CONCLUIDO').map(x=>x.id);
  return {kind:'SAGAS_MONTHLY_CLOSING_V106',read_only:true,run_id:runId,competence:run.competence,
   employee_count:detail.envelopes.length,sections,finished,blocked:critical,
-  monthly_operational_ready:payrollOk&&financialComplete&&postingDone&&!hasVacations,
+  monthly_operational_ready:payrollOk&&financialComplete&&provisionConfirmed&&!pProblems.length&&postingDone&&!hasVacations,
   total_process_homologated:false,
   next_actions:sections.filter(s=>['PENDENTE','PRONTO'].includes(s.status)).map(s=>({
    stage:s.id,status:s.status,first_problem:s.problems[0]?.message||null
