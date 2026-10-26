@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { payrollProvisionEligibility42, payrollProvisions42 } from '../sagas-payroll-provisions42.js';
+import { payrollProvisions43 } from '../sagas-payroll-provisions43.js';
 
 const employee=(admission_date,paid_salary_cents,extra=[])=>({
  employee_id:'e1',employee_code:'00001',employee_name:'Funcionaria',
@@ -76,4 +77,16 @@ test('historico de salario diferente do envelope bloqueia contabilizacao',async(
  const result=await mock({salary:400000,paid:145161});
  assert.equal(result.unresolved_employee_count,1);
  assert.ok(result.items[0].flags.some(x=>x.includes('Salario pago nao coincide')));
+});
+
+test('impede constituicao com fotografia anterior ou sem token de previa',async()=>{
+ class HttpError extends Error{constructor(status,msg,code){super(msg);this.status=status;this.code=code;}}
+ const d={HttpError,requirePermission:async()=>{},ensureSchemaRevision:async()=>{},
+   preview42:async()=>({fingerprint:'revisao-atual',unresolved_employee_count:0})};
+ for(const incoming of ['revisao-antiga',undefined]){
+  await assert.rejects(()=>payrollProvisions43('accrue',{
+   env:{},companyId:'co',auth:{user:{id:'u1'}},runId:'run1',
+   body:{confirmation:'CONSTITUIR',preview_fingerprint:incoming},d
+  }),e=>e.code==='STALE_PROVISION_PREVIEW');
+ }
 });
