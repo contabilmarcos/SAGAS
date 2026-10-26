@@ -680,23 +680,38 @@ function payrollMonthlyCalcResults35(data){
 }
 async function payrollMonthlyClosing106(runId){
  const data=await api('/api/payroll/monthly-runs/'+encodeURIComponent(runId)+'/closing-audit');
- const labels={CONCLUIDO:'Concluído',PRONTO:'Pronto para executar',PENDENTE:'Pendente',CONFERIR:'Conferir',SEM_MOVIMENTOS:'Sem movimentações'};
+ const labels={CONCLUIDO:'Concluído e conferido',PRONTO:'Pronto para executar',PENDENTE:'Pendente',CONFERIR:'Conferir',SEM_MOVIMENTOS:'Sem movimentações'};
+ const explain=x=>{
+  const s=x.summary||{};
+  if(x.id==='FINANCEIRO')return s.integrated?'Títulos conciliados: '+String(s.payable_count??'—')+' · líquido '+payroll35Money(s.payable_total_cents)+' · diário '+String(s.journal_status||'não localizado'):'Ainda não integrado ao financeiro.';
+  if(x.id==='PROVISOES')return s.confirmed?'Provisão constituída nesta competência; verificar valores e contabilização.':'Constituição ainda não confirmada.';
+  if(x.id==='CONTABILIZACAO_PROVISOES')return s.posted?'Diário conferido · valor '+payroll35Money(s.amount_cents)+' · '+String(s.origin_count??'—')+' origens.':'Constituição sem diário válido identificado.';
+  if(x.id==='BAIXAS')return 'Movimentos: '+String(s.movement_count??'—')+' · contabilizados '+String(s.posted_count??'—')+' · pendentes '+String(s.pending_count??'—')+'.';
+  if(x.id==='ENCARGOS')return 'Estimativa patronal '+payroll35Money(s.totals?.total_cents)+'; recolhimentos não verificados.';
+  return '';
+ };
  const rows=(data.sections||[]).map(x=>{
   const pending=(x.problems||[]).map(p=>'<li>'+esc(p.message)+'</li>').join('');
+  const detail=explain(x);
+  const explanation=pending?'<ul class="help">'+pending+'</ul>':x.status==='PRONTO'?
+   '<span class="help">Falta executar esta etapa.</span>':x.status==='CONFERIR'?
+   '<span class="help">Prévia disponível; resultado definitivo ainda não confirmado.</span>':
+   '<span class="help">Sem divergências identificadas nesta conferência.</span>';
   return '<tr><td><b>'+esc(x.title)+'</b></td><td>'+esc(labels[x.status]||x.status)+'</td>'+
-   '<td>'+(pending?'<ul class="help">'+pending+'</ul>':'<span class="help">Nenhum impedimento detectado nesta consulta.</span>')+'</td></tr>';
+   '<td>'+(detail?'<p class="help">'+esc(detail)+'</p>':'')+explanation+'</td></tr>';
  }).join('');
- const actions=(data.next_actions||[]).map(a=>'<li>'+esc(a.stage)+': '+
-  esc(a.first_problem||'Verifique a configuração e execute o procedimento correspondente.')+'</li>').join('');
+ const stageTitles=new Map((data.sections||[]).map(s=>[s.id,s.title]));
+ const actions=(data.next_actions||[]).map(a=>'<li>'+esc(stageTitles.get(a.stage)||a.stage)+': '+
+  esc(a.first_problem||'Etapa pronta: conclua a operação correspondente antes de fechar a competência.')+'</li>').join('');
  openModal('Fechamento integrado — '+esc(data.competence||''),
   esc(String(data.employee_count||0))+' funcionário(s) · conferência da folha, financeiro, encargos e provisões.',
-  '<p class="help"><b>Diagnóstico integrado de consulta.</b> Esta tela não calcula novamente a folha, constitui provisões, cria títulos ou contabiliza.</p>'+
+  '<p class="help"><b>Diagnóstico integrado de consulta.</b> Esta tela não recalcula a folha, constitui provisões, cria títulos nem contabiliza.</p>'+
   '<div class="table-wrap"><table class="table"><thead><tr><th>Processo</th><th>Situação</th><th>Conferência</th></tr></thead>'+
   '<tbody>'+rows+'</tbody></table></div>'+
-  '<p><b>Fechamento mensal:</b> '+esc(data.monthly_operational_ready?'Conciliação básica satisfeita — requer homologação.':'Pendências a resolver')+'</p>'+
+  '<p><b>Fechamento mensal:</b> '+esc(data.monthly_operational_ready?'Conciliação operacional identificada — requer homologação externa.':'Existem etapas ou conferências pendentes.')+'</p>'+
   '<p class="section-title">O que falta resolver</p>'+
-  (actions?'<ul class="help">'+actions+'</ul>':'<p class="help">Nenhuma pendência operacional identificada.</p>')+
-  '<p class="help">O cálculo das provisões ainda requer aperfeiçoamentos para médias, períodos aquisitivos e afastamentos. Encargos estimados sobre provisões não são contabilizados por esta integração.</p>'+
+  (actions?'<ul class="help">'+actions+'</ul>':'<p class="help">Nenhuma ação interna pendente identificada. Ainda é necessária a conferência de balancete, extratos e guias aplicáveis.</p>')+
+  '<p class="help">As provisões são simplificadas e não contemplam automaticamente todas as médias, afastamentos e períodos aquisitivos. Encargos estimados sobre provisões não são contabilizados nesta integração. Férias integradas permanecem protegidas contra lançamentos duplicados.</p>'+
   '<div class="form-actions"><button type="button" class="btn secondary" id="payroll106Back">Voltar à folha</button>'+
   '<button type="button" class="btn secondary" id="payroll106Refresh">Atualizar conferência</button></div>',true);
  $('#payroll106Back').onclick=async()=>{
