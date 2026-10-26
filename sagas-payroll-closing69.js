@@ -30,11 +30,14 @@ export async function payrollMonthlyEndToEnd69(c){
  // O historico integrado prevalece sobre bloqueios da previa atual (ex.: lote
  // fechado depois da contabilizacao). Confere origem, diario e titulos reais.
  const financialRecord=await call('FINANCEIRO_GRAVADO',()=>env.DB.prepare(
-  "SELECT p.journal_entry_id,p.payable_count,p.payable_total_cents,p.source_fingerprint,j.status AS journal_status,j.source_module,j.source_reference FROM payroll_finance_postings37 p LEFT JOIN journal_entries j ON j.id=p.journal_entry_id AND j.company_id=p.company_id WHERE p.company_id=? AND p.run_id=?"
+  "SELECT p.journal_entry_id,p.payable_count,p.payable_total_cents,p.source_fingerprint,j.status AS journal_status,j.source_module,j.source_reference,j.total_debit_cents,j.total_credit_cents FROM payroll_finance_postings37 p LEFT JOIN journal_entries j ON j.id=p.journal_entry_id AND j.company_id=p.company_id WHERE p.company_id=? AND p.run_id=?"
  ).bind(companyId,runId).first());
  const titles=financialRecord?await call('TITULOS_GRAVADOS',()=>env.DB.prepare(
-  "SELECT COUNT(l.payable_id) AS link_count,COUNT(t.id) AS payable_count,COUNT(DISTINCT l.employee_id) AS employee_count,COALESCE(SUM(t.amount_cents),0) AS total_cents,COALESCE(SUM(CASE WHEN t.id IS NULL OR t.company_id<>? OR t.source_type<>'PAYROLL_MONTHLY' OR t.source_id<>l.run_id||':'||l.employee_id THEN 1 ELSE 0 END),0) AS invalid_count FROM payroll_finance_payables37 l LEFT JOIN financial_payables t ON t.id=l.payable_id WHERE l.company_id=? AND l.run_id=?"
+  "SELECT COUNT(l.payable_id) AS link_count,COUNT(t.id) AS payable_count,COUNT(DISTINCT l.employee_id) AS employee_count,COALESCE(SUM(t.amount_cents),0) AS total_cents,COALESCE(SUM(CASE WHEN t.id IS NULL OR t.company_id<>? OR t.source_type<>'PAYROLL_MONTHLY' OR t.source_id<>l.run_id||':'||l.employee_id OR t.status='CANCELLED' THEN 1 ELSE 0 END),0) AS invalid_count FROM payroll_finance_payables37 l LEFT JOIN financial_payables t ON t.id=l.payable_id WHERE l.company_id=? AND l.run_id=?"
  ).bind(companyId,companyId,runId).first()):null;
+ const journalLines=financialRecord?await call('PARTIDAS_FINANCEIRO',()=>env.DB.prepare(
+  "SELECT side,cost_center_id,COALESCE(SUM(amount_cents),0) AS total_cents,COUNT(*) AS lines FROM journal_lines WHERE company_id=? AND entry_id=? GROUP BY side,cost_center_id"
+ ).bind(companyId,financialRecord.journal_entry_id).all()):null;
  const financialProblems=[];
  if(financialRecord){
   const problem=(code,message)=>financialProblems.push({code,message});
@@ -43,6 +46,27 @@ export async function payrollMonthlyEndToEnd69(c){
   if(financialRecord.journal_status!=='POSTED'||financialRecord.source_module!=='PAYROLL'||
      financialRecord.source_reference!=='MONTHLY:'+runId)
    problem('FINANCE_JOURNAL_INVALID','Diário financeiro ausente, anulado ou com origem divergente.');
+  if(!journalLines)problem('FINANCE_LINES_UNAVAILABLE','Não foi possível conferir as partidas contábeis da folha.');
+  else{
+   const rows=journalLines.results||[],centers=new Set(detail.envelopes.map(e=>e.cost_center_id).filter(Boolean));
+   let debit=0,credit=0;
+   const sums=new Map();
+   for(const line of rows){
+    const cents=Number(line.total_cents),qty=Number(line.lines);
+    if(!['D','C'].includes(line.side)||!Number.isSafeInteger(cents)||cents<=0||
+       !Number.isSafeInteger(qty)||qty<=0||!line.cost_center_id||!centers.has(line.cost_center_id))
+     problem('FINANCE_LINE_INVALID','Partida contábil com valor, lado ou centro de custo incompatível.');
+    if(line.side==='D')debit+=cents;
+    if(line.side==='C')credit+=cents;
+    const key=line.cost_center_id||'SEM_CC';
+    const p=sums.get(key)||{D:0,C:0};p[line.side]=(p[line.side]||0)+cents;sums.set(key,p);
+   }
+   if(!Number.isSafeInteger(debit)||debit<=0||debit!==credit||
+      debit!==Number(financialRecord.total_debit_cents)||
+      credit!==Number(financialRecord.total_credit_cents)||
+      [...sums.values()].some(p=>p.D!==p.C))
+    problem('FINANCE_JOURNAL_UNBALANCED','Diário financeiro diverge do cabeçalho ou está desequilibrado por centro de custo.');
+  }
   if(!titles)problem('PAYABLES_UNAVAILABLE','Não foi possível conferir títulos financeiros.');
   else{
    const expectedCount=detail.envelopes.filter(e=>Number(e.net_cents)>0).length;
@@ -58,7 +82,7 @@ export async function payrollMonthlyEndToEnd69(c){
       Number(titles.total_cents)!==Number(detail.totals?.net_cents))
     problem('FINANCE_TOTALS_MISMATCH','Títulos do líquido não conciliam com funcionários, total ou origem da folha.');
   }
-  if(errors.FINANCEIRO_GRAVADO||errors.TITULOS_GRAVADOS)
+  if(errors.FINANCEIRO_GRAVADO||errors.TITULOS_GRAVADOS||errors.PARTIDAS_FINANCEIRO)
    problem('FINANCE_AUDIT_FAILED','Consulta dos registros financeiros incompleta.');
  }else if(errors.FINANCEIRO_GRAVADO){
   financialProblems.push(errors.FINANCEIRO_GRAVADO);
@@ -71,6 +95,7 @@ export async function payrollMonthlyEndToEnd69(c){
   financialProblems,{integrated:!!financialRecord,employee_count:titles?.employee_count??finance?.employee_count??0,
    payable_total_cents:financialRecord?.payable_total_cents??finance?.payable_total_cents??null,
    journal_entry_id:financialRecord?.journal_entry_id||null,journal_status:financialRecord?.journal_status||null,
+   journal_total_cents:financialRecord?.total_debit_cents??null,
    payable_count:titles?.payable_count??null,
    note:'Títulos do líquido não equivalem a pagamento bancário. A contabilização já feita é conciliada por sua origem histórica.'}));
  const employerProblems=employer?.problems||[errors.ENCARGOS||{code:'NO_PREVIEW',message:'Encargos não disponíveis.'}];
