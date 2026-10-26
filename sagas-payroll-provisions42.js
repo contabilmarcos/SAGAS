@@ -124,10 +124,20 @@ export async function payrollProvisions42(c){
   'fgts_estimate_cents','charges_estimate_cents','combined_estimate_cents'];
  const totals=Object.fromEntries(fields.map(key=>[key,items.reduce((sum,r)=>sum+r[key],0)]));
  if(fields.some(key=>!Number.isSafeInteger(totals[key])))err42(d,'Soma de provisoes invalida.','INVALID_PROVISION_TOTAL');
+ const fingerprint=d.hash?await d.hash({
+  version:108,run_id:run.id,run_fingerprint:run.source_fingerprint,
+  settings_revision:settings.revision,competence:month,
+  employees:items.map(({employee_id,admission_date,eligible_days,salary_base_cents,
+   payroll_salary_snapshot_cents,counts_for_13th,flags,component, ...rest})=>({
+    employee_id,admission_date,eligible_days,salary_base_cents,payroll_salary_snapshot_cents,
+    counts_for_13th,flags,vacation_cents:rest.vacation_cents,
+    vacation_third_cents:rest.vacation_third_cents,thirteenth_cents:rest.thirteenth_cents
+  })),totals
+ }):null;
  return {kind:'PROVISOES_MENSAIS_PREVIA_108',
   run:{id:run.id,competence:month,revision:run.revision,status:run.status},
   settings_effective_from:settings.effective_from,settings_revision:settings.revision,
-  employee_count:items.length,items,totals,read_only:true,is_monthly_reference:true,
+  employee_count:items.length,items,totals,fingerprint,read_only:true,is_monthly_reference:true,
   posted:false,ready_for_accounting:false,ready_for_payment:false,
   unresolved_employee_count:items.filter(i=>i.flags.length).length,
   eligibility_checked_count:items.filter(i=>i.eligible_days!==null).length,
