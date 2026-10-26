@@ -98,6 +98,8 @@ export async function payrollVacationProvision67(c){
    ready_for_accounting:false,ready_for_finance:false,read_only:true,
    note:'Módulos contábeis de provisões incompletos. Nenhum lançamento foi criado.'};
  }
+ const useLinksAvailable=await exists67(env,'payroll_vacation_provision_use_links68');
+ if(!useLinksAvailable)add('USE_LINKS_NOT_CONFIGURED','O módulo de associação de baixas ainda não foi inicializado.');
  const cache=new Map(),items=[];
  let provisionPosted=0,usePosted=0,currentEarned=0;
  for(const source of pkg.sources||[]){
@@ -148,6 +150,27 @@ export async function payrollVacationProvision67(c){
       add('MOVEMENT_POSTING_CHANGED','Baixa/constituição vinculada a diário de tipo ou competência divergente.',employeeId,entry.component);
     }
    }
+   // A conciliação documental só é suficiente quando a própria baixa
+   // está explicitamente ligada à ocorrência e ao diário validado.
+   const explicit=useLinksAvailable?
+    ((await env.DB.prepare(
+     "SELECT l.id,l.movement_id,l.amount_cents,m.employee_id,m.component,m.competence,m.movement_kind,m.document_ref,pm.posting_id FROM payroll_vacation_provision_use_links68 l JOIN payroll_provision_movements43 m ON m.id=l.movement_id AND m.company_id=l.company_id LEFT JOIN payroll_provision_posted_movements45 pm ON pm.company_id=m.company_id AND pm.movement_id=m.id WHERE l.company_id=? AND l.occurrence_id=? AND l.component=? AND l.competence=? AND l.status='ACTIVE' ORDER BY l.id LIMIT 101"
+    ).bind(companyId,source.occurrence_id,entry.component,pkg.run.competence).all()).results||[]):[];
+   if(explicit.length>100)add('EXPLICIT_LINK_LIMIT','Mais de 100 vínculos para um mesmo componente.',employeeId,entry.component);
+   const movementsById=new Map(movements.map(m=>[m.id,m]));
+   let linkedSum=0;const linkedIds=new Set();
+   for(const l of explicit){
+    const amount=safe67(d,l.amount_cents,'vínculo de baixa');
+    const movement=movementsById.get(l.movement_id);
+    if(linkedIds.has(l.movement_id)||!movement||l.employee_id!==employeeId||
+       l.component!==entry.component||l.competence!==pkg.run.competence||
+       l.movement_kind!=='USE'||l.document_ref!==doc||
+       !l.posting_id||Number(movement.amount_cents)!==-amount||
+       !cache.get(l.posting_id)?.valid){
+       add('USE_LINK_INVALID','Origem da baixa vinculada ao recibo ou diário está inconsistente.',employeeId,entry.component);
+    }else linkedSum+=amount;
+    linkedIds.add(l.movement_id);
+   }
    const earned=safe67(d,entry.earned_cents,'férias ou terço da competência');
    currentEarned+=earned;provisionPosted+=postedAccrual;usePosted+=postedUse;
    const operational=opening+accrual-used;
@@ -156,6 +179,7 @@ export async function payrollVacationProvision67(c){
    if(unpostedUse>0)add('USE_NOT_POSTED','Há baixas operacionais ainda não contabilizadas.',employeeId,entry.component);
    if(unpostedAccrual>0)add('ACCRUAL_NOT_POSTED','Há provisões constituídas sem contabilização.',employeeId,entry.component);
    if(opening>0)add('OPENING_WITHOUT_GL','O saldo de abertura é operacional e precisa ser conciliado ao balanço patrimonial.',employeeId,entry.component);
+   if(linkedSum!==earned)add('USE_OCCURRENCE_UNLINKED','Baixas vinculadas à ocorrência não somam a verba desta competência.',employeeId,entry.component);
    if(!doc)add('VACATION_DOCUMENT_MISSING','Documento de origem do recibo de férias ausente.',employeeId,entry.component);
    else if(matchingUse!==earned)
     add('USE_DOCUMENT_MISMATCH','As baixas desta competência/documento não correspondem à verba de férias ou terço.',employeeId,entry.component);
@@ -167,6 +191,8 @@ export async function payrollVacationProvision67(c){
     accrual_posted_cents:postedAccrual,accrual_unposted_cents:unpostedAccrual,
     use_posted_cents:postedUse,use_unposted_cents:unpostedUse,
     matched_document_use_cents:matchingUse,matched_document_posted_use_cents:matchingPostedUse,
+    explicitly_linked_use_cents:linkedSum,linked_to_occurrence:linkedSum===earned,
+    explicit_link_count:explicit.length,occurrence_id:source.occurrence_id,
     recognized_journal_entry_ids:[...journals].filter(Boolean),source_document_ref:doc||null,
     historical_gl_movements_cents:postedAccrual-postedUse,
     historical_gl_balance_verified:false});
@@ -177,7 +203,7 @@ export async function payrollVacationProvision67(c){
  if(items.length!==pkg.sources.length)
   add('EMPLOYEES_NOT_RECONCILED','Há funcionários sem conferência de provisões.');
  const journals=[...cache.values()];
- warnings.push('A baixa operacional de férias não possui identificador obrigatório de ocorrência. O documento e a competência são indícios, mas não bastam para liberar contabilização automática.');
+ warnings.push('O vínculo explícito da baixa à ocorrência não substitui a conciliação do saldo do passivo e das partidas por conta contábil no balancete.');
  warnings.push('O saldo contábil do passivo não pode ser deduzido somente da movimentação operacional; conciliar abertura, rateios e contas efetivas no balancete.');
  warnings.push('A memória v103 continua sendo uma proposta de partidas da folha mensal, sem reconhecimento automático de diferenças como despesa.');
  return {applicable:true,kind:'VACATION_PROVISION_LEDGER_V105',
@@ -186,8 +212,9 @@ export async function payrollVacationProvision67(c){
   totals:{vacation_entitlement_cents:currentEarned,
    posted_accrual_movement_cents:provisionPosted,posted_use_movement_cents:usePosted},
   source_fingerprint:pkg.fingerprint,
+  reconciliation_fingerprint:await d.hash({version:105,source:pkg.fingerprint,components:items}),
   payment_verified_in_financial:items.length>0&&items.every(x=>x.payment_evidence?.payment_verified===true),
   accounting_posting_enabled:false,ready_for_accounting:false,ready_for_finance:false,
   read_only:true,
-  note:'Conferência do diário de provisões e dos documentos de férias. Não cria lançamentos, baixas ou títulos. Origem de uso ainda precisa de vínculo inequívoco à ocorrência.'};
+  note:'Conferência do diário e dos vínculos explícitos de baixas à ocorrência. Não cria lançamentos, baixas ou títulos.'};
 }
