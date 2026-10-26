@@ -286,6 +286,7 @@ async function payrollVacation65Open(month,occ,runId){
   (issues?'<ul class="help">'+issues+'</ul>':'<p class="help">Sem pendências nos controles consultados.</p>')+
   '<p class="section-title">Observações</p><ul class="help">'+warnings+'</ul>'+
   '<div class="form-actions"><button type="button" class="btn secondary" id="vac103Back">Voltar</button>'+
+  '<button type="button" class="btn secondary" id="vac104Link">Vincular pagamento antecipado</button>'+
   (!documented&&can('payroll.manage')?
    '<button type="button" class="btn primary" id="vac103Record">Registrar conferência</button>':'')+
   (documented&&can('payroll.manage')?
@@ -293,6 +294,7 @@ async function payrollVacation65Open(month,occ,runId){
   '<button type="button" class="btn secondary" id="vac103Reload">Atualizar</button></div>',true);
  $('#vac103Back').onclick=()=>payrollVacation64Open(month,occ,runId).catch(e=>toast(e.message,'error'));
  $('#vac103Reload').onclick=()=>payrollVacation65Open(month,occ,runId).catch(e=>toast(e.message,'error'));
+ if($('#vac104Link'))$('#vac104Link').onclick=()=>payrollVacation66Open(month,occ,runId).catch(e=>toast(e.message,'error'));
  if($('#vac103Record'))$('#vac103Record').onclick=()=>{
   openModal('Registrar memória contábil',esc(occ.employee_name||''),
    '<p class="help">Será salvo apenas o histórico de conferência. Esta ação não cria lançamento contábil nem pagamento.</p>'+
@@ -327,5 +329,60 @@ async function payrollVacation65Open(month,occ,runId){
     await payrollVacation65Open(month,occ,runId);
    }catch(err){toast(err.message||String(err),'error');button.disabled=false}
   };
+ };
+}
+
+async function payrollVacation66Open(month,occ,runId){
+ const url='/api/payroll/vacation-advance-finance-link';
+ const data=await api(url+'?occurrence_id='+encodeURIComponent(occ.id));
+ const ev=data.linked||{};
+ const rows=(data.candidates||[]).map(p=>
+  '<option value="'+esc(p.id)+'">'+esc(p.number||p.id)+' | '+
+  esc(p.payment_date||'')+' | '+esc(vacation99Money(p.payment_cash_cents))+'</option>').join('');
+ const active=ev.linked===true;
+ const body='<p class="help"><b>Vínculo documental interno.</b> Somente títulos existentes, já pagos e com baixa contábil validada podem ser utilizados. Esta tela não gera novo pagamento ou lançamento.</p>'+
+  '<p><b>Funcionário:</b> '+esc(data.employee_name||occ.employee_name||'')+
+  '<p><b>Recibo:</b> '+esc(data.advance?.document_ref||'')+
+  ' · data '+esc(data.advance?.payment_date||'')+
+  ' · líquido '+esc(vacation99Money(data.advance?.amount_cents))+'</p>'+
+  '<p>Situação: <b>'+esc(ev.status==='VALID'?'Vinculado e conferido':
+   active?'Vínculo existente com pendência':'Aguardando vínculo')+'</b></p>'+
+  (active?'<p class="help">Título: '+esc(ev.payable_number||ev.payable_id||'')+
+   ' · '+esc(ev.payment_verified?'Baixa financeira registrada e conciliada ao diário.':'Conferência pendente.')+'</p>':'')+
+  (!active&&can('payroll.manage')?
+   '<form id="vac104LinkForm"><label class="field"><span>Título financeiro pago</span>'+
+   '<select name="payable_id" required><option value="">Selecione o título</option>'+rows+'</select></label>'+
+   '<p class="help">Os títulos sugeridos coincidem em valor, data e documento. Se não houver nenhum, regularize primeiro a baixa no Financeiro.</p>'+
+   '<label class="field"><span>Digite VINCULAR ADIANTAMENTO</span>'+
+   '<input name="confirmation" autocomplete="off" required></label>'+
+   '<div class="form-actions"><button class="btn primary" type="submit">Vincular título existente</button></div></form>':'')+
+  (active&&can('payroll.manage')?
+   '<form id="vac104VoidForm"><label class="field"><span>Motivo da desvinculação</span>'+
+   '<textarea name="notes" minlength="15" maxlength="600" required></textarea></label>'+
+   '<label class="field"><span>Digite DESVINCULAR ADIANTAMENTO</span>'+
+   '<input name="confirmation" autocomplete="off" required></label>'+
+   '<div class="form-actions"><button class="btn danger" type="submit">Desvincular</button></div></form>':'')+
+  '<div class="form-actions"><button class="btn secondary" id="vac104Back" type="button">Voltar à conferência</button>'+
+  '<button class="btn secondary" id="vac104Reload" type="button">Atualizar</button></div>';
+ openModal('Férias — vínculo do adiantamento (v104)',esc(occ.employee_name||''),body,true);
+ $('#vac104Back').onclick=()=>payrollVacation65Open(month,occ,runId).catch(e=>toast(e.message,'error'));
+ $('#vac104Reload').onclick=()=>payrollVacation66Open(month,occ,runId).catch(e=>toast(e.message,'error'));
+ if($('#vac104LinkForm'))$('#vac104LinkForm').onsubmit=async e=>{
+  e.preventDefault();const form=e.currentTarget,button=form.querySelector('[type="submit"]');button.disabled=true;
+  try{
+   await api(url,{method:'POST',body:{action:'link',occurrence_id:occ.id,
+    payable_id:form.elements.payable_id.value,confirmation:form.elements.confirmation.value}});
+   toast('Adiantamento vinculado à baixa existente. Nenhum novo pagamento foi gerado.');
+   await payrollVacation66Open(month,occ,runId);
+  }catch(err){toast(err.message||String(err),'error');button.disabled=false}
+ };
+ if($('#vac104VoidForm'))$('#vac104VoidForm').onsubmit=async e=>{
+  e.preventDefault();const form=e.currentTarget,button=form.querySelector('[type="submit"]');button.disabled=true;
+  try{
+   await api(url,{method:'POST',body:{action:'void',occurrence_id:occ.id,
+    notes:form.elements.notes.value,confirmation:form.elements.confirmation.value}});
+   toast('Vínculo desfeito; histórico preservado.');
+   await payrollVacation66Open(month,occ,runId);
+  }catch(err){toast(err.message||String(err),'error');button.disabled=false}
  };
 }
