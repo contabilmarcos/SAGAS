@@ -72,7 +72,7 @@ export async function payrollVacationAccounting64(c){
   add('PROVISOES_NAO_INICIALIZADAS','Histórico de provisões ou registro de contabilização de baixas ainda não está disponível.');
  if(!hasAdvances)add('ADIANTAMENTO_SEM_HISTORICO','O cadastro documental de adiantamento não está disponível.');
  if(!hasUsage)add('MEMORIA_MENSAL_AUSENTE','Não existe estrutura de vínculo das férias com a folha mensal.');
- const source=(hasUsage&&hasAdvances)?(await env.DB.prepare(
+ const source=(hasUsage&&hasAdvances)?((await env.DB.prepare(
   "SELECT u.stage_id,u.employee_id,s.occurrence_id,s.vacation_run_id,l.reconciliation_id,r.advance_id,r.plan_json,a.payment_date AS advance_payment_date,a.amount_cents AS advance_amount_cents,a.external_reference,a.status AS advance_status,v.status AS vacation_status FROM payroll_vacation_monthly_usage100 u JOIN payroll_vacation_monthly_stage61 s ON s.company_id=u.company_id AND s.id=u.stage_id JOIN payroll_vacation_envelope_links58 l ON l.company_id=u.company_id AND l.employee_id=u.employee_id AND l.occurrence_id=s.occurrence_id AND l.run_id=s.vacation_run_id AND l.status='ACTIVE' JOIN payroll_vacation_reconciliations55 r ON r.company_id=l.company_id AND r.id=l.reconciliation_id AND r.status='RECONCILED' LEFT JOIN payroll_vacation_advances54 a ON a.company_id=r.company_id AND a.id=r.advance_id WHERE u.company_id=? AND u.run_id=? ORDER BY u.employee_id"
  ).bind(companyId,runId).all()).results||[]):[];
  const employees=new Map(closure.items.map(x=>[x.employee_id,x]));
