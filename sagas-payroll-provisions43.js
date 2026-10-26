@@ -52,6 +52,9 @@ async function accrue43(c){
  await d.requirePermission(env,auth.user.id,companyId,'payroll.manage');
  if(body?.confirmation!=='CONSTITUIR')e43(d,'Confirme digitando CONSTITUIR.','CONFIRMATION_REQUIRED',400);
  const preview=await d.preview42(runId);
+ if(!preview.fingerprint||typeof body?.preview_fingerprint!=='string'||
+    preview.fingerprint!==body.preview_fingerprint)
+  e43(d,'A previa de provisoes mudou ou nao foi conferida. Atualize os valores antes de constituir.','STALE_PROVISION_PREVIEW');
  if(preview.unresolved_employee_count)e43(d,'Há eventos variáveis; confira as médias e os direitos antes de constituir.','VARIABLE_EARNINGS');
  if(preview.employee_count>90)e43(d,'Limite de 90 empregados por constituição.','LIMIT');
  const period=month43(preview.run.competence,d);
