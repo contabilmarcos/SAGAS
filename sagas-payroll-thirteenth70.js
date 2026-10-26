@@ -75,14 +75,17 @@ async function preview70(c){
   "SELECT e.id,e.name,e.admission_date,e.active,e.cost_center_id,cc.code AS cost_center_code,n.number AS employee_number, (SELECT h.salary_cents FROM payroll_salary_history h WHERE h.company_id=e.company_id AND h.employee_id=e.id AND h.effective_from<=? ORDER BY h.effective_from DESC LIMIT 1) AS salary_cents, (SELECT h.situation FROM payroll_employee_functional_history h WHERE h.company_id=e.company_id AND h.employee_id=e.id AND h.effective_from<=? ORDER BY h.effective_from DESC LIMIT 1) AS situation FROM payroll_employees e LEFT JOIN cost_centers cc ON cc.company_id=e.company_id AND cc.id=e.cost_center_id LEFT JOIN payroll_employee_numbers n ON n.company_id=e.company_id AND n.employee_id=e.id WHERE e.company_id=? AND e.admission_date<=? ORDER BY e.name,e.id LIMIT 151"
  ).bind(salaryEnd,salaryEnd,companyId,end).all()).results||[];
  if(employees.length>150)bad70(d,'EMPLOYEE_LIMIT','Mais de 150 empregados no ano: confira em lotes menores.');
- const [occurrences,variable,advances]=await Promise.all([
+ const [occurrences,variable,dependentRows,advances]=await Promise.all([
   env.DB.prepare("SELECT employee_id,kind,COUNT(*) AS total FROM payroll_employee_occurrences WHERE company_id=? AND start_date<=? AND end_date>=? GROUP BY employee_id,kind")
    .bind(companyId,end,year+'-01-01').all(),
   env.DB.prepare("SELECT m.employee_id,COUNT(*) AS total FROM payroll_movements m JOIN payroll_events e ON e.id=m.event_id AND e.company_id=m.company_id JOIN payroll_competences comp ON comp.id=m.competence_id AND comp.company_id=m.company_id WHERE m.company_id=? AND comp.competence>=? AND comp.competence<=? AND e.event_type='PROVENTO' GROUP BY m.employee_id")
    .bind(companyId,year+'-01',year+'-12').all(),
+  env.DB.prepare("SELECT employee_id,COUNT(*) AS total FROM payroll_employee_dependents WHERE company_id=? AND irrf_eligible=1 AND effective_from<=? AND (effective_to IS NULL OR effective_to>=?) GROUP BY employee_id")
+   .bind(companyId,year+'-12-20',year+'-12-20').all(),
   advances70(env,companyId,year)
  ]);
  const specials=new Map(),variableSet=new Set((variable.results||[]).map(x=>x.employee_id));
+ const dependents=new Map((dependentRows.results||[]).map(x=>[x.employee_id,Number(x.total)]));
  for(const o of occurrences.results||[]){
   const a=specials.get(o.employee_id)||[];a.push(o.kind);specials.set(o.employee_id,a);
  }
@@ -111,7 +114,7 @@ async function preview70(c){
    if(!advance)blockers.push('Adiantamento nao documentado. Antes de quitar, registre o pagamento anterior ou faca conciliacao especifica.');
    if(advance&&Number(advance.amount_cents)>full)blockers.push('Adiantamento declarado superior ao direito total.');
    if(!blockers.length){
-    try{tax=d.taxes(full,full,Math.max(0,full-Number(advance.amount_cents)),year+'-12',year+'-12-20',0)}
+    try{tax=d.taxes(full,full,Math.max(0,full-Number(advance.amount_cents)),year+'-12',year+'-12-20',dependents.get(employee.id)||0)}
     catch(e){blockers.push('Calculo tributario: '+String(e?.message||e).slice(0,180))}
    }
   }
@@ -125,7 +128,7 @@ async function preview70(c){
    employee_name:employee.name,admission_date:employee.admission_date,
    cost_center_id:employee.cost_center_id,cost_center_code:employee.cost_center_code,
    reference_salary_cents:Number.isSafeInteger(salary)?salary:null,
-   avos,advance:advance?{id:advance.id,amount_cents:Number(advance.amount_cents),
+   avos,irrf_dependents:dependents.get(employee.id)||0,advance:advance?{id:advance.id,amount_cents:Number(advance.amount_cents),
     payment_date:advance.payment_date,document_ref:advance.document_ref,
     declared_external:true,bank_verified:false}:null,
    calculation,blockers,warnings,ready:blockers.length===0,
