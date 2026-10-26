@@ -169,7 +169,7 @@ async function build65(c){
      advance:x.advance,provisions:x.provisions})),
    lines,source_journals:sources.map(x=>({id:x.employee_id,components:x.components}))});
  return {applicable:true,kind:'VACATION_ACCOUNTING_PACKAGE_V103',
-  run:{id:runId,competence:evidence.competence,status:evidence.status,revision:evidence.revision},
+  run:{id:runId,competence:evidence.competence,status:evidence.status,revision:evidence.revision,source_fingerprint:evidence.source_fingerprint},
   sources,lines,problems,warnings,
   sums:{monthly_net_cents:sumPayables,debit_cents:sumDebits,credit_cents:sumCredits,
    compensated_gross_cents:Number(sumCheck.compensated_gross_cents||0)},
