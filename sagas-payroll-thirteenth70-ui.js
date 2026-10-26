@@ -45,8 +45,15 @@ async function payrollThirteenth70Open(year,phase){
   ' · <b>FGTS da parcela (referência):</b> '+fmt(t.fgts_cents)+
   ' · <b>Líquido da etapa:</b> '+fmt(t.net_cents)+'</p>'+
   (d.warnings||[]).map(w=>'<p class="help">'+esc(w)+'</p>').join('')+
-  '<div class="form-actions"><button type="button" class="btn secondary" id="p13Close">Fechar</button></div>',true);
+  '<div class="form-actions">'+
+  (can('payroll.manage')&&d.totals.blocked===0&&!d.problems.length?
+   '<button type="button" class="btn primary" id="p13Calculate">Registrar cálculo</button>':'')+
+  '<button type="button" class="btn secondary" id="p13History">Histórico de cálculos</button>'+
+  '<button type="button" class="btn secondary" id="p13Close">Fechar</button></div>',true);
  document.getElementById('p13Close').onclick=closeModal;
+ if(document.getElementById('p13Calculate'))
+  document.getElementById('p13Calculate').onclick=()=>payrollThirteenth71Calculate(d);
+ document.getElementById('p13History').onclick=()=>payrollThirteenth71History(selectedYear,selectedPhase).catch(e=>toast(e.message,'error'));
  document.getElementById('p13Refresh').onclick=()=>payrollThirteenth70Open(
   document.getElementById('p13Year').value,document.getElementById('p13Phase').value).catch(e=>toast(e.message,'error'));
  $$('[data-13-declare]').forEach(button=>button.onclick=()=>{
