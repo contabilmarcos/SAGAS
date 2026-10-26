@@ -21,6 +21,7 @@ import { payrollVacationStage61, payrollVacationBlockMonthly61 } from './sagas-p
 import { payrollVacationMonthly100, payrollVacationMonthlySchema100 } from './sagas-payroll-vacation62.js';
 import { payrollVacationClosure63 } from './sagas-payroll-vacation63.js';
 import { payrollVacationAccounting64 } from './sagas-payroll-vacation64.js';
+import { payrollVacationPosting65 } from './sagas-payroll-vacation65.js';
 import { payrollProvisionAccounting44 } from './sagas-payroll-provisions44.js';
 // SAGAS Worker v96 - Registro auditável do envelope próprio VACATION de férias | cumulativo desde v49
 // ===== utils.js =====
@@ -11121,6 +11122,31 @@ async function route(request, env) {
     return ok(await payrollVacationAccounting64({
       env,companyId,auth,request,runId:p.id,
       d:{HttpError,requirePermission,
+        monthlyRunDetail:payrollMonthlyRunDetail35,
+        monthlyConference:payrollMonthlyConference36,
+        employerPreview:runId=>payrollEmployer40('preview',{
+          env,companyId,auth,request,runId,
+          d:{HttpError,requirePermission,ensureSchemaRevision,
+            payrollMonthlyRunDetail35,payrollMonthlyConference36}
+        })}
+    }));
+  }
+  // v103: construir ou guardar conferência imutável de partidas propostas.
+  // Não gera título financeiro, diário, provisão, pagamento nem guia.
+  p=routeMatch(path,'/api/payroll/monthly-runs/:id/vacation-accounting-package');
+  if(p&&(method==='GET'||method==='POST')){
+    await ensureSchemaRevision(env,'payroll-calculation-foundation',1,()=>ensurePayrollCalculationFoundation34(env));
+    await ensureSchemaRevision(env,'payroll-monthly-review',1,()=>ensurePayrollMonthlyReviewSchema36(env));
+    await ensureSchemaRevision(env,'payroll-vacation-monthly-use100',1,()=>payrollVacationMonthlySchema100(env));
+    await ensureSchemaRevision(env,'purchasing',1,async()=>{
+      await ensurePurchasingSchema(env);await ensurePurchaseIntegrationSchema(env);await ensureRmPurchasingSchema(env);
+    });
+    await payroll37Call('settings');
+    const body=method==='POST'?await readJson(request):{};
+    return ok(await payrollVacationPosting65(method==='GET'?'read':String(body.action||'record'),{
+      env,companyId,auth,request,runId:p.id,body,
+      d:{HttpError,requirePermission,ensureSchemaRevision,audit,uuid,
+        hash:payrollProcessingSnapshotHash28,
         monthlyRunDetail:payrollMonthlyRunDetail35,
         monthlyConference:payrollMonthlyConference36,
         employerPreview:runId=>payrollEmployer40('preview',{
