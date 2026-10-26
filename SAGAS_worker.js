@@ -1912,6 +1912,11 @@ async function entrySnapshot(env, companyId, id) {
 async function updateEntry(env, request, auth, companyId, id, body) {
   await ensureEntryMaintenanceSchema(env);
   await requirePermission(env,auth.user.id,companyId,"accounting.entry.edit");
+  const vac66Table=await env.DB.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='payroll_vacation_advance_payments66' LIMIT 1").first();
+  if(vac66Table){
+    const vac66Link=await env.DB.prepare("SELECT id FROM payroll_vacation_advance_payments66 WHERE company_id=? AND journal_entry_id=? AND status='ACTIVE' LIMIT 1").bind(companyId,id).first();
+    if(vac66Link)throw new HttpError(409,'A partida está vinculada ao pagamento de férias. Desvincule antes de editar.','VACATION_ADVANCE_JOURNAL_LINKED');
+  }
 
   const before=await entrySnapshot(env,companyId,id);
   if(before.source_module==="PAYROLL"&&String(before.source_reference||"").startsWith("MONTHLY:"))
@@ -2009,6 +2014,9 @@ async function updateEntry(env, request, auth, companyId, id, body) {
 }
 
 async function deleteEntry(env, request, auth, companyId, id) {
+
+  await ensureEntryMaintenanceSchema(env);
+  await requirePermission(env,auth.user.id,companyId,"accounting.entry.delete");
   // v104: lançamento que comprova adiantamento de férias exige
   // desvinculação formal antes de exclusão/estorno.
   const v104Table=await env.DB.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='payroll_vacation_advance_payments66' LIMIT 1").first();
@@ -2017,8 +2025,6 @@ async function deleteEntry(env, request, auth, companyId, id) {
     if(v104Link)throw new HttpError(409,'Lançamento de adiantamento de férias vinculado. Desvincule primeiro no módulo de férias.','VACATION_ADVANCE_JOURNAL_LINKED');
   }
 
-  await ensureEntryMaintenanceSchema(env);
-  await requirePermission(env,auth.user.id,companyId,"accounting.entry.delete");
 
   const before=await entrySnapshot(env,companyId,id);
   if(before.source_module==="PAYROLL"&&String(before.source_reference||"").startsWith("MONTHLY:"))
@@ -2704,6 +2710,8 @@ async function postEntry(env, request, auth, companyId, id) {
 }
 
 async function voidEntry(env, request, auth, companyId, id, reason) {
+
+  await requirePermission(env, auth.user.id, companyId, "accounting.entry.void");
   // v104: lançamento que comprova adiantamento de férias exige
   // desvinculação formal antes de exclusão/estorno.
   const v104Table=await env.DB.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='payroll_vacation_advance_payments66' LIMIT 1").first();
@@ -2712,7 +2720,6 @@ async function voidEntry(env, request, auth, companyId, id, reason) {
     if(v104Link)throw new HttpError(409,'Lançamento de adiantamento de férias vinculado. Desvincule primeiro no módulo de férias.','VACATION_ADVANCE_JOURNAL_LINKED');
   }
 
-  await requirePermission(env, auth.user.id, companyId, "accounting.entry.void");
   const before=await env.DB.prepare("SELECT * FROM journal_entries WHERE id=? AND company_id=?").bind(id,companyId).first();
   if (!before) throw new HttpError(404,"Lançamento não encontrado.","NOT_FOUND");
   if(before.source_module==="PAYROLL"&&String(before.source_reference||"").startsWith("MONTHLY:"))
@@ -5134,6 +5141,7 @@ async function cancelFinancialPayable(env,request,auth,companyId,id){
 }
 
 async function undoFinancialPayablePayment(env,request,auth,companyId,id){
+  await requirePermission(env,auth.user.id,companyId,'financial.payable.manage');
   // v104: não desfaça a baixa de um recibo de férias vinculado sem
   // remover primeiro a associação auditável à origem.
   const vac66Exists=await env.DB.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='payroll_vacation_advance_payments66' LIMIT 1").first();
@@ -5142,7 +5150,6 @@ async function undoFinancialPayablePayment(env,request,auth,companyId,id){
     if(vac66Link)throw new HttpError(409,'A baixa está vinculada a um recibo de férias. Desvincule o adiantamento antes de estornar o pagamento.','VACATION_PAYMENT_LINKED');
   }
 
-  await requirePermission(env,auth.user.id,companyId,'financial.payable.manage');
   const before=await getFinancialPayable(env,companyId,id);
   if(before.source_type==='PAYROLL_MONTHLY')await requirePermission(env,auth.user.id,companyId,'payroll.manage');
   if(before.status!=='PAID') throw new HttpError(409,'Somente títulos baixados podem ter a baixa desfeita.','INVALID_STATUS');
