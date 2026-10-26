@@ -1,0 +1,25 @@
+name: SAGAS folha - conferencia
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'sagas-payroll-closing69.js'
+      - 'sagas-payroll-vacation67.js'
+      - 'tests/payroll-closing-v107.test.mjs'
+      - '.github/workflows/payroll-closing.yml'
+  workflow_dispatch:
+jobs:
+  monthly-audit-tests:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configurar Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Conferir sintaxe do modulo
+        run: node --check sagas-payroll-closing69.js
+      - name: Executar testes do fechamento
+        run: node --test tests/payroll-closing-v107.test.mjs
