@@ -35,7 +35,7 @@ export function twelfths70(admission,year){
  return 12-month+(eligible?1:0);
 }
 export function amounts70(base,avos,advance,taxes,phase){
- const gross=Math.floor((BigInt(integerPlain70(base))*BigInt(avos)+6n)/12n);
+ const gross=(BigInt(integerPlain70(base))*BigInt(avos)+6n)/12n;
  const full=Number(gross);
  if(phase==='FIRST'){
   const estimated=half70(full);
