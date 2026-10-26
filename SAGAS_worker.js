@@ -1914,6 +1914,14 @@ async function entrySnapshot(env, companyId, id) {
 async function updateEntry(env, request, auth, companyId, id, body) {
   await ensureEntryMaintenanceSchema(env);
   await requirePermission(env,auth.user.id,companyId,"accounting.entry.edit");
+  // A provisão contabilizada possui vínculos de origem indivisíveis:
+  // alterá-la isoladamente invalidaria saldos e conciliações de férias.
+  const provision45Table=await env.DB.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='payroll_provision_postings45' LIMIT 1").first();
+  if(provision45Table){
+    const provision45Link=await env.DB.prepare("SELECT id FROM payroll_provision_postings45 WHERE company_id=? AND journal_entry_id=? LIMIT 1").bind(companyId,id).first();
+    if(provision45Link)throw new HttpError(409,'Este lançamento está vinculado à contabilização de provisões. Utilize um procedimento contábil de reversão controlada.','PROVISION_POSTING_JOURNAL_LINKED');
+  }
+
   const vac66Table=await env.DB.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='payroll_vacation_advance_payments66' LIMIT 1").first();
   if(vac66Table){
     const vac66Link=await env.DB.prepare("SELECT id FROM payroll_vacation_advance_payments66 WHERE company_id=? AND journal_entry_id=? AND status='ACTIVE' LIMIT 1").bind(companyId,id).first();
@@ -2019,6 +2027,14 @@ async function deleteEntry(env, request, auth, companyId, id) {
 
   await ensureEntryMaintenanceSchema(env);
   await requirePermission(env,auth.user.id,companyId,"accounting.entry.delete");
+  // A provisão contabilizada possui vínculos de origem indivisíveis:
+  // alterá-la isoladamente invalidaria saldos e conciliações de férias.
+  const provision45Table=await env.DB.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='payroll_provision_postings45' LIMIT 1").first();
+  if(provision45Table){
+    const provision45Link=await env.DB.prepare("SELECT id FROM payroll_provision_postings45 WHERE company_id=? AND journal_entry_id=? LIMIT 1").bind(companyId,id).first();
+    if(provision45Link)throw new HttpError(409,'Este lançamento está vinculado à contabilização de provisões. Utilize um procedimento contábil de reversão controlada.','PROVISION_POSTING_JOURNAL_LINKED');
+  }
+
   // v104: lançamento que comprova adiantamento de férias exige
   // desvinculação formal antes de exclusão/estorno.
   const v104Table=await env.DB.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='payroll_vacation_advance_payments66' LIMIT 1").first();
@@ -2714,6 +2730,14 @@ async function postEntry(env, request, auth, companyId, id) {
 async function voidEntry(env, request, auth, companyId, id, reason) {
 
   await requirePermission(env, auth.user.id, companyId, "accounting.entry.void");
+  // A provisão contabilizada possui vínculos de origem indivisíveis:
+  // alterá-la isoladamente invalidaria saldos e conciliações de férias.
+  const provision45Table=await env.DB.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='payroll_provision_postings45' LIMIT 1").first();
+  if(provision45Table){
+    const provision45Link=await env.DB.prepare("SELECT id FROM payroll_provision_postings45 WHERE company_id=? AND journal_entry_id=? LIMIT 1").bind(companyId,id).first();
+    if(provision45Link)throw new HttpError(409,'Este lançamento está vinculado à contabilização de provisões. Utilize um procedimento contábil de reversão controlada.','PROVISION_POSTING_JOURNAL_LINKED');
+  }
+
   // v104: lançamento que comprova adiantamento de férias exige
   // desvinculação formal antes de exclusão/estorno.
   const v104Table=await env.DB.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='payroll_vacation_advance_payments66' LIMIT 1").first();
