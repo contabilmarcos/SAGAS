@@ -2009,6 +2009,14 @@ async function updateEntry(env, request, auth, companyId, id, body) {
 }
 
 async function deleteEntry(env, request, auth, companyId, id) {
+  // v104: lançamento que comprova adiantamento de férias exige
+  // desvinculação formal antes de exclusão/estorno.
+  const v104Table=await env.DB.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='payroll_vacation_advance_payments66' LIMIT 1").first();
+  if(v104Table){
+    const v104Link=await env.DB.prepare("SELECT id FROM payroll_vacation_advance_payments66 WHERE company_id=? AND journal_entry_id=? AND status='ACTIVE' LIMIT 1").bind(companyId,id).first();
+    if(v104Link)throw new HttpError(409,'Lançamento de adiantamento de férias vinculado. Desvincule primeiro no módulo de férias.','VACATION_ADVANCE_JOURNAL_LINKED');
+  }
+
   await ensureEntryMaintenanceSchema(env);
   await requirePermission(env,auth.user.id,companyId,"accounting.entry.delete");
 
@@ -2696,6 +2704,14 @@ async function postEntry(env, request, auth, companyId, id) {
 }
 
 async function voidEntry(env, request, auth, companyId, id, reason) {
+  // v104: lançamento que comprova adiantamento de férias exige
+  // desvinculação formal antes de exclusão/estorno.
+  const v104Table=await env.DB.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='payroll_vacation_advance_payments66' LIMIT 1").first();
+  if(v104Table){
+    const v104Link=await env.DB.prepare("SELECT id FROM payroll_vacation_advance_payments66 WHERE company_id=? AND journal_entry_id=? AND status='ACTIVE' LIMIT 1").bind(companyId,id).first();
+    if(v104Link)throw new HttpError(409,'Lançamento de adiantamento de férias vinculado. Desvincule primeiro no módulo de férias.','VACATION_ADVANCE_JOURNAL_LINKED');
+  }
+
   await requirePermission(env, auth.user.id, companyId, "accounting.entry.void");
   const before=await env.DB.prepare("SELECT * FROM journal_entries WHERE id=? AND company_id=?").bind(id,companyId).first();
   if (!before) throw new HttpError(404,"Lançamento não encontrado.","NOT_FOUND");
