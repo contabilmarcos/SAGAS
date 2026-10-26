@@ -63,7 +63,7 @@ async function payrollProvision43Movement(kind,competence){
   }catch(err){toast(err.message,'error');btn.disabled=false}
  };
 }
-async function payrollProvision43Constitute(runId,competence){
+async function payrollProvision43Constitute(runId,competence,previewFingerprint){
  if(!can('payroll.manage'))throw Error('Você não tem acesso para constituir provisões.');
  openModal('Constituir provisões — '+esc(competence),'Registro operacional da competência já fechada.',
   '<p class="help">Serão gravadas somente as parcelas mensais de férias, 1/3 e 13º. Os encargos permanecem estimados. Saldo inicial, férias gozadas e 13º pago devem ser conciliados separadamente.</p>'+
@@ -75,7 +75,7 @@ async function payrollProvision43Constitute(runId,competence){
  form.onsubmit=async ev=>{
   ev.preventDefault();const btn=form.querySelector('button[type=submit]');btn.disabled=true;
   try{
-   const d=await api('/api/payroll/monthly-runs/'+encodeURIComponent(runId)+'/provisions-confirm',{method:'POST',body:{confirmation:form.elements.confirmation.value}});
+   const d=await api('/api/payroll/monthly-runs/'+encodeURIComponent(runId)+'/provisions-confirm',{method:'POST',body:{confirmation:form.elements.confirmation.value,preview_fingerprint:previewFingerprint}});
    toast('Constituição registrada: '+esc(String(d.item_count))+' parcelas.');
    await payrollProvision43Ledger(competence);
   }catch(err){toast(err.message,'error');btn.disabled=false;}
