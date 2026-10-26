@@ -89,6 +89,7 @@ export async function payrollProvisions42(c){
   const flags=[];
   if(others.length)flags.push('Proventos adicionais: conferir medias e incidencias de ferias e 13o.');
   if(!admission)flags.push('Data de admissao ou historico do empregado nao conferido.');
+  if(admission&&admission.days===0)flags.push('Admissao posterior a competencia da folha; conferir inclusao indevida do funcionario.');
   let base=paidSalary;
   const dates=changed.get(e.employee_id)||[];
   if(admission?.month_of_admission){
