@@ -43,7 +43,7 @@ function issue124(arr,code,message,source_id=null){
  if(!arr.some(x=>x.code===code&&x.source_id===source_id))
   arr.push({code,message,source_id});
 }
-function money124(v){return Number.isSafeInteger(Number(v))&&Number(v)>=0&&Number(v)<=99999999999}
+function money124(v){return v!==null&&v!==undefined&&v!==''&&Number.isSafeInteger(Number(v))&&Number(v)>=0&&Number(v)<=99999999999}
 function equal124(a,b){return money124(a)&&money124(b)&&Number(a)===Number(b)}
 function label124(t){return CONTRACT124.find(x=>x[0]===t)?.[1]||t}
 async function sample124(env,companyId,table,fields,sort='rowid'){
@@ -51,7 +51,7 @@ async function sample124(env,companyId,table,fields,sort='rowid'){
  const values=(await env.DB.prepare(q).bind(companyId).all()).results||[];
  return {rows:values.slice(0,100),limited:values.length>100};
 }
-async function balance124(env,companyId,entryId,expected){
+async function balance124(env,companyId,entryId,expected,expectedRef=null){
  const issues=[];
  if(!entryId||!money124(expected)){issue124(issues,'JOURNAL_INVALID','Identificador/valor de diário inválido.');return issues}
  const [head,groups]=await Promise.all([
@@ -60,6 +60,8 @@ async function balance124(env,companyId,entryId,expected){
  ]);
  if(!head||head.status!=='POSTED'||!equal124(head.total_debit_cents,expected)||!equal124(head.total_credit_cents,expected))
   issue124(issues,'JOURNAL_HEADER','Diário não está POSTED ou cabeçalho difere do valor.');
+ if(head&&expectedRef!==null&&(head.source_module!=='PAYROLL'||head.source_reference!==expectedRef))
+  issue124(issues,'JOURNAL_ORIGIN','Origem do diário não corresponde ao processo da folha.');
  const centers=new Map();let D=0,C=0;
  for(const g of groups.results||[]){
   const cents=Number(g.cents);
@@ -76,7 +78,7 @@ async function balance124(env,companyId,entryId,expected){
 }
 async function titles124(env,companyId,linkTable,linkKey,valueKey,origin){
  // link table, field names and origin are constants from code only.
- const cols=linkTable==='payroll_finance_payables37'?'employee_id':'component';
+ const cols=linkTable==='payroll_employer_payables120'?'component':'employee_id';
  const query="SELECT l.payable_id,l."+cols+" AS target,t.id,t.source_type,t.source_id,t.amount_cents,t.status FROM "+
   linkTable+" l LEFT JOIN financial_payables t ON t.id=l.payable_id AND t.company_id=l.company_id WHERE l.company_id=? AND l."+linkKey+"=?";
  const lines=(await env.DB.prepare(query).bind(companyId,valueKey).all()).results||[];
@@ -84,12 +86,21 @@ async function titles124(env,companyId,linkTable,linkKey,valueKey,origin){
  for(const x of lines){
   if(!x.id||x.source_type!==origin||!money124(x.amount_cents)||x.status==='CANCELLED')
    issue124(problems,'TITLE_INVALID','Título vinculado ausente, cancelado ou com origem divergente.');
-  if(origin==='PAYROLL_MONTHLY'&&x.source_id!==valueKey+':'+x.target)
-   issue124(problems,'TITLE_ORIGIN','Origem do título mensal diverge do funcionário.');
+  if(x.source_id!==valueKey+':'+x.target)
+   issue124(problems,'TITLE_ORIGIN','Origem do título diverge do funcionário ou componente vinculado.');
   if(x.id&&money124(x.amount_cents))amount+=Number(x.amount_cents);
  }
  return {count:lines.length,total_cents:amount,problems};
 }
+const REQUIRED124={
+ MENSAL:['journal_entries','journal_lines','payroll_calc_runs','payroll_finance_payables37','financial_payables'],
+ ENCARGOS:['journal_entries','journal_lines','payroll_employer_payables120','financial_payables'],
+ PROVISOES:['journal_entries','journal_lines','payroll_provision_posted_movements45','payroll_provision_movements43'],
+ FERIAS:['journal_entries','journal_lines','payroll_finance_postings37'],
+ DECIMO_TERCEIRO:['journal_entries','journal_lines','payroll_thirteenth_runs71','payroll_thirteenth_payables112','financial_payables','payroll_provision_postings45'],
+ PEDIDO_DEMISSAO:['journal_entries','journal_lines','payroll_employees','payroll_employee_functional_history','financial_payables'],
+ SEM_JUSTA_CAUSA:['journal_entries','journal_lines','payroll_employees','payroll_employee_functional_history','financial_payables']
+};
 async function check124(env,companyId,kind,table,allowed){
  const p=[];
  const warn=(code,msg,source=null)=>issue124(p,code,msg,source);
@@ -97,13 +108,17 @@ async function check124(env,companyId,kind,table,allowed){
  if(!allowed.has(table))return {kind,status:'NAO_INICIALIZADO',count:0,examined:0,problems:[]};
  const data=await sample124(env,companyId,table,'*');
  records=data.rows.length;examined=records;limit=data.limited;
+ if(records){
+  for(const missing of (REQUIRED124[kind]||[]).filter(name=>!allowed.has(name)))
+   warn('DEPENDENCY_MISSING','Não é possível conferir '+kind+': tabela necessária não inicializada ('+missing+').');
+ }
  if(limit)warn('HISTORY_LIMIT','Auditoria limitada aos 100 registros mais recentes. Períodos anteriores não foram inspecionados.');
  for(const v of data.rows){
-  const id=(v.run_id||v.id||v.movement_id||'').slice(0,100);
+  const id=String(v.run_id||v.id||v.movement_id||'').slice(0,100);
   const append=(arr)=>{for(const x of arr)warn(x.code,x.message,id)};
   try{
    if(kind==='MENSAL'){
-    append(await balance124(env,companyId,v.journal_entry_id,(await env.DB.prepare("SELECT total_debit_cents FROM journal_entries WHERE company_id=? AND id=?").bind(companyId,v.journal_entry_id).first())?.total_debit_cents));
+    append(await balance124(env,companyId,v.journal_entry_id,(await env.DB.prepare("SELECT total_debit_cents FROM journal_entries WHERE company_id=? AND id=?").bind(companyId,v.journal_entry_id).first())?.total_debit_cents,'MONTHLY:'+v.run_id));
     const run=await env.DB.prepare("SELECT source_fingerprint,status FROM payroll_calc_runs WHERE company_id=? AND id=?").bind(companyId,v.run_id).first();
     if(!run||run.source_fingerprint!==v.source_fingerprint||run.status!=='APPROVED')
      warn('MONTHLY_SOURCE','Folha fechada não corresponde ao lançamento contábil.',id);
@@ -115,7 +130,7 @@ async function check124(env,companyId,kind,table,allowed){
     }
    }
    if(kind==='ENCARGOS'){
-    append(await balance124(env,companyId,v.journal_entry_id,v.amount_cents));
+    append(await balance124(env,companyId,v.journal_entry_id,v.amount_cents,'EMPLOYER120:'+v.run_id));
     if(allowed.has('payroll_employer_payables120')){
      const t=await titles124(env,companyId,'payroll_employer_payables120','run_id',v.run_id,'PAYROLL_EMPLOYER');
      append(t.problems);
@@ -137,15 +152,23 @@ async function check124(env,companyId,kind,table,allowed){
     if(!monthly||monthly.journal_entry_id!==v.journal_entry_id)
      warn('VACATION_MONTHLY_LINK','Férias não vinculadas ao diário mensal.',id);
     const gl=await env.DB.prepare("SELECT total_debit_cents FROM journal_entries WHERE company_id=? AND id=?").bind(companyId,v.journal_entry_id).first();
-    append(await balance124(env,companyId,v.journal_entry_id,gl?.total_debit_cents));
+    append(await balance124(env,companyId,v.journal_entry_id,gl?.total_debit_cents,'MONTHLY:'+v.run_id));
    }
    if(kind==='DECIMO_TERCEIRO'){
-    const [a,b]=await Promise.all([
-     env.DB.prepare("SELECT total_debit_cents FROM journal_entries WHERE company_id=? AND id=?").bind(companyId,v.provision_journal_id).first(),
-     env.DB.prepare("SELECT total_debit_cents FROM journal_entries WHERE company_id=? AND id=?").bind(companyId,v.settlement_journal_id).first()
-    ]);
-    append(await balance124(env,companyId,v.provision_journal_id,a?.total_debit_cents));
-    append(await balance124(env,companyId,v.settlement_journal_id,b?.total_debit_cents));
+    const b=await env.DB.prepare("SELECT total_debit_cents FROM journal_entries WHERE company_id=? AND id=?").bind(companyId,v.settlement_journal_id).first();
+    append(await balance124(env,companyId,v.provision_journal_id,v.provision_total_cents,'THIRTEENTH_SECOND_USE:'+v.run_id));
+    append(await balance124(env,companyId,v.settlement_journal_id,b?.total_debit_cents,'THIRTEENTH_SECOND_SETTLE:'+v.run_id));
+    if(allowed.has('payroll_thirteenth_payables112')&&allowed.has('financial_payables')){
+     const t=await titles124(env,companyId,'payroll_thirteenth_payables112','run_id',v.run_id,'PAYROLL_THIRTEENTH');
+     append(t.problems);
+     if(!equal124(t.total_cents,v.payable_total_cents)||t.count!==Number(v.payable_count))
+      warn('THIRTEENTH_TITLES','Total e número de títulos do 13º não conciliam com a quitação.',id);
+    }
+    if(allowed.has('payroll_provision_postings45')){
+     const pp=await env.DB.prepare("SELECT journal_entry_id,total_cents,kind FROM payroll_provision_postings45 WHERE company_id=? AND id=?").bind(companyId,v.provision_posting_id).first();
+     if(!pp||pp.kind!=='USE'||pp.journal_entry_id!==v.provision_journal_id||!equal124(pp.total_cents,v.provision_total_cents))
+      warn('THIRTEENTH_PROVISION','Baixa da provisão do 13º não corresponde à contabilização.',id);
+    }
    }
    if(kind==='PEDIDO_DEMISSAO'||kind==='SEM_JUSTA_CAUSA'){
     const refs=[v.settlement_journal_id,v.provision_journal_id,v.fgts_journal_id].filter(Boolean);
