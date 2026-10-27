@@ -77,11 +77,13 @@ function payrollTermination116Show(p){
   '</tbody></table></div>'+
   (p.warnings||[]).map(s=>'<p class="help">'+esc(s)+'</p>').join('')+
   '<div class="form-actions"><button id="pterm116Edit" class="btn secondary" type="button">Editar descontos</button>'+
+  '<button id="pterm116Tax" class="btn secondary" type="button">Apurar INSS/IRRF</button>'+
   '<button id="pterm116History" class="btn secondary" type="button">Histórico</button>'+
   (p.deduction_ready&&can('payroll.manage')?
     '<button id="pterm116Record" class="btn primary" type="button">Registrar memória DRAFT</button>':'')+
   '</div>',true);
  document.getElementById('pterm116Edit').onclick=()=>payrollTermination116Open(p).catch(e=>toast(e.message,'error'));
+ document.getElementById('pterm116Tax').onclick=()=>payrollTermination117Open(p).catch(e=>toast(e.message,'error'));
  document.getElementById('pterm116History').onclick=()=>payrollTermination116History(p.employee.id,p.employee.name).catch(e=>toast(e.message,'error'));
  const record=document.getElementById('pterm116Record');
  if(record)record.onclick=async()=>{
