@@ -87,3 +87,8 @@ test('caráter de minuta não altera nenhum objeto de cálculo original',()=>{
  const r=clone(review),p=clone(plan),before=JSON.stringify([r,p]);go(r,diag,p);
  assert.equal(JSON.stringify([r,p]),before);
 });
+
+test('não permite desligar funcionário com data futura',()=>{
+ const r=clone(review);r.termination_date='2026-12-30';
+ assert.ok(go(r).problems.some(x=>x.code==='FUTURE_TERMINATION'));
+});
