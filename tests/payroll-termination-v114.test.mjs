@@ -27,7 +27,7 @@ function setup({salary=300000,variable=false,occurrence=false,paidMonthly=false,
     throw Error('Unexpected all: '+sql);
    },run:async()=>{writes.push({sql,values});return {meta:{changes:1}}}};
   }};
- },batch:async()=>{throw Error('schema mocked')}};
+ },batch:async()=>{throw Error('schema mocked')}}};
  const d={HttpError:class HttpError extends Error{constructor(status,message,code){super(message);this.code=code;this.status=status}},
   ensureSchemaRevision:async()=>{},requirePermission:async()=>{},
   hash:async v=>JSON.stringify(v),uuid:()=>'draft-uuid',audit:async(...args)=>audits.push(args)
