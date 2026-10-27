@@ -23,8 +23,10 @@ async function payrollThirteenth71History(year,phase){
   '<tbody>'+rows+'</tbody></table></div>'+
   '<p class="help">'+(rows?'Cálculos armazenados; financeiro da 1ª parcela disponível após aprovação e configuração das naturezas.':
    'Ainda não há processamentos calculados.')+'</p>'+
-  '<div class="form-actions"><button class="btn secondary" type="button" id="p13HBack">Voltar à prévia</button></div>',true);
+  '<div class="form-actions"><button class="btn secondary" type="button" id="p13HBack">Voltar à prévia</button>'+ 
+  '<button class="btn primary" type="button" id="p13AuditOpen">Auditar 13º no D1</button></div>',true);
  document.getElementById('p13HBack').onclick=()=>payrollThirteenth70Open(year,phase).catch(e=>toast(e.message,'error'));
+ document.getElementById('p13AuditOpen').onclick=()=>payrollThirteenthAudit113Open(year).catch(e=>toast(e.message,'error'));
  $$('[data-p13-detail]').forEach(button=>button.onclick=async()=>{
   const r=data.runs[Number(button.dataset.p13Detail)];
   if(r)await payrollThirteenth71Detail(r.id,year,phase);
