@@ -238,121 +238,196 @@ async function preview123(c){
 }
 export async function payrollTermination123(action,c){
  const {env,companyId,auth,d,request,body={}}=c;
- await d.requirePermission(env,auth.user.id,companyId,action==='preview'||action==='history'?'payroll.read':'payroll.manage');
- await d.ensureSchemaRevision(env,'payroll-termination-transaction123',1,()=>schema123(env));
- if(action==='history'){
-  const employee=String(c.employeeId||'');
-  return {records:(await env.DB.prepare("SELECT p.id,p.termination_date,p.net_cents,p.settlement_journal_id,p.payable_id,p.posted_at FROM payroll_termination_postings123 p WHERE p.company_id=? AND p.employee_id=? ORDER BY p.posted_at DESC LIMIT 100").bind(companyId,employee).all()).results||[]};
+ const isRead=['settings','preview','history'].includes(action);
+ await d.requirePermission(env,auth.user.id,companyId,isRead?'payroll.read':'payroll.manage');
+ await d.ensureSchemaRevision(env,'payroll-dismissal123',1,()=>schema123(env));
+ if(action==='settings'){
+  const [current,creditors]=await Promise.all([
+   fgtsConfig123(env,companyId),
+   env.DB.prepare("SELECT id,code,name FROM purchase_suppliers WHERE company_id=? AND active=1 ORDER BY code LIMIT 300").bind(companyId).all()
+  ]);
+  return {current,creditors:creditors.results||[],nature_components:{
+   FGTS_FINE_EXPENSE:'Multa rescisória FGTS — despesa',
+   FGTS_FINE_PAYABLE:'Multa rescisória FGTS — obrigação a recolher'},
+   instruction:'Cadastre as naturezas FGTS_FINE_EXPENSE e FGTS_FINE_PAYABLE nas configurações das naturezas rescisórias v119.'};
  }
- if(!['preview','approve','integrate'].includes(action))error123(d,'NOT_FOUND','Ação desconhecida.',404);
+ if(action==='save-setting'){
+  await d.requirePermission(env,auth.user.id,companyId,'accounting.entry.create');
+  const supplierId=String(body.supplier_id||'');
+  const supplier=await env.DB.prepare("SELECT id FROM purchase_suppliers WHERE company_id=? AND id=? AND active=1").bind(companyId,supplierId).first();
+  if(!supplier)error123(d,'SUPPLIER_INVALID','Selecione credor ativo para o FGTS Digital.',400);
+  await env.DB.prepare("INSERT INTO payroll_termination_fgts_settings123(company_id,supplier_id,updated_by) VALUES(?,?,?) ON CONFLICT(company_id) DO UPDATE SET supplier_id=excluded.supplier_id,updated_by=excluded.updated_by,updated_at=CURRENT_TIMESTAMP").bind(companyId,supplierId,auth.user.id).run();
+  await d.audit(env,{companyId,userId:auth.user.id,request,action:'UPDATE',entity:'payroll_termination_fgts_settings123',
+   entityId:companyId,after:{supplier_id:supplierId}});
+  return {saved:true,supplier_id:supplierId};
+ }
+ if(action==='history'){
+  return {records:(await env.DB.prepare("SELECT id,employee_id,termination_date,fgts_fine_cents,employee_payable_id,fgts_payable_id,posted_at FROM payroll_termination_postings123 WHERE company_id=? AND employee_id=? ORDER BY posted_at DESC LIMIT 100").bind(companyId,String(c.employeeId||'')).all()).results||[]};
+ }
+ if(action==='save-fgts'){
+  const input={employee_id:String(body.employee_id||''),termination_date:body.termination_date,
+   kind:body.kind,notice_kind:body.notice_kind};
+  if(!input.employee_id||!strictDate123(input.termination_date)||input.kind!=='WITHOUT_CAUSE')
+   error123(d,'INVALID_INPUT','Informe funcionário e dispensa sem justa causa válidos.',400);
+  const review=await payrollTermination117('preview',{...c,body:input,employeeId:input.employee_id});
+  const base=review.documentary_evidence?.fgts_base_cents;
+  const fine=review.fgts_fine_reference_cents;
+  if(!money123(base)||base<=0||!money123(fine)||fine<=0||
+     base!==body.fgts_base_cents||fine!==body.fgts_fine_cents)
+   error123(d,'FGTS_AMOUNT_MISMATCH','Valor histórico/base e multa de 40% devem coincidir com memória documentada no SAGAS e guia oficial. Corrija a base no extrato v115.',400);
+  const [approved,finished]=await Promise.all([
+   env.DB.prepare("SELECT id FROM payroll_termination_approvals123 WHERE company_id=? AND employee_id=? AND termination_date=?").bind(companyId,input.employee_id,input.termination_date).first(),
+   env.DB.prepare("SELECT id FROM payroll_termination_postings123 WHERE company_id=? AND employee_id=? AND termination_date=?").bind(companyId,input.employee_id,input.termination_date).first()
+  ]);
+  if(approved||finished)error123(d,'FGTS_DOCUMENT_LOCKED','Documento já homologado ou contabilizado. Correção exige procedimento de revisão.');
+  const reference=doc123(body.statement_reference,d,'extrato histórico FGTS',12);
+  const baseReference=doc123(body.base_reference,d,'valor base para fins rescisórios',12);
+  const guide=doc123(body.guide_reference,d,'guia no FGTS Digital',12);
+  const due=String(body.due_date||'');
+  if(!strictDate123(due)||due<input.termination_date||
+     (Date.parse(due+'T12:00:00Z')-Date.parse(input.termination_date+'T12:00:00Z'))/86400000>10)
+   error123(d,'FGTS_DUE_DATE','Vencimento do FGTS deve ser de zero a dez dias depois do desligamento.',400);
+  const result=await env.DB.prepare("SELECT id FROM payroll_termination_fgts_documents123 WHERE company_id=? AND employee_id=? AND termination_date=?").bind(companyId,input.employee_id,input.termination_date).first();
+  const id=result?.id||d.uuid();
+  await env.DB.prepare("INSERT INTO payroll_termination_fgts_documents123(id,company_id,employee_id,termination_date,kind,notice_kind,fgts_source_fingerprint,fgts_base_cents,fine_cents,statement_reference,base_reference,guide_reference,due_date,verified_by) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(company_id,employee_id,termination_date) DO UPDATE SET notice_kind=excluded.notice_kind,fgts_source_fingerprint=excluded.fgts_source_fingerprint,fgts_base_cents=excluded.fgts_base_cents,fine_cents=excluded.fine_cents,statement_reference=excluded.statement_reference,base_reference=excluded.base_reference,guide_reference=excluded.guide_reference,due_date=excluded.due_date,verified_by=excluded.verified_by,verified_at=CURRENT_TIMESTAMP")
+   .bind(id,companyId,input.employee_id,input.termination_date,input.kind,input.notice_kind,
+    review.base_source_fingerprint,base,fine,reference,baseReference,guide,due,auth.user.id).run();
+  await d.audit(env,{companyId,userId:auth.user.id,request,action:'VERIFY',entity:'payroll_termination_fgts_documents123',
+   entityId:id,after:{fine_cents:fine,fgts_base_cents:base,due_date:due,guide_reference:guide}});
+  return {saved:true,document_id:id,fine_cents:fine,base_cents:base,accounting_generated:false,financial_generated:false};
+ }
+ if(!['preview','approve','integrate'].includes(action))error123(d,'UNKNOWN_ACTION','Ação não encontrada.',404);
  const p=await preview123(c);
  if(action==='preview')return p;
- if(p.source_fingerprint!==body.source_fingerprint)error123(d,'STALE','Dados mudaram desde a última conferência; atualize a prévia.');
- for(const permission of ['accounting.entry.create','accounting.entry.post','financial.payable.manage'])
-  await d.requirePermission(env,auth.user.id,companyId,permission);
+ if(p.source_fingerprint!==body.source_fingerprint)
+  error123(d,'SOURCE_CHANGED','A fonte, FGTS Digital, parametrização ou revisão mudou. Atualize a prévia.');
+ for(const code of ['accounting.entry.create','accounting.entry.post','financial.payable.manage'])
+  await d.requirePermission(env,auth.user.id,companyId,code);
  if(action==='approve'){
-  if(!p.ready_for_approval)error123(d,'NOT_READY',p.problems[0]?.message||'Não está apto à homologação.');
-  if(body.confirmation!=='APROVAR TRCT RESCISAO')error123(d,'CONFIRM_REQUIRED','Digite APROVAR TRCT RESCISAO.',400);
-  if(!money123(body.trct_gross_cents)||!money123(body.trct_net_cents)||
-     body.trct_gross_cents!==p.gross_cents||body.trct_net_cents!==p.net_cents)
-   error123(d,'TRCT_MISMATCH','Valores do TRCT precisam coincidir exatamente com as rubricas conciliadas.');
-  if(body.payment_date!==p.payable_due_date)
-   error123(d,'PAYMENT_MISMATCH','Data de vencimento difere da memória tributária confirmada.');
-  const trct=doc123(body.trct_reference,d,'referência do TRCT',12);
-  const tax=doc123(body.tax_reference,d,'conferência de INSS e IRRF',12);
-  const vacation=doc123(body.vacation_reference,d,'conferência dos períodos de férias',12);
-  const notice=doc123(body.notice_reference,d,'documento do aviso',12);
-  const fgts=doc123(body.fgts_regular_reference,d,'referência da conferência do FGTS regular',12);
+  if(!p.ready_for_approval)error123(d,'NOT_READY',p.problems[0]?.message||'Integração não autorizada.');
+  if(body.confirmation!=='APROVAR DISPENSA E FGTS')
+   error123(d,'CONFIRM_REQUIRED','Digite APROVAR DISPENSA E FGTS.',400);
+  if(body.trct_gross_cents!==p.gross_cents||
+     body.trct_net_cents!==p.net_cents||
+     body.fgts_fine_cents!==p.fgts_fine_cents||
+     body.payment_date!==p.payable_due_date||
+     body.fgts_due_date!==p.fgts?.due_date)
+   error123(d,'TRCT_GUIDE_MISMATCH','Bruto, líquido, multa, vencimento TRCT ou guia divergem da conferência.');
+  const trct=doc123(body.trct_reference,d,'TRCT assinado',12);
+  const tax=doc123(body.tax_reference,d,'comprovação das retenções',12);
+  const vacation=doc123(body.vacation_reference,d,'períodos de férias',12);
+  const notice=doc123(body.notice_reference,d,'aviso prévio',12);
+  const regular=doc123(body.fgts_regular_reference,d,'FGTS regular já escriturado ou a escriturar separadamente',12);
   const id=d.uuid();
-  await env.DB.prepare("INSERT INTO payroll_termination_approvals123(id,company_id,employee_id,termination_date,kind,notice_kind,source_fingerprint,gross_cents,net_cents,payment_date,trct_reference,tax_reference,vacation_reference,notice_reference,fgts_regular_reference,approved_by) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
-   .bind(id,companyId,p.employee.id,p.termination_date,p.termination_kind,p.notice_kind,
-    p.plan_source_fingerprint,p.gross_cents,p.net_cents,p.payable_due_date,
-    trct,tax,vacation,notice,fgts,auth.user.id).run();
+  await env.DB.prepare("INSERT INTO payroll_termination_approvals123(id,company_id,employee_id,termination_date,kind,notice_kind,source_fingerprint,gross_cents,net_cents,payment_date,fgts_document_id,fgts_fine_cents,trct_reference,tax_reference,vacation_reference,notice_reference,fgts_regular_reference,approved_by) VALUES(?,?,?,?,?,'WITHOUT_CAUSE',?,?,?,?,?,?,?,?,?,?,?,?)")
+   .bind(id,companyId,p.employee.id,p.termination_date,p.notice_kind,p.plan_source_fingerprint,
+    p.gross_cents,p.net_cents,p.payable_due_date,p.fgts.id,p.fgts_fine_cents,
+    trct,tax,vacation,notice,regular,auth.user.id).run();
   await d.audit(env,{companyId,userId:auth.user.id,request,action:'APPROVE',
-   entity:'payroll_termination_approvals123',entityId:id,
-   after:{employee_id:p.employee.id,date:p.termination_date,gross_cents:p.gross_cents,
-    net_cents:p.net_cents,source_fingerprint:p.plan_source_fingerprint,trct_reference:trct}});
-  return {approved:true,approval_id:id,accounting_generated:false,
-   financial_generated:false,employee_status_changed:false};
+   entity:'payroll_termination_approvals123',entityId:id,after:{
+    employee_id:p.employee.id,termination_date:p.termination_date,gross_cents:p.gross_cents,
+    net_cents:p.net_cents,fgts_fine_cents:p.fgts_fine_cents,fgts_document_id:p.fgts.id}});
+  return {approved:true,approval_id:id,financial_generated:false,accounting_generated:false,employee_status_changed:false};
  }
- if(!p.ready_for_integration)error123(d,'INTEGRATION_BLOCKED',p.problems[0]?.message||'TRCT não aprovado.');
- if(body.confirmation!=='CONTABILIZAR E ENCERRAR RESCISAO')
-  error123(d,'CONFIRM_REQUIRED','Digite CONTABILIZAR E ENCERRAR RESCISAO.',400);
+ if(!p.ready_for_integration)error123(d,'NOT_READY',p.problems[0]?.message||'Faltam homologações.');
+ if(body.confirmation!=='CONTABILIZAR DISPENSA E MULTA FGTS')
+  error123(d,'CONFIRM_REQUIRED','Digite CONTABILIZAR DISPENSA E MULTA FGTS.',400);
  const approval=await env.DB.prepare("SELECT * FROM payroll_termination_approvals123 WHERE company_id=? AND employee_id=? AND termination_date=?").bind(companyId,p.employee.id,p.termination_date).first();
- if(!approval||approval.source_fingerprint!==p.plan_source_fingerprint)
-  error123(d,'TRCT_STALE','Homologação não corresponde à memória contábil atual.');
- // Conferir disponibilidade antes de montar os diários.
- const payrollDate=String(p.payable_due_date);
- if(!strictDate123(payrollDate)||!strictDate123(p.termination_date))error123(d,'DATES_INVALID','Datas inválidas.');
- const historical=await env.DB.prepare("SELECT id,position_id,active,cost_center_id FROM payroll_employees WHERE company_id=? AND id=?").bind(companyId,p.employee.id).first();
- if(!historical||Number(historical.active)!==1||historical.cost_center_id!==p.employee.cost_center_id)
-  error123(d,'EMPLOYEE_CHANGED','Situação ou centro de custo foi alterado.');
- const duplicate=await env.DB.prepare("SELECT id FROM journal_entries WHERE company_id=? AND source_module='PAYROLL' AND source_reference IN (?,?) LIMIT 1").bind(companyId,'TERMINATION_USE:'+p.employee.id+':'+p.termination_date,'TERMINATION_SETTLE:'+p.employee.id+':'+p.termination_date).first();
- if(duplicate)error123(d,'JOURNAL_EXISTS','Já existe diário de rescisão.');
- const date=p.termination_date,period=p.period,refs={use:'TERMINATION_USE:'+p.employee.id+':'+date,
-  settle:'TERMINATION_SETTLE:'+p.employee.id+':'+date};
- const entries=[],value=x=>d.centsToMoney(x.amount_cents);
- const convert=ls=>ls.map(x=>({side:x.side,account_id:x.account_id,amount:value(x),
-  cost_center_id:x.cost_center_id,branch_id:x.branch_id||null,
-  history_template_id:x.history_template_id||null,
-  history_complement:'Rescisão '+period+' '+p.employee.code+' — '+x.component}));
+ if(!approval||approval.source_fingerprint!==p.plan_source_fingerprint||
+    approval.fgts_document_id!==p.fgts.id||
+    Number(approval.fgts_fine_cents)!==p.fgts_fine_cents)
+  error123(d,'APPROVAL_CHANGED','TRCT e FGTS homologados não correspondem à prévia.');
+ const original=await env.DB.prepare("SELECT id,position_id,active,cost_center_id FROM payroll_employees WHERE company_id=? AND id=?").bind(companyId,p.employee.id).first();
+ if(!original||Number(original.active)!==1||original.cost_center_id!==p.employee.cost_center_id)
+  error123(d,'EMPLOYEE_CHANGED','Situação e centro de custo do funcionário foram alterados.');
+ const date=p.termination_date,period=p.period,refs={
+  use:'TERMINATION_USE:'+p.employee.id+':'+date,
+  settle:'TERMINATION_SETTLE:'+p.employee.id+':'+date,
+  fine:'TERMINATION_FGTS_FINE:'+p.employee.id+':'+date
+ };
+ const old=await env.DB.prepare("SELECT id FROM journal_entries WHERE company_id=? AND source_module='PAYROLL' AND source_reference IN (?,?,?) LIMIT 1").bind(companyId,refs.use,refs.settle,refs.fine).first();
+ if(old)error123(d,'ALREADY_JOURNAL','Há diário anterior para esta rescisão.');
+ const lines=arr=>arr.map(x=>({side:x.side,account_id:x.account_id,
+  amount:d.centsToMoney(x.amount_cents),cost_center_id:x.cost_center_id,
+  branch_id:x.branch_id||null,history_template_id:x.history_template_id||null,
+  history_complement:'Rescisão '+period+' / '+p.employee.code+' / '+x.component}));
+ const records=[];
  if(p.provision_use_cents>0){
-  const useEntry=await d.buildEntry(env,auth,companyId,{
+  const entry=await d.buildEntry(env,auth,companyId,{
    batch_id:p.accounting_batch_id,entry_date:date,document_number:'RES-PROV-'+p.employee.code,
-   description:'Baixa da provisão — pedido de demissão '+p.employee.code,
-   source_module:'PAYROLL',source_reference:refs.use,lines:convert(p.provision_journal_lines)
+   description:'Baixa de provisões da dispensa sem justa causa '+p.employee.code,
+   source_module:'PAYROLL',source_reference:refs.use,lines:lines(p.provision_journal_lines)
   });
-  if(useEntry.total_cents!==p.provision_use_cents)error123(d,'USE_ENTRY_MISMATCH','Diário da baixa difere das provisões.');
-  entries.push(useEntry);
+  if(entry.total_cents!==p.provision_use_cents)
+   error123(d,'PROVISION_JOURNAL_MISMATCH','Baixa de provisão diverge da memória.');
+  records.push(entry);
  }
- const settlement=await d.buildEntry(env,auth,companyId,{
+ const settle=await d.buildEntry(env,auth,companyId,{
   batch_id:p.accounting_batch_id,entry_date:date,document_number:'TRCT-'+p.employee.code,
-  description:'Verbas e retenções de rescisão '+p.employee.code+' / '+approval.trct_reference,
-  source_module:'PAYROLL',source_reference:refs.settle,lines:convert(p.settlement_journal_lines)
+  description:'Verbas e retenções da dispensa '+p.employee.code+' — '+approval.trct_reference,
+  source_module:'PAYROLL',source_reference:refs.settle,lines:lines(p.settlement_journal_lines)
  });
- if(settlement.total_cents!==p.gross_cents)error123(d,'SETTLEMENT_MISMATCH','Diário de rescisão não corresponde ao bruto aprovado.');
- const num=await d.nextPayableNumber(env,companyId);
- if(!/^CP-\d{6}$/.test(num))error123(d,'PAYABLE_NUMBER','Numeração de título inválida.');
- const postingId=d.uuid(),historyId=d.uuid(),payableId=d.uuid(),provisionPostingId=entries[0]?d.uuid():null;
- const stmts=[...entries.flatMap(e=>e.stmts),...settlement.stmts];
- if(provisionPostingId){
-  stmts.push(env.DB.prepare("INSERT INTO payroll_provision_postings45(id,company_id,kind,competence,cycle_id,source_fingerprint,journal_entry_id,accounting_batch_id,total_cents,line_count,posted_by) VALUES (?,?,'USE',?,NULL,?,?,?,?,?,?)")
-   .bind(provisionPostingId,companyId,period,p.plan_source_fingerprint,entries[0].entryId,
-    p.accounting_batch_id,p.provision_use_cents,p.provision_journal_lines.length,auth.user.id));
-  const movements=p.provision_movements.map(m=>({...m,id:d.uuid(),origin_key:'TERMINATION123:'+postingId+':'+m.component}));
-  const guarded="INSERT INTO payroll_provision_movements43(id,company_id,employee_id,cost_center_id,component,movement_kind,competence,amount_cents,origin_key,document_ref,notes,cycle_id,created_by) SELECT json_extract(x.value,'$.id'),?,json_extract(x.value,'$.employee_id'),json_extract(x.value,'$.cost_center_id'),json_extract(x.value,'$.component'),'USE',?,CASE WHEN COALESCE((SELECT SUM(v.amount_cents) FROM payroll_provision_movements43 v WHERE v.company_id=? AND v.employee_id=json_extract(x.value,'$.employee_id') AND v.component=json_extract(x.value,'$.component') AND v.competence<=?),0)>=json_extract(x.value,'$.amount_cents') THEN -json_extract(x.value,'$.amount_cents') ELSE json_extract(x.value,'$.amount_cents') END,json_extract(x.value,'$.origin_key'),?,'Baixa vinculada ao TRCT aprovado v123',NULL,? FROM json_each(?) x";
-  stmts.push(env.DB.prepare(guarded).bind(companyId,period,companyId,period,approval.trct_reference,auth.user.id,JSON.stringify(movements)));
-  stmts.push(env.DB.prepare("INSERT INTO payroll_provision_posted_movements45(company_id,movement_id,posting_id) SELECT ?,json_extract(x.value,'$.id'),? FROM json_each(?) x").bind(companyId,provisionPostingId,JSON.stringify(movements)));
+ if(settle.total_cents!==p.gross_cents)
+  error123(d,'TRCT_JOURNAL_MISMATCH','Diário da quitação difere do TRCT.');
+ const fineEntry=await d.buildEntry(env,auth,companyId,{
+  batch_id:p.accounting_batch_id,entry_date:date,document_number:'FGTS40-'+p.employee.code,
+  description:'Multa FGTS 40% / desligamento '+p.employee.code+' — '+p.fgts.guide_reference,
+  source_module:'PAYROLL',source_reference:refs.fine,lines:lines(p.fgts_lines)
+ });
+ if(fineEntry.total_cents!==p.fgts_fine_cents)
+  error123(d,'FGTS_JOURNAL_MISMATCH','Diário da multa diverge do valor homologado pelo FGTS Digital.');
+ const number=await d.nextPayableNumber(env,companyId);
+ const n=Number(String(number).slice(3));
+ if(!/^CP-\d{6}$/.test(number)||n<1||n>=999999)
+  error123(d,'NUMBER_LIMIT','São necessários dois números consecutivos para os títulos da rescisão.');
+ const postingId=d.uuid(),historyId=d.uuid(),netId=d.uuid(),fineId=d.uuid();
+ const provisionId=records.length?d.uuid():null,stmts=[...records.flatMap(x=>x.stmts),...settle.stmts,...fineEntry.stmts];
+ if(provisionId){
+  stmts.push(env.DB.prepare("INSERT INTO payroll_provision_postings45(id,company_id,kind,competence,cycle_id,source_fingerprint,journal_entry_id,accounting_batch_id,total_cents,line_count,posted_by) VALUES(?,?,'USE',?,NULL,?,?,?,?,?,?)").bind(provisionId,companyId,period,p.source_fingerprint,records[0].entryId,p.accounting_batch_id,p.provision_use_cents,p.provision_journal_lines.length,auth.user.id));
+  const mov=p.provision_movements.map(x=>({...x,id:d.uuid(),origin_key:'TERMINATION123:'+postingId+':'+x.component}));
+  stmts.push(env.DB.prepare(
+   "INSERT INTO payroll_provision_movements43(id,company_id,employee_id,cost_center_id,component,movement_kind,competence,amount_cents,origin_key,document_ref,notes,cycle_id,created_by) SELECT json_extract(x.value,'$.id'),?,json_extract(x.value,'$.employee_id'),json_extract(x.value,'$.cost_center_id'),json_extract(x.value,'$.component'),'USE',?,CASE WHEN COALESCE((SELECT SUM(v.amount_cents) FROM payroll_provision_movements43 v WHERE v.company_id=? AND v.employee_id=json_extract(x.value,'$.employee_id') AND v.component=json_extract(x.value,'$.component') AND v.competence<=?),0)>=json_extract(x.value,'$.amount_cents') THEN -json_extract(x.value,'$.amount_cents') ELSE json_extract(x.value,'$.amount_cents') END,json_extract(x.value,'$.origin_key'),?,'Baixa vinculada à dispensa e multa FGTS v123',NULL,? FROM json_each(?) x"
+  ).bind(companyId,period,companyId,period,approval.trct_reference,auth.user.id,JSON.stringify(mov)));
+  stmts.push(env.DB.prepare("INSERT INTO payroll_provision_posted_movements45(company_id,movement_id,posting_id) SELECT ?,json_extract(x.value,'$.id'),? FROM json_each(?) x").bind(companyId,provisionId,JSON.stringify(mov)));
  }
- // Revalidar a posição funcional e bloquear corrida da alteração do cadastro.
- stmts.push(env.DB.prepare(
-  "INSERT INTO payroll_employee_functional_history(id,company_id,employee_id,effective_from,position_id,situation,notes,created_by) SELECT ?,company_id,id,?,position_id,'DESLIGADO',?,? FROM payroll_employees WHERE company_id=? AND id=? AND active=1 AND cost_center_id=? AND position_id=?"
- ).bind(historyId,date,'Rescisão v123 — TRCT '+approval.trct_reference,auth.user.id,companyId,p.employee.id,p.employee.cost_center_id,historical.position_id));
+ const functionalIndex=stmts.length;
+ stmts.push(env.DB.prepare("INSERT INTO payroll_employee_functional_history(id,company_id,employee_id,effective_from,position_id,situation,notes,created_by) SELECT ?,company_id,id,?,position_id,'DESLIGADO',?,? FROM payroll_employees WHERE company_id=? AND id=? AND active=1 AND cost_center_id=? AND position_id=?").bind(historyId,date,'Rescisão v123 FGTS Digital / '+approval.trct_reference,auth.user.id,companyId,p.employee.id,p.employee.cost_center_id,original.position_id));
  stmts.push(env.DB.prepare("UPDATE payroll_employees SET active=0,updated_at=CURRENT_TIMESTAMP WHERE company_id=? AND id=? AND active=1").bind(companyId,p.employee.id));
  stmts.push(env.DB.prepare("INSERT INTO financial_payables(id,company_id,number,supplier_id,source_type,source_id,issue_date,due_date,document_number,description,amount_cents,balance_cents,status,created_by) VALUES(?,?,?,?,'PAYROLL_TERMINATION',?,?,?,?,?,?,?,'OPEN',?)")
-  .bind(payableId,companyId,num,p.employee.id,postingId,date,p.payable_due_date,'TRCT-'+p.employee.code,'Rescisão '+p.employee.code+' / '+approval.trct_reference,p.net_cents,p.net_cents,auth.user.id));
- stmts.push(env.DB.prepare("INSERT INTO payroll_termination_postings123(id,company_id,approval_id,employee_id,termination_date,source_fingerprint,provision_journal_id,provision_posting_id,settlement_journal_id,payable_id,history_id,provision_cents,net_cents,posted_by) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
-  .bind(postingId,companyId,approval.id,p.employee.id,date,p.source_fingerprint,entries[0]?.entryId||null,
-   provisionPostingId,settlement.entryId,payableId,historyId,p.provision_use_cents,p.net_cents,auth.user.id));
- stmts.push(env.DB.prepare("INSERT INTO payroll_termination_payables123(company_id,posting_id,payable_id,employee_id,net_cents) VALUES(?,?,?,?,?)").bind(companyId,postingId,payableId,p.employee.id,p.net_cents));
- if(stmts.length>220)error123(d,'TRANSACTION_TOO_BIG','Mais de 220 operações não suportadas numa rescisão.');
+  .bind(netId,companyId,number,p.employee.id,postingId,date,p.payable_due_date,
+   'TRCT-'+p.employee.code,'Líquido de dispensa '+p.employee.code+' — '+approval.trct_reference,p.net_cents,p.net_cents,auth.user.id));
+ stmts.push(env.DB.prepare("INSERT INTO financial_payables(id,company_id,number,supplier_id,source_type,source_id,issue_date,due_date,document_number,description,amount_cents,balance_cents,status,created_by) VALUES(?,?,?,?,'PAYROLL_TERMINATION_FGTS',?,?,?,?,?,?,?,'OPEN',?)")
+  .bind(fineId,companyId,'CP-'+String(n+1).padStart(6,'0'),p.fgts.creditor_id,postingId,
+   date,p.fgts.due_date,p.fgts.guide_reference,
+   'Indenização compensatória FGTS 40% — '+p.employee.code+' — '+p.fgts.base_reference,
+   p.fgts_fine_cents,p.fgts_fine_cents,auth.user.id));
+ stmts.push(env.DB.prepare("INSERT INTO payroll_termination_postings123(id,company_id,approval_id,employee_id,termination_date,source_fingerprint,provision_journal_id,provision_posting_id,settlement_journal_id,fgts_journal_id,employee_payable_id,fgts_payable_id,fgts_fine_cents,history_id,provision_cents,net_cents,posted_by) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
+  .bind(postingId,companyId,approval.id,p.employee.id,date,p.source_fingerprint,
+   records[0]?.entryId||null,provisionId,settle.entryId,fineEntry.entryId,netId,fineId,
+   p.fgts_fine_cents,historyId,p.provision_use_cents,p.net_cents,auth.user.id));
+ for(const [component,payableId,amount] of [['EMPLOYEE_NET',netId,p.net_cents],['FGTS_FINE',fineId,p.fgts_fine_cents]])
+  stmts.push(env.DB.prepare("INSERT INTO payroll_termination_payables123(company_id,posting_id,payable_id,component,amount_cents) VALUES(?,?,?,?,?)").bind(companyId,postingId,payableId,component,amount));
+ if(stmts.length>220)error123(d,'TRANSACTION_LIMIT','A operação excede o limite de lançamentos simultâneos.');
  try{
-  const outcome=await env.DB.batch(stmts);
-  if(outcome.some(x=>x.success===false))error123(d,'TRANSACTION_FAILED','O banco rejeitou uma das partidas; verifique a origem.');
-  const functionalIndex=stmts.length-5;
-  if(Number(outcome[functionalIndex]?.meta?.changes)!==1)
-   error123(d,'FUNCTIONAL_NOT_RECORDED','Histórico funcional não foi gravado. Verifique os dados.');
+  const executed=await env.DB.batch(stmts);
+  if(executed.some(x=>x.success===false)||
+     Number(executed[functionalIndex]?.meta?.changes)!==1||
+     Number(executed[functionalIndex+1]?.meta?.changes)!==1)
+   error123(d,'TRANSACTION_INCOMPLETE','Situação funcional não foi atualizada; revise a origem.');
  }catch(e){
-  if(/constraint failed|UNIQUE|FOREIGN KEY|CHECK constraint/i.test(String(e)))
-   error123(d,'CONCURRENT_CHANGE','Rescisão concorrente, saldo de provisão insuficiente ou cadastro alterado. Atualize a prévia.');
+  if(/UNIQUE|FOREIGN KEY|constraint failed|CHECK constraint/i.test(String(e)))
+   error123(d,'CONCURRENT_CHANGE','Outra rescisão, provisão ou título já utiliza esta origem. Atualize o fechamento.');
   throw e;
  }
  await d.audit(env,{companyId,userId:auth.user.id,request,action:'INTEGRATE',
   entity:'payroll_termination_postings123',entityId:postingId,
-  after:{employee_id:p.employee.id,date,net_cents:p.net_cents,provision_cents:p.provision_use_cents,
-   payable_id:payableId,journal_entry_id:settlement.entryId,history_id:historyId}});
- return {integrated:true,posting_id:postingId,payable_id:payableId,
-  journal_entry_id:settlement.entryId,provision_journal_id:entries[0]?.entryId||null,
-  employee_status_changed:true,employee_situation:'DESLIGADO',
-  accounting_posted:true,financial_generated:true,paid:false};
+  after:{employee_id:p.employee.id,termination_date:date,gross_cents:p.gross_cents,
+   net_cents:p.net_cents,fgts_fine_cents:p.fgts_fine_cents,fgts_guide:p.fgts.guide_reference,
+   settlement_journal_id:settle.entryId,fgts_journal_id:fineEntry.entryId,
+   employee_payable_id:netId,fgts_payable_id:fineId,history_id:historyId}});
+ return {integrated:true,posting_id:postingId,journal_entry_id:settle.entryId,
+  fgts_journal_id:fineEntry.entryId,provision_journal_id:records[0]?.entryId||null,
+  payable_id:netId,fgts_payable_id:fineId,employee_status_changed:true,
+  accounting_posted:true,financial_generated:true,fgts_fine_cents:p.fgts_fine_cents,
+  bank_paid:false,fgts_guide_issued:false,regular_fgts_generated:false};
 }
