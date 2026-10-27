@@ -183,7 +183,13 @@ export async function payrollThirteenth111(action,c){
  const first=Number(String(number).slice(3));
  if(!Number.isSafeInteger(first)||first<1||first+current.payable_count-1>999999)
   fail111(d,'PAYABLE_NUMBER_LIMIT','Numeração de títulos fora do limite.');
- const entryDate=year+'-11-30';
+ const entryDate=String(body.posting_date||'');
+ if(!/^20\d{2}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/.test(entryDate)||
+    !Number.isFinite(Date.parse(entryDate+'T00:00:00Z'))||
+    new Date(entryDate+'T00:00:00Z').toISOString().slice(0,10)!==entryDate||
+    entryDate<year+'-02-01'||entryDate>year+'-11-30'||
+    entryDate>new Date().toISOString().slice(0,10))
+  fail111(d,'POSTING_DATE_INVALID','Informe uma data contábil realizada entre fevereiro e novembro do ano do 13º, não futura.',400);
  const built=await d.buildEntry(env,auth,companyId,{
   batch_id:current.journal_batch_id,entry_date:entryDate,document_number:'13-ADV-'+year,
   description:'Primeira parcela do 13º '+year,source_module:'PAYROLL',source_reference:source,
@@ -205,7 +211,6 @@ export async function payrollThirteenth111(action,c){
    .bind(id,companyId,runId,e.employee_id));
   index++;
  }
- const postingId=d.uuid();
  stmts.push(env.DB.prepare("INSERT INTO payroll_thirteenth_postings111(run_id,company_id,source_fingerprint,journal_entry_id,accounting_batch_id,payable_count,payable_total_cents,posted_by) VALUES (?,?,?,?,?,?,?,?)")
   .bind(runId,companyId,current.source_fingerprint,built.entryId,current.journal_batch_id,index,
    current.payable_total_cents,auth.user.id));
