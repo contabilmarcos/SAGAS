@@ -296,11 +296,13 @@ export async function payrollThirteenth112(action,c){
  stmts.push(env.DB.prepare("INSERT INTO payroll_provision_postings45(id,company_id,kind,competence,cycle_id,source_fingerprint,journal_entry_id,accounting_batch_id,total_cents,line_count,posted_by) VALUES (?,?,'USE',?,NULL,?,?,?,?,?,?)")
   .bind(postedId,companyId,current.competence,current.source_fingerprint,entryA.entryId,current.batch_id,
    current.totals.provision_cents,current.provision_lines.length,auth.user.id));
+ // CASO SEM SALDO: produz quantia positiva em movimento USE, violando CHECK
+ // e abortando a transacao D1 inteira (sem criar titulos/diarios parciais).
  const moves=current.employees.map(x=>({id:d.uuid(),employee_id:x.employee_id,cost_center_id:x.cost_center_id,
   amount_cents:x.provision_use_cents,origin_key:'THIRTEENTH112:'+current.run_id+':'+x.employee_id}));
  stmts.push(env.DB.prepare(
-  "INSERT INTO payroll_provision_movements43(id,company_id,employee_id,cost_center_id,component,movement_kind,competence,amount_cents,origin_key,document_ref,notes,cycle_id,created_by) SELECT json_extract(x.value,'$.id'),?,json_extract(x.value,'$.employee_id'),json_extract(x.value,'$.cost_center_id'),'DECIMO_TERCEIRO','USE',?,-json_extract(x.value,'$.amount_cents'),json_extract(x.value,'$.origin_key'),?,'Baixa de provisão vinculada à quitação do 13º',NULL,? FROM json_each(?) x WHERE COALESCE((SELECT SUM(m.amount_cents) FROM payroll_provision_movements43 m WHERE m.company_id=? AND m.employee_id=json_extract(x.value,'$.employee_id') AND m.component='DECIMO_TERCEIRO' AND m.competence<=?),0)>=json_extract(x.value,'$.amount_cents')"
- ).bind(companyId,current.competence,'13-QUIT-'+year,auth.user.id,JSON.stringify(moves),companyId,current.competence));
+  "INSERT INTO payroll_provision_movements43(id,company_id,employee_id,cost_center_id,component,movement_kind,competence,amount_cents,origin_key,document_ref,notes,cycle_id,created_by) SELECT json_extract(x.value,'$.id'),?,json_extract(x.value,'$.employee_id'),json_extract(x.value,'$.cost_center_id'),'DECIMO_TERCEIRO','USE',?,CASE WHEN COALESCE((SELECT SUM(m.amount_cents) FROM payroll_provision_movements43 m WHERE m.company_id=? AND m.employee_id=json_extract(x.value,'$.employee_id') AND m.component='DECIMO_TERCEIRO' AND m.competence<=?),0)>=json_extract(x.value,'$.amount_cents') THEN -json_extract(x.value,'$.amount_cents') ELSE json_extract(x.value,'$.amount_cents') END,json_extract(x.value,'$.origin_key'),?,'Baixa de provisão vinculada à quitação do 13º',NULL,? FROM json_each(?) x"
+ ).bind(companyId,current.competence,companyId,current.competence,'13-QUIT-'+year,auth.user.id,JSON.stringify(moves)));
  stmts.push(env.DB.prepare(
   "INSERT INTO payroll_provision_posted_movements45(company_id,movement_id,posting_id) SELECT ?,json_extract(x.value,'$.id'),? FROM json_each(?) x"
  ).bind(companyId,postedId,JSON.stringify(moves)));
