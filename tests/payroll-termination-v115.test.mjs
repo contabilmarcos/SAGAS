@@ -53,6 +53,11 @@ function fake({missing=false}={}){
  const DB={prepare(sql){
   return {bind(...args){
    return {first:async()=>{
+    if(sql.includes('FROM payroll_employees e LEFT JOIN cost_centers')){
+      return {id:'e1',name:'Maria',admission_date:'2024-01-01',active:1,
+       cost_center_id:'cc1',cost_center_code:'01',center_active:1,
+       employee_number:1,salary_cents:300000,situation:'ATIVO'};
+    }
     if(sql.includes('FROM payroll_termination_evidence115'))return missing?null:proof();
     if(sql.includes('FROM payroll_termination_workpapers115 WHERE company_id=? AND employee_id=?'))return null;
     throw Error('unexpected SELECT '+sql);
@@ -62,7 +67,7 @@ function fake({missing=false}={}){
  },batch:async()=>{throw Error('unexpected batch')}};
  const d={HttpError:class HttpError extends Error{constructor(status,msg,code){super(msg);this.code=code;this.status=status}},
   requirePermission:async()=>{},ensureSchemaRevision:async()=>{},
-  hash:async(obj)=>JSON.stringify(obj),uuid:()=>('uid'+(dbChanges.length+1)),
+  hash:async(obj)=>obj.version===114?'raw':JSON.stringify(obj),uuid:()=>('uid'+(dbChanges.length+1)),
   audit:async(_env,obj)=>events.push(obj)};
  const c={env:{DB},companyId:'org',auth:{user:{id:'u1'}},request:{},d,
   body:{employee_id:'e1',termination_date:'2026-10-27',kind:'WITHOUT_CAUSE',notice_kind:'INDEMNIFIED'}};
