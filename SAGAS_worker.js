@@ -10978,9 +10978,9 @@ async function route(request, env) {
     await ensureSchemaRevision(env,'payroll-employee-history',1,()=>ensurePayrollEmployeeRecordsSchema(env));
     await ensureSchemaRevision(env,'payroll-employee-cost-center39',1,()=>ensurePayrollCostCenter39(env));
     await ensureSchemaRevision(env,'payroll-employee-numbers',1,()=>ensurePayrollEmployeeNumbersSchema(env));
-    await ensureSchemaRevision(env,'payroll-event-natures39',1,async()=>{await payrollFinance39('settings',{
+    await payrollFinance39('settings',{
       env,companyId,auth,request,d:{HttpError,requirePermission,ensureSchemaRevision,audit,uuid}
-    });});
+    });
     if(method==='POST'&&path.endsWith('/integration')){
       await ensureSchemaRevision(env,'purchasing',1,async()=>{
         await ensurePurchasingSchema(env);await ensurePurchaseIntegrationSchema(env);await ensureRmPurchasingSchema(env);
