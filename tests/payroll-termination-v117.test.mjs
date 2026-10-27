@@ -111,3 +111,9 @@ test('nao usa tabela IRRF 2026 para pagamento posterior em 2027',()=>{
  assert.equal(r.tax_ready_for_review,false);
  assert.ok(r.tax_issues.some(x=>x.code==='PAYMENT_DATE_UNSUPPORTED'));
 });
+
+test('pagamento em mes diferente exige separar competencia INSS e caixa IRRF',()=>{
+ const r=assessTaxes117(b,proof({payment_date:'2026-11-05'}));
+ assert.equal(r.tax_summary,null);
+ assert.ok(r.tax_issues.some(x=>x.code==='PAYMENT_DIFFERENT_MONTH'));
+});
