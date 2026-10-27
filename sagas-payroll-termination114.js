@@ -151,6 +151,7 @@ async function preview114(c){
   amounts={salary_balance_cents:salaryBalance,salary_balance_days:days,
    thirteenth_avos:avos13,thirteenth_cents:gross13,
    thirteenth_notice_projection_cents:projected13,
+   thirteenth_notice_projection_avos:Math.max(0,avos13Projected-avos13),
    vacation_proportional_avos:vac.avos,vacation_period_start:vac.acquisition_start,
    vacation_period_end:vac.acquisition_end,vacation_proportional_cents:vacAmount,
    vacation_third_cents:vacThird,notice_days:noticeDays,notice_indemnity_cents:noticePay,
