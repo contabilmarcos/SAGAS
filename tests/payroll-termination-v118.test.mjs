@@ -99,3 +99,10 @@ test('saldos e problemas sao separados por funcionario na previda pura',()=>{
  assert.equal(x.employee.id,'e2');
  assert.equal(x.financial.payable_created,false);
 });
+
+test('centro de custo historico divergente exige conciliacao da provisao',()=>{
+ const bad=rows.map(r=>({...r}));bad[0].cost_center_conflicts=2;
+ const r=run(fields,bad);
+ assert.ok(r.blocks.some(b=>b.code==='PROVISION_CENTER_MISMATCH'));
+ assert.equal(r.ready_for_posting,false);
+});
