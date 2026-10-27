@@ -89,6 +89,9 @@ export function plan121(pkg,ledger,detail,postingLinks,batch,existing,review){
     modifications.push({employee_id:s.employee_id,event_code:eventCode,
      debit_from_account:line.account_id,debit_to_account:posted.gl_credit_account_id,
      amount_cents:line.amount_cents,cost_center_id:line.cost_center_id});
+    // Usar o mesmo centro de custo e filial da conta transitória creditada.
+    if((line.branch_id||null)!==(posted.gl_credit_branch_id||null))
+     report121(issues,'PROVISION_BRANCH_MISMATCH','Filial da baixa não corresponde à rubrica '+eventCode+'.');
     line.account_id=posted.gl_credit_account_id;
     line.account_code=posted.gl_credit_account_code||null;
    }
@@ -114,6 +117,15 @@ export function plan121(pkg,ledger,detail,postingLinks,batch,existing,review){
     report121(issues,'ADVANCE_OFFSET_MISMATCH','Rubrica de antecipação não compensa exatamente férias e terço do funcionário '+e.employee_id);
   }
   byEmpEvents.set(e.employee_id,lines);
+ }
+ // Não admitir naturezas que debitam e creditam a mesma conta.
+ for(const s of sources){
+  for(const event of ['FERIAS_GOZO','TERCO_FERIAS','ADIANTAMENTO_FERIAS']){
+   const ev=lines.filter(x=>x.employee_id===s.employee_id&&x.event_code===event);
+   const debits=new Set(ev.filter(x=>x.side==='D').map(x=>x.account_id+'|'+x.cost_center_id+'|'+(x.branch_id||'')));
+   if(ev.some(x=>x.side==='C'&&debits.has(x.account_id+'|'+x.cost_center_id+'|'+(x.branch_id||''))))
+    report121(issues,'EVENT_SAME_ACCOUNT','Natureza '+event+' debita e credita a mesma conta para '+s.employee_id);
+  }
  }
  const journal=sums121(lines);
  if(!cents121(journal.debit_cents)||!cents121(journal.credit_cents)||
