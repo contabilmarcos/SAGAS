@@ -74,7 +74,7 @@ test('preview sem documentos nao cria gravacoes',async()=>{
  assert.equal(x.dbChanges.length,0);
 });
 test('documentos confirmados ficam referenciados no D1 sem criar titulo',async()=>{
- const x=fake();x.c.body={...x.c.body,confirmation:'CONFIRMAR DOCUMENTOS RESCISAO',
+ const x=fake();x.c.body={...x.c.body,base_source_fingerprint:'raw',confirmation:'CONFIRMAR DOCUMENTOS RESCISAO',
  vacation_acquired_periods:1,vacation_double_periods:1,
  average_thirteenth_cents:30000,average_vacation_cents:20000,average_notice_cents:10000,
  fgts_base_cents:1800000,fgts_reference:'FGTS DIGITAL OUTUBRO 2026',
@@ -86,7 +86,7 @@ test('documentos confirmados ficam referenciados no D1 sem criar titulo',async()
  assert.equal(result.accounting_generated,false);
 });
 test('dobro maior que periodos adquiridos invalida atestacao',async()=>{
- const x=fake();x.c.body={...x.c.body,confirmation:'CONFIRMAR DOCUMENTOS RESCISAO',
+ const x=fake();x.c.body={...x.c.body,base_source_fingerprint:'raw',confirmation:'CONFIRMAR DOCUMENTOS RESCISAO',
  vacation_acquired_periods:1,vacation_double_periods:2};
  await assert.rejects(()=>payrollTermination115('save',x.c),e=>e.code==='VACATION_DOUBLE_INVALID');
  assert.equal(x.dbChanges.length,0);
@@ -106,5 +106,12 @@ test('versao da conferencia alterada nao pode registrar historico',async()=>{
  const x=fake();x.c.body={...x.c.body,
   confirmation:'REGISTRAR CONFERENCIA RESCISAO',source_fingerprint:'older'};
  await assert.rejects(()=>payrollTermination115('record',x.c),e=>e.code==='PREVIEW_CHANGED');
+ assert.equal(x.dbChanges.length,0);
+});
+
+test('não aceita documentos de versão salarial ou funcional vencida',async()=>{
+ const x=fake();x.c.body={...x.c.body,base_source_fingerprint:'salario-antigo',
+  confirmation:'CONFIRMAR DOCUMENTOS RESCISAO'};
+ await assert.rejects(()=>payrollTermination115('save',x.c),e=>e.code==='PREVIEW_CHANGED');
  assert.equal(x.dbChanges.length,0);
 });
