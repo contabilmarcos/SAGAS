@@ -14,6 +14,8 @@ on:
       - 'sagas-payroll-thirteenth71-ui.js'
       - 'sagas-payroll-thirteenth111.js'
       - 'sagas-payroll-thirteenth111-ui.js'
+      - 'sagas-payroll-thirteenth112.js'
+      - 'sagas-payroll-thirteenth112-ui.js'
       - 'index.html'
       - 'SAGAS_worker.js'
       - 'sagas-payroll-vacation67.js'
@@ -22,6 +24,7 @@ on:
       - 'tests/payroll-thirteenth-v109.test.mjs'
       - 'tests/payroll-thirteenth-runs-v110.test.mjs'
       - 'tests/payroll-thirteenth-integration-v111.test.mjs'
+      - 'tests/payroll-thirteenth-settlement-v112.test.mjs'
       - '.github/workflows/payroll-closing.yml'
   workflow_dispatch:
 jobs:
@@ -49,5 +52,7 @@ jobs:
           node --check sagas-payroll-thirteenth71-ui.js
           node --check sagas-payroll-thirteenth111.js
           node --check sagas-payroll-thirteenth111-ui.js
+          node --check sagas-payroll-thirteenth112.js
+          node --check sagas-payroll-thirteenth112-ui.js
       - name: Executar testes do fechamento
-        run: node --test tests/payroll-closing-v107.test.mjs tests/payroll-provisions-v108.test.mjs tests/payroll-thirteenth-v109.test.mjs tests/payroll-thirteenth-runs-v110.test.mjs tests/payroll-thirteenth-integration-v111.test.mjs
+        run: node --test tests/payroll-closing-v107.test.mjs tests/payroll-provisions-v108.test.mjs tests/payroll-thirteenth-v109.test.mjs tests/payroll-thirteenth-runs-v110.test.mjs tests/payroll-thirteenth-integration-v111.test.mjs tests/payroll-thirteenth-settlement-v112.test.mjs
