@@ -28,6 +28,7 @@ import { payrollVacationUseLink68, payrollVacationUseLinkSchema68 } from './saga
 import { payrollMonthlyEndToEnd69 } from './sagas-payroll-closing69.js';
 import { payrollThirteenth70 } from './sagas-payroll-thirteenth70.js';
 import { payrollThirteenth71 } from './sagas-payroll-thirteenth71.js';
+import { payrollThirteenth111 } from './sagas-payroll-thirteenth111.js';
 import { payrollProvisionAccounting44 } from './sagas-payroll-provisions44.js';
 // SAGAS Worker v96 - Registro auditável do envelope próprio VACATION de férias | cumulativo desde v49
 // ===== utils.js =====
@@ -10967,6 +10968,34 @@ async function route(request, env) {
       competence:url.searchParams.get('competence'),
       body:method==='POST'?await readJson(request):{},
       d:{HttpError,requirePermission,ensureSchemaRevision,audit,uuid}
+    }));
+  }
+  // v111: adiantamento do 13o em diário e títulos a pagar; segunda parcela continua bloqueada aqui.
+  if(path==='/api/payroll/thirteenth/integration'&&
+     (method==='GET'||method==='POST')||
+     path==='/api/payroll/thirteenth/integration/settings'&&
+     (method==='GET'||method==='POST')){
+    await ensureSchemaRevision(env,'payroll-employee-history',1,()=>ensurePayrollEmployeeRecordsSchema(env));
+    await ensureSchemaRevision(env,'payroll-employee-cost-center39',1,()=>ensurePayrollCostCenter39(env));
+    await ensureSchemaRevision(env,'payroll-employee-numbers',1,()=>ensurePayrollEmployeeNumbersSchema(env));
+    await ensureSchemaRevision(env,'payroll-event-natures39',1,async()=>{await payrollFinance39('settings',{
+      env,companyId,auth,request,d:{HttpError,requirePermission,ensureSchemaRevision,audit,uuid}
+    });});
+    if(method==='POST'&&path.endsWith('/integration')){
+      await ensureSchemaRevision(env,'purchasing',1,async()=>{
+        await ensurePurchasingSchema(env);await ensurePurchaseIntegrationSchema(env);await ensureRmPurchasingSchema(env);
+      });
+    }
+    const settings=path.endsWith('/settings');
+    const action=settings?(method==='GET'?'settings':'save'):(method==='GET'?'preview':'integrate');
+    return ok(await payrollThirteenth111(action,{
+      env,companyId,auth,request,
+      runId:url.searchParams.get('run_id'),
+      body:method==='POST'?await readJson(request):{},
+      d:{HttpError,requirePermission,ensureSchemaRevision,audit,uuid,
+       hash:payrollProcessingSnapshotHash28,centsToMoney,nextPayableNumber,
+       buildEntry:buildInternalPostedEntry,
+       taxes:payrollTaxHistoricalWithDependents}
     }));
   }
   // v110: calculos versionados do 13o; aprovacao nao gera pagamento ou contabilizacao.
