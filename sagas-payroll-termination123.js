@@ -191,41 +191,49 @@ async function preview123(c){
   termination_date:body.termination_date,kind:body.kind,notice_kind:body.notice_kind};
  if(!input.employee_id||!strictDate123(input.termination_date))
   error123(d,'INVALID_REQUEST','Selecione funcionário e data de rescisão válidos.',400);
- const cc={...c,body:input,employeeId:input.employee_id};
- const [review,diag,plan,employee]=await Promise.all([
-  payrollTermination117('preview',cc),payrollTermination118('preview',cc),
-  payrollTermination119('preview',cc),
-  env.DB.prepare("SELECT id,position_id,active,cost_center_id FROM payroll_employees WHERE company_id=? AND id=?").bind(companyId,input.employee_id).first()
+ const ctx={...c,body:input,employeeId:input.employee_id};
+ const [review,diag,plan,employee,fgtsConfig,fgtsDoc]=await Promise.all([
+  payrollTermination117('preview',ctx),payrollTermination118('preview',ctx),
+  payrollTermination119('preview',ctx),
+  env.DB.prepare("SELECT id,position_id,active,cost_center_id FROM payroll_employees WHERE company_id=? AND id=?").bind(companyId,input.employee_id).first(),
+  fgtsConfig123(env,companyId),
+  env.DB.prepare("SELECT * FROM payroll_termination_fgts_documents123 WHERE company_id=? AND employee_id=? AND termination_date=?").bind(companyId,input.employee_id,input.termination_date).first()
  ]);
- const [approval,existing,taxWorkpaper,planWorkpaper,functionalConflict]=await Promise.all([
+ const [approval,existing,workTax,workPlan,history]=await Promise.all([
   env.DB.prepare("SELECT * FROM payroll_termination_approvals123 WHERE company_id=? AND employee_id=? AND termination_date=?").bind(companyId,input.employee_id,input.termination_date).first(),
   env.DB.prepare("SELECT * FROM payroll_termination_postings123 WHERE company_id=? AND employee_id=? AND termination_date=?").bind(companyId,input.employee_id,input.termination_date).first(),
   env.DB.prepare("SELECT id,source_fingerprint FROM payroll_termination_tax_workpapers117 WHERE company_id=? AND employee_id=? AND termination_date=? AND kind=? AND notice_kind=? ORDER BY revision DESC LIMIT 1").bind(companyId,input.employee_id,input.termination_date,input.kind,input.notice_kind).first(),
   env.DB.prepare("SELECT id,source_fingerprint FROM payroll_termination_plans119 WHERE company_id=? AND employee_id=? AND termination_date=? AND kind=? AND notice_kind=? ORDER BY revision DESC LIMIT 1").bind(companyId,input.employee_id,input.termination_date,input.kind,input.notice_kind).first(),
   env.DB.prepare("SELECT id FROM payroll_employee_functional_history WHERE company_id=? AND employee_id=? AND effective_from>=? LIMIT 1").bind(companyId,input.employee_id,input.termination_date).first()
  ]);
- const result=assess123(review,diag,plan,approval,existing,employee);
- if(!taxWorkpaper||taxWorkpaper.source_fingerprint!==review.source_fingerprint)
-  issue123(result.problems,'TAX_WORKPAPER_NOT_RECORDED','Registre antes a memória de INSS/IRRF v117 da revisão atual.');
- if(!planWorkpaper||planWorkpaper.source_fingerprint!==plan.source_fingerprint)
-  issue123(result.problems,'ACCOUNTING_WORKPAPER_NOT_RECORDED','Registre a minuta v119 da revisão atual antes de homologar.');
- if(functionalConflict&&!existing)
-  issue123(result.problems,'FUNCTIONAL_DATE_CONFLICT','Existe histórico funcional na data do desligamento ou posterior.');
+ let foreign=null;
+ try{
+  foreign=await env.DB.prepare("SELECT id FROM payroll_termination_postings122 WHERE company_id=? AND employee_id=? AND termination_date=?").bind(companyId,input.employee_id,input.termination_date).first();
+ }catch(e){if(!/no such table/i.test(String(e)))throw e}
+ const fine=review.fgts_fine_reference_cents;
+ const gl=money123(fine)&&fine>0?await fgtsJournal123(env,companyId,fine,review.employee?.cost_center_id):null;
+ const result=assess123(review,diag,plan,approval,existing,employee,fgtsDoc,fgtsConfig,gl,foreign);
+ if(!workTax||workTax.source_fingerprint!==review.source_fingerprint)
+  issue123(result.problems,'TAX_WORKPAPER_MISSING','Registre a memória tributária v117 atual.');
+ if(!workPlan||workPlan.source_fingerprint!==plan.source_fingerprint)
+  issue123(result.problems,'PLAN_WORKPAPER_MISSING','Registre a minuta contábil v119 atual.');
+ if(history&&!existing)
+  issue123(result.problems,'FUNCTIONAL_CONFLICT','Histórico funcional encontrado no desligamento ou após.');
  const ref='TERMINATION_SETTLE:'+input.employee_id+':'+input.termination_date;
- const alreadyJournal=await env.DB.prepare("SELECT id FROM journal_entries WHERE company_id=? AND source_module='PAYROLL' AND source_reference IN (?,?) LIMIT 1").bind(companyId,ref,'TERMINATION_USE:'+input.employee_id+':'+input.termination_date).first();
- if(alreadyJournal&&!existing)
-  issue123(result.problems,'JOURNAL_ALREADY_EXISTS','Há diário já registrado para esta rescisão sem vínculo de fechamento.');
+ const journal=await env.DB.prepare("SELECT id FROM journal_entries WHERE company_id=? AND source_module='PAYROLL' AND source_reference IN (?,?,?) LIMIT 1").bind(companyId,ref,'TERMINATION_USE:'+input.employee_id+':'+input.termination_date,
+  'TERMINATION_FGTS_FINE:'+input.employee_id+':'+input.termination_date).first();
+ if(journal&&!existing)
+  issue123(result.problems,'ALREADY_JOURNAL','Já existe diário de rescisão para a data informada.');
  result.tax_source_fingerprint=review.source_fingerprint;
- result.preclose_fingerprint=diag.source_fingerprint;
  result.plan_source_fingerprint=plan.source_fingerprint;
  result.ready_for_approval=!result.problems.length&&!approval;
  result.ready_for_integration=!result.problems.length&&!!approval&&!existing;
- result.source_fingerprint=await d.hash({version:123,company_id:companyId,employee_id:input.employee_id,
-  review:review.source_fingerprint,diagnostic:diag.source_fingerprint,plan:plan.source_fingerprint,
-  approval:approval?.id||null,existing:existing?.id||null,employee,functionalConflict,
-  gross:result.gross_cents,net:result.net_cents,provisions:result.provision_movements,
-  journal_use:result.provision_journal_lines,journal_settlement:result.settlement_journal_lines,
-  issues:result.problems});
+ result.source_fingerprint=await d.hash({version:123,companyId,
+  employee_id:input.employee_id,review:review.source_fingerprint,
+  preclose:diag.source_fingerprint,plan:plan.source_fingerprint,
+  employee,fgtsDoc,fgtsConfig,fgtsMapping:gl?.configs||[],fgtsLines:gl?.lines||[],
+  approval:approval?.id||null,existing:existing?.id||null,foreign:foreign?.id||null,
+  history:history?.id||null,problems:result.problems});
  return result;
 }
 export async function payrollTermination123(action,c){
