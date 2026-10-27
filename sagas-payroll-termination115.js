@@ -68,8 +68,9 @@ export function reconcile115(base,evidence){
  }
  const payable13=div115(base13,a.thirteenth_avos,12);
  // Deriva os avos adicionais da projeção a partir da fotografia contratual do v114.
- const extraAvos=a.thirteenth_notice_projection_cents===0?0:
-   Math.max(0,Math.round(a.thirteenth_notice_projection_cents*12/salary));
+ const extraAvos=Number(a.thirteenth_notice_projection_avos||0);
+ if(!Number.isSafeInteger(extraAvos)||extraAvos<0||extraAvos>3)
+  issues.push({code:'NOTICE_AVOS_INVALID',message:'Avos de projeção do aviso precisam ser recalculados.'});
  const projected13Amount=div115(base13,extraAvos,12);
  const vacationProportional=div115(baseVac,a.vacation_proportional_avos,12);
  const vacationThird=div115(vacationProportional,1,3);
