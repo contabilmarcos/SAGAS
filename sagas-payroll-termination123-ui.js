@@ -71,6 +71,12 @@ async function payrollTermination123Open(base){
   '<div class="table-wrap"><table class="table"><thead><tr><th>Bruto TRCT</th><th>Líquido do empregado</th><th>Multa FGTS 40%</th><th>Vencimento FGTS</th></tr></thead><tbody><tr>'+
   '<td>'+money(p.gross_cents)+'</td><td>'+money(p.net_cents)+'</td><td>'+money(p.fgts_fine_cents)+
   '</td><td>'+esc(p.fgts?.due_date||'Não conferido')+'</td></tr></tbody></table></div>'+
+  (p.posting?'<p class="help"><b>Conferência após encerramento:</b> '+esc(p.verified?'Diários e títulos conciliados':'Existem pendências de auditoria')+
+    ' · <b>Diário(s):</b> '+esc((p.journal_ids||[]).join(', '))+
+    ' · <b>Título do trabalhador:</b> '+esc(p.financial?.employee_payable_id||'—')+
+    ' ('+esc(p.financial?.employee_payable_status||'—')+')'+
+    ' · <b>Título da multa FGTS:</b> '+esc(p.financial?.fgts_payable_id||'—')+
+    ' ('+esc(p.financial?.fgts_payable_status||'—')+')</p>':'')+
   '<p class="help"><b>Guia FGTS:</b> '+esc(p.fgts?.guide_reference||'Ainda não vinculada')+
   ' · <b>Lote contábil:</b> '+esc(p.accounting_batch_id||'Não configurado')+'</p>'+
   '<h4>Diário proposto da multa (separado do TRCT)</h4>'+
