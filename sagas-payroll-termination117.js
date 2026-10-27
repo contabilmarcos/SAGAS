@@ -158,7 +158,7 @@ export function assessTaxes117(base,context){
    issues.push({code:'TAX_COMPARISON_MISMATCH',message:'INSS/IRRF da v116 divergentes da simulação da v117. Revise bases, descontos e recibos.'});
  }
  if((base.problems||[]).length)
-  issues.push({code:'PRIOR_TERMINATION_BLOCKERS',message:'Há impedimentos herdados do cálculo da rescisão que exigem revisão antes do fechamento.'});
+  warnings.push('Ainda existem pendências herdadas da rescisão. O registro desta memória DRAFT não libera o fechamento final.');
  result.tax_summary=tax;
  result.tax_comparison={differences,documentation_present:!!actual,matched:!!actual&&!differences.length};
  result.tax_ready_for_review=!issues.length;
