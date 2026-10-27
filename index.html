@@ -392,8 +392,8 @@ async function renderPayrollCompetences(){
   tablePage({newLabel:manage?'Abrir competência':null,onNew:manage?payrollCompetenceForm:null,
     cols:['Competência','Situação','Ações'],rows,emptyTitle:'Nenhuma competência aberta',
     emptyText:'Abra uma competência para registrar os lançamentos de eventos.',placeholder:'Pesquisar competência...'});
-  $('[data-payroll-go]').forEach(b=>b.onclick=()=>{window.sagasPayrollCompetence=b.dataset.payrollGo;nav('payroll-movements')});
-  $('[data-payroll-reopen]').forEach(b=>b.onclick=()=>payrollCompetenceReopen125Open(b.dataset.payrollReopen).catch(e=>toast(e.message,'error')));
+  $$('[data-payroll-go]').forEach(b=>b.onclick=()=>{window.sagasPayrollCompetence=b.dataset.payrollGo;nav('payroll-movements')});
+  $$('[data-payroll-reopen]').forEach(b=>b.onclick=()=>payrollCompetenceReopen125Open(b.dataset.payrollReopen).catch(e=>toast(e.message,'error')));
 }
 async function payrollCompetenceReopen125Open(competenceId){
   const d=await api('/api/payroll/competences/'+encodeURIComponent(competenceId)+'/reopen');
