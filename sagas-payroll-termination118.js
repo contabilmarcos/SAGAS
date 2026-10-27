@@ -135,7 +135,7 @@ export function diagnose118(review,rows=[],postings=null,mapping=null,existing=n
  warnings.push('O financeiro permanece somente como referência; nenhum título, guia, pagamento, diário ou alteração funcional é criado.');
  return {kind:'TERMINATION_CONSOLIDATED_REVIEW_V118',employee:review.employee,
   termination_date:review.termination_date,termination_kind:review.termination_kind,notice_kind:review.notice_kind,
-  source_fingerprint:review.source_fingerprint,
+  source_fingerprint:review.source_fingerprint,tax_source_fingerprint:review.source_fingerprint,
   financial,provision_items:provisionItems,blocks,warnings,
   tax_ready_for_review:!!review.tax_ready_for_review,
   provision_accounting_checked:allAccounted,
