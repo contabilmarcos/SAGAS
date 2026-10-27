@@ -98,11 +98,13 @@ function payrollTermination115Show(p){
   (p.warnings||[]).map(x=>'<p class="help">'+esc(x)+'</p>').join('')+
   '<p class="help">A multa do FGTS é uma referência separada do valor líquido. Ainda não há cálculo final das incidências, impostos, compensações ou integração contábil e financeira.</p>'+
   '<div class="form-actions"><button class="btn secondary" id="pterm115Edit" type="button">Editar bases</button>'+
+  '<button class="btn secondary" id="pterm115Deductions" type="button">Conferir descontos</button>'+
   '<button class="btn secondary" id="pterm115History" type="button">Histórico documental</button>'+
   (p.documentary_ready&&can('payroll.manage')?
   '<button class="btn primary" id="pterm115Record" type="button">Registrar memória DRAFT</button>':'')+
   '</div>',true);
  document.getElementById('pterm115Edit').onclick=()=>payrollTermination115Open(p).catch(e=>toast(e.message,'error'));
+ document.getElementById('pterm115Deductions').onclick=()=>payrollTermination116Open(p).catch(e=>toast(e.message,'error'));
  document.getElementById('pterm115History').onclick=()=>payrollTermination115History(p.employee.id,p.employee.name).catch(e=>toast(e.message,'error'));
  const save=document.getElementById('pterm115Record');
  if(save)save.onclick=async()=>{
