@@ -5184,6 +5184,18 @@ async function undoFinancialPayablePayment(env,request,auth,companyId,id){
   const before=await getFinancialPayable(env,companyId,id);
   if(['PAYROLL_MONTHLY','PAYROLL_THIRTEENTH'].includes(before.source_type))await requirePermission(env,auth.user.id,companyId,'payroll.manage');
   if(before.status!=='PAID') throw new HttpError(409,'Somente títulos baixados podem ter a baixa desfeita.','INVALID_STATUS');
+  // v112: o adiantamento pago integra a fotografia da quitação do 13º.
+  // Não reabrir o título da primeira parcela após ele ser utilizado.
+  if(before.source_type==='PAYROLL_THIRTEENTH'){
+    const has112=await env.DB.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='payroll_thirteenth_postings112' LIMIT 1").first();
+    if(has112){
+      const linked=await env.DB.prepare(
+        "SELECT z.run_id FROM payroll_thirteenth_payables111 l JOIN payroll_thirteenth_runs71 a ON a.id=l.run_id AND a.company_id=l.company_id JOIN payroll_thirteenth_runs71 b ON b.company_id=a.company_id AND b.calendar_year=a.calendar_year AND b.phase='SECOND' JOIN payroll_thirteenth_postings112 z ON z.company_id=b.company_id AND z.run_id=b.id WHERE l.company_id=? AND l.payable_id=? LIMIT 1"
+      ).bind(companyId,id).first();
+      if(linked)throw new HttpError(409,'Adiantamento da primeira parcela já utilizado na quitação contabilizada do 13º. Estorno exige conciliação e reabertura controladas.','THIRTEENTH_FIRST_USED');
+    }
+  }
+
 
   const journalEntryId=before.payment_journal_entry_id||null;
   if(journalEntryId){
