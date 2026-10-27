@@ -47,12 +47,14 @@ function payrollTermination118Show(p){
   '<h4>Checklist das pendências por área</h4>'+blocks+
   (p.warnings||[]).map(w=>'<p class="help">'+esc(w)+'</p>').join('')+
   '<div class="form-actions">'+
+  '<button class="btn secondary" type="button" id="pterm118Plan">Preparar lançamentos</button>'+
   '<button class="btn secondary" type="button" id="pterm118Refresh">Atualizar diagnóstico</button>'+
   '<button class="btn secondary" type="button" id="pterm118History">Histórico</button>'+
   (can('payroll.manage')?
    '<button class="btn primary" type="button" id="pterm118Record">Registrar diagnóstico DRAFT</button>':'')+
   '</div>',true);
  document.getElementById('pterm118Refresh').onclick=()=>payrollTermination118Open(p).catch(e=>toast(e.message,'error'));
+ document.getElementById('pterm118Plan').onclick=()=>payrollTermination119Open(p).catch(e=>toast(e.message,'error'));
  document.getElementById('pterm118History').onclick=()=>payrollTermination118History(p.employee.id,p.employee.name).catch(e=>toast(e.message,'error'));
  const record=document.getElementById('pterm118Record');
  if(record)record.onclick=async()=>{
