@@ -24,10 +24,14 @@ async function payrollTermination114Open(){
  const form=document.getElementById('termination114Form');
  document.getElementById('term114Cancel').onclick=closeModal;
  function syncNotice(){
-  const select=form.elements.notice_kind;
-  if(form.elements.kind.value==='RESIGNATION'&&select.value==='INDEMNIFIED')select.value='WORKED';
+  const select=form.elements.notice_kind,resignation=form.elements.kind.value==='RESIGNATION';
+  [...select.options].forEach(option=>{
+   option.disabled=resignation?option.value==='INDEMNIFIED':option.value==='WAIVED';
+  });
+  if(select.selectedOptions[0]?.disabled)select.value='WORKED';
  }
  form.elements.kind.onchange=syncNotice;
+ syncNotice();
  form.onsubmit=async ev=>{
   ev.preventDefault();
   const button=form.querySelector('[type=submit]');button.disabled=true;
