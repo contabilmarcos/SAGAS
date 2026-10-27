@@ -88,7 +88,7 @@ async function preview70(c){
  if(phase==='SECOND'){
   try{
    financialAdvances=(await env.DB.prepare(
-    "SELECT l.employee_id,p.amount_cents,p.payment_date,p.status,p.id AS payable_id,p.document_number,p.payment_journal_entry_id,j.status AS origin_status,pj.status AS payment_journal_status FROM payroll_thirteenth_payables111 l JOIN payroll_thirteenth_runs71 r ON r.id=l.run_id AND r.company_id=l.company_id AND r.phase='FIRST' AND r.status='APPROVED' JOIN payroll_thirteenth_postings111 z ON z.run_id=r.id AND z.company_id=l.company_id JOIN financial_payables p ON p.id=l.payable_id AND p.company_id=l.company_id AND p.source_type='PAYROLL_THIRTEENTH' AND p.source_id=l.run_id||':'||l.employee_id LEFT JOIN journal_entries j ON j.id=z.journal_entry_id AND j.company_id=l.company_id LEFT JOIN journal_entries pj ON pj.id=p.payment_journal_entry_id AND pj.company_id=l.company_id WHERE l.company_id=? AND r.calendar_year=?"
+    "SELECT l.employee_id,p.amount_cents,p.payment_date,p.status,p.id AS payable_id,p.document_number,p.payment_journal_entry_id,e.advance_cents AS approved_advance_cents,j.status AS origin_status,pj.status AS payment_journal_status FROM payroll_thirteenth_payables111 l JOIN payroll_thirteenth_runs71 r ON r.id=l.run_id AND r.company_id=l.company_id AND r.phase='FIRST' AND r.status='APPROVED' JOIN payroll_thirteenth_envelopes71 e ON e.run_id=l.run_id AND e.company_id=l.company_id AND e.employee_id=l.employee_id JOIN payroll_thirteenth_postings111 z ON z.run_id=r.id AND z.company_id=l.company_id JOIN financial_payables p ON p.id=l.payable_id AND p.company_id=l.company_id AND p.source_type='PAYROLL_THIRTEENTH' AND p.source_id=l.run_id||':'||l.employee_id LEFT JOIN journal_entries j ON j.id=z.journal_entry_id AND j.company_id=l.company_id LEFT JOIN journal_entries pj ON pj.id=p.payment_journal_entry_id AND pj.company_id=l.company_id WHERE l.company_id=? AND r.calendar_year=?"
    ).bind(companyId,year).all()).results||[];
   }catch(e){
    if(!/no such table: payroll_thirteenth_(payables111|postings111)/i.test(String(e)))throw e;
@@ -128,11 +128,13 @@ async function preview70(c){
   if(external&&financial.length)blockers.push('Adiantamento externo e título do SAGAS duplicados; conciliar.');
   if(financial.length){
    const a=financial[0];
+   if(!Number.isSafeInteger(Number(a.amount_cents))||Number(a.amount_cents)!==Number(a.approved_advance_cents))
+    blockers.push('Título financeiro difere do adiantamento aprovado da 1ª parcela.');
    if(a.status!=='PAID'||a.origin_status!=='POSTED'||
       !a.payment_journal_entry_id||a.payment_journal_status!=='POSTED')
     blockers.push('Título da 1ª parcela pendente de pagamento ou contabilização da baixa.');
   }
-  const paidInternal=financial.length===1&&financial[0].status==='PAID'&&financial[0].origin_status==='POSTED'&&
+  const paidInternal=financial.length===1&&Number(financial[0].amount_cents)===Number(financial[0].approved_advance_cents)&&financial[0].status==='PAID'&&financial[0].origin_status==='POSTED'&&
    !!financial[0].payment_journal_entry_id&&financial[0].payment_journal_status==='POSTED'?financial[0]:null;
   const advance=external||paidInternal;
   const full=Number.isSafeInteger(salary)&&salary>0&&avos!==null?
