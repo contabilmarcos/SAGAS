@@ -10747,7 +10747,7 @@ async function route(request, env) {
   p=routeMatch(path,"/api/financial-payables/:id/pay"); if(p&&method==="POST")return ok({payable:await payFinancialPayable(env,request,auth,companyId,p.id,await readJson(request))});
   p=routeMatch(path,"/api/financial-payables/:id/unpay"); if(p&&method==="POST")return ok({payable:await undoFinancialPayablePayment(env,request,auth,companyId,p.id)});
   p=routeMatch(path,"/api/financial-payables/:id/cancel"); if(p&&method==="POST")return ok({payable:await cancelFinancialPayable(env,request,auth,companyId,p.id)});
-  p=routeMatch(path,"/api/financial-payables/:id"); if(p&&method==="GET"){await requirePermission(env,auth.user.id,companyId,"financial.payable.read");const payable=await getFinancialPayable(env,companyId,p.id);if(payable.source_type==="PAYROLL_MONTHLY")await requirePermission(env,auth.user.id,companyId,"payroll.read");return ok({payable});}
+  p=routeMatch(path,"/api/financial-payables/:id"); if(p&&method==="GET"){await requirePermission(env,auth.user.id,companyId,"financial.payable.read");const payable=await getFinancialPayable(env,companyId,p.id);if(["PAYROLL_MONTHLY","PAYROLL_THIRTEENTH"].includes(payable.source_type))await requirePermission(env,auth.user.id,companyId,"payroll.read");return ok({payable});}
 
   // Etapa 58 (v96): envelope próprio VACATION, vinculado ao recibo conciliado.
   if(path==='/api/payroll/vacation-envelope'&&(method==='GET'||method==='POST')){
