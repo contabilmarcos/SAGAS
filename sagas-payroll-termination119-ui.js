@@ -83,11 +83,13 @@ function payrollTermination119Show(p){
   '<button type="button" class="btn secondary" id="pterm119Setup">Configurar naturezas</button>'+
   '<button type="button" class="btn secondary" id="pterm119Refresh">Atualizar prévia</button>'+
   '<button type="button" class="btn secondary" id="pterm119History">Histórico</button>'+
+  '<button type="button" class="btn primary" id="pterm122Open">Fechamento definitivo (pedido de demissão)</button>'+
   (can('payroll.manage')?'<button type="button" class="btn primary" id="pterm119Record">Registrar minuta DRAFT</button>':'')+
   '</div>',true);
  document.getElementById('pterm119Setup').onclick=()=>payrollTermination119Settings(p).catch(e=>toast(e.message,'error'));
  document.getElementById('pterm119Refresh').onclick=()=>payrollTermination119Open(p).catch(e=>toast(e.message,'error'));
  document.getElementById('pterm119History').onclick=()=>payrollTermination119History(p.employee.id,p.employee.name).catch(e=>toast(e.message,'error'));
+ document.getElementById('pterm122Open').onclick=()=>payrollTermination122Open(p).catch(e=>toast(e.message,'error'));
  const record=document.getElementById('pterm119Record');
  if(record)record.onclick=async()=>{
   record.disabled=true;
