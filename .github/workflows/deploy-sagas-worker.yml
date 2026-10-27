@@ -5,6 +5,21 @@ on:
     branches: [main]
     paths:
       - 'SAGAS_worker.js'
+      - 'sagas-payroll-employer120.js'
+      - 'sagas-payroll-vacation121.js'
+      - 'sagas-payroll-termination122.js'
+      - 'sagas-payroll-termination123.js'
+      - 'sagas-payroll-termination123-audit.js'
+      - 'sagas-payroll-live-audit124.js'
+      - 'sagas-payroll-thirteenth112.js'
+      - 'sagas-payroll-closing69.js'
+      - 'tests/payroll-employer-v120.test.mjs'
+      - 'tests/payroll-vacation-v121.test.mjs'
+      - 'tests/payroll-termination-v115.test.mjs'
+      - 'tests/payroll-termination-v122.test.mjs'
+      - 'tests/payroll-termination-v123.test.mjs'
+      - 'tests/payroll-termination-v123-audit.test.mjs'
+      - 'tests/payroll-live-audit-v124.test.mjs'
       - 'sagas-payroll37.js'
       - 'sagas-payroll38.js'
       - 'sagas-payroll39.js'
@@ -78,6 +93,26 @@ jobs:
 
       - name: Testar licenças e afastamentos
         run: node --test tests/payroll-leave49.test.mjs
+
+      - name: Verificar sintaxe dos módulos integrados da folha
+        run: |
+          node --check sagas-payroll-employer120.js
+          node --check sagas-payroll-vacation121.js
+          node --check sagas-payroll-termination122.js
+          node --check sagas-payroll-termination123.js
+          node --check sagas-payroll-termination123-audit.js
+          node --check sagas-payroll-live-audit124.js
+
+      - name: Testar v115 e as integrações de folha v120 a v124 antes do deploy
+        run: |
+          node --test \
+            tests/payroll-termination-v115.test.mjs \
+            tests/payroll-employer-v120.test.mjs \
+            tests/payroll-vacation-v121.test.mjs \
+            tests/payroll-termination-v122.test.mjs \
+            tests/payroll-termination-v123.test.mjs \
+            tests/payroll-termination-v123-audit.test.mjs \
+            tests/payroll-live-audit-v124.test.mjs
 
       - name: Validar configuração e gerar Wrangler temporário
         env:
@@ -160,7 +195,7 @@ jobs:
 
 
       - name: Publicar no Cloudflare
-        if: ${{ vars.SAGAS_CLOUDFLARE_AUTO_DEPLOY == 'enabled' && (github.event_name == 'push' || inputs.mode == 'publicar') }}
+        if: ${{ (github.event_name == 'push' && vars.SAGAS_CLOUDFLARE_AUTO_DEPLOY == 'enabled') || (github.event_name == 'workflow_dispatch' && inputs.mode == 'publicar') }}
         uses: cloudflare/wrangler-action@v4
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
