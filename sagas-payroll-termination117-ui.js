@@ -24,6 +24,7 @@ async function payrollTermination117Open(base){
   '<p class="help"><b>Funcionário:</b> '+esc(p.employee.code||'—')+' — '+esc(p.employee.name)+
   ' · <b>Data:</b> '+esc(p.termination_date)+'. Informe valores adicionais à rescisão, sem duplicar o salário e o 13º já calculados.</p>'+
   '<form id="pterm117Form" class="grid">'+
+  '<label class="field"><span>Data prevista do pagamento (IRRF)</span><input name="payment_date" type="date" min="'+esc(p.termination_date)+'" max="2026-12-31" required value="'+esc(v.payment_date||'')+'"></label>'+
   '<label class="field"><span>Dependentes para IRRF</span><input name="dependents" type="number" min="0" max="20" step="1" required value="'+esc(v.dependents??0)+'"></label>'+
   fields+
   '<label class="field full"><span>Referência dos demonstrativos e comprovação de dependentes, pensão e retenções</span>'+
@@ -39,7 +40,7 @@ async function payrollTermination117Open(base){
   e.preventDefault();const btn=form.querySelector('[type="submit"]');btn.disabled=true;
   try{
    const v=Object.fromEntries(new FormData(form));
-   const payload={...pterm117Req(p),dependents:Number(v.dependents),
+   const payload={...pterm117Req(p),dependents:Number(v.dependents),payment_date:v.payment_date,
     reference:v.reference,confirmation:v.confirmation,
     base_source_fingerprint:p.base_source_fingerprint};
    for(const [k] of pterm117Fields)payload[k]=pterm115Number(v[k]);
