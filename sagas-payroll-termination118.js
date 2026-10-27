@@ -71,6 +71,8 @@ export function diagnose118(review,rows=[],postings=null,mapping=null,existing=n
   }
   if(r&&opening+accrued-used!==balance)
    block118(blocks,'LEDGER_TOTAL_MISMATCH','Saldos não conciliam com movimentos em '+part+'.','PROVISOES');
+  if(r&&Number(r.cost_center_conflicts||0)>0)
+   block118(blocks,'PROVISION_CENTER_MISMATCH','Há movimentos históricos de '+part+' sem centro de custo ou vinculados a outro centro. Reconciliar antes de baixar.','CONTABILIDADE');
   if(balance<0){
    block118(blocks,'LEDGER_NEGATIVE','Saldo operacional negativo em '+part+'.','PROVISOES');
   }
@@ -79,7 +81,7 @@ export function diagnose118(review,rows=[],postings=null,mapping=null,existing=n
   const pending=posting?Number(posting.pending_count):null;
   const verified=postings!==null&&r&&Number.isSafeInteger(pending)&&pending===0;
   if(!verified){allAccounted=false;
-   block118(blocks,'PROVISION_ACCOUNTING_NOT_VERIFIED','Movimentos sem contabilização conferida para '+part+'.','CONTABILIDADE');
+   block118(blocks,'PROVISION_ACCOUNTING_NOT_VERIFIED','Movimentos sem vínculo com diário POSTED válido para '+part+'.','CONTABILIDADE');
   }
   provisionItems.push({component:part,opening_cents:opening,accrued_cents:accrued,
    use_history_cents:used,balance_cents:balance,target_cents:target,proposed_use_cents:use,
@@ -157,12 +159,12 @@ async function snapshot118(c){
   fail118(c.d,'INVALID_TERMINATION_PREVIEW','Prévia sem funcionário ou competência válida.');
  const {env,companyId}=c;
  const rows=(await env.DB.prepare(
-  "SELECT component,COALESCE(SUM(CASE WHEN movement_kind='OPENING' THEN amount_cents ELSE 0 END),0) AS opening_cents,COALESCE(SUM(CASE WHEN movement_kind='ACCRUAL' THEN amount_cents ELSE 0 END),0) AS accrued_cents,COALESCE(-SUM(CASE WHEN movement_kind='USE' THEN amount_cents ELSE 0 END),0) AS used_cents,COALESCE(SUM(amount_cents),0) AS balance_cents,COUNT(*) AS movement_count FROM payroll_provision_movements43 WHERE company_id=? AND employee_id=? AND competence<=? GROUP BY component ORDER BY component"
- ).bind(companyId,id,period).all()).results||[];
+  "SELECT component,COALESCE(SUM(CASE WHEN movement_kind='OPENING' THEN amount_cents ELSE 0 END),0) AS opening_cents,COALESCE(SUM(CASE WHEN movement_kind='ACCRUAL' THEN amount_cents ELSE 0 END),0) AS accrued_cents,COALESCE(-SUM(CASE WHEN movement_kind='USE' THEN amount_cents ELSE 0 END),0) AS used_cents,COALESCE(SUM(amount_cents),0) AS balance_cents,COUNT(*) AS movement_count,SUM(CASE WHEN cost_center_id IS NULL OR cost_center_id<>? THEN 1 ELSE 0 END) AS cost_center_conflicts FROM payroll_provision_movements43 WHERE company_id=? AND employee_id=? AND competence<=? GROUP BY component ORDER BY component"
+ ).bind(review.employee.cost_center_id||'',companyId,id,period).all()).results||[];
  let postings=null,mapping=null;
  try{
   postings=(await env.DB.prepare(
-   "SELECT m.component,COUNT(*) AS movement_count,SUM(CASE WHEN p.movement_id IS NULL THEN 1 ELSE 0 END) AS pending_count FROM payroll_provision_movements43 m LEFT JOIN payroll_provision_posted_movements45 p ON p.company_id=m.company_id AND p.movement_id=m.id WHERE m.company_id=? AND m.employee_id=? AND m.competence<=? AND m.movement_kind IN ('ACCRUAL','USE') GROUP BY m.component ORDER BY m.component"
+   "SELECT m.component,COUNT(*) AS movement_count,SUM(CASE WHEN p.movement_id IS NULL OR z.id IS NULL OR j.id IS NULL OR j.status<>'POSTED' THEN 1 ELSE 0 END) AS pending_count FROM payroll_provision_movements43 m LEFT JOIN payroll_provision_posted_movements45 p ON p.company_id=m.company_id AND p.movement_id=m.id LEFT JOIN payroll_provision_postings45 z ON z.id=p.posting_id AND z.company_id=m.company_id LEFT JOIN journal_entries j ON j.id=z.journal_entry_id AND j.company_id=m.company_id WHERE m.company_id=? AND m.employee_id=? AND m.competence<=? AND m.movement_kind IN ('ACCRUAL','USE') GROUP BY m.component ORDER BY m.component"
   ).bind(companyId,id,period).all()).results||[];
  }catch(e){
   if(!/no such table/i.test(String(e)))throw e;
