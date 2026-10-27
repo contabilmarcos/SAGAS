@@ -6,7 +6,8 @@ export const COMPONENTS119={
  THIRD_EXPENSE:'Terço de férias sem cobertura',THIRTEENTH_EXPENSE:'13º sem cobertura',
  NOTICE_EXPENSE:'Aviso indenizado',CLEARING:'Conta transitória de quitação',
  NET_PAYABLE:'Líquido da rescisão',INSS_PAYABLE:'INSS retido',IRRF_PAYABLE:'IRRF retido',
- ADVANCE_OFFSET:'Adiantamento do 13º',NOTICE_OFFSET:'Aviso descontado',OTHER_OFFSET:'Outros descontos'
+ ADVANCE_OFFSET:'Adiantamento do 13º',NOTICE_OFFSET:'Aviso descontado',OTHER_OFFSET:'Outros descontos',
+ FGTS_FINE_EXPENSE:'Multa FGTS 40% — despesa',FGTS_FINE_PAYABLE:'Multa FGTS 40% — obrigação a recolher'
 };
 const MAX119=99999999999;
 function error119(d,code,message,status=409){throw new d.HttpError(status,message,code)}
