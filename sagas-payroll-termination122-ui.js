@@ -23,6 +23,7 @@ async function payrollTermination122Open(base){
   '<h4>Pendências</h4>'+
   '<div class="table-wrap"><table class="table"><thead><tr><th>Verificação</th><th>Detalhamento</th></tr></thead><tbody>'+
   (rows||'<tr><td colspan="2">Sem pendências detectadas na documentação interna.</td></tr>')+'</tbody></table></div>'+
+  '<p class="help"><b>FGTS regular:</b> precisa ter conferência e contabilização própria. Esta operação não gera guia ou título do FGTS.</p>'+
   '<p class="help"><b>Importante:</b> o SAGAS exige documentos externos conferidos por responsável habilitado. A emissão do TRCT e os prazos legais não são substituídos por esta tela. O encerramento alterará definitivamente a situação do funcionário para DESLIGADO.</p>'+
   '<div class="form-actions"><button class="btn secondary" id="pterm122Back" type="button">Voltar ao plano</button>'+
   '<button class="btn secondary" id="pterm122Reload" type="button">Atualizar conferência</button>'+
@@ -41,6 +42,7 @@ async function payrollTermination122Open(base){
    '<label class="field"><span>Conferência de INSS e IRRF</span><input name="tax_reference" minlength="12" maxlength="240" required></label>'+
    '<label class="field"><span>Conferência de períodos aquisitivos e férias</span><input name="vacation_reference" minlength="12" maxlength="240" required></label>'+
    '<label class="field"><span>Comprovação de aviso trabalhado ou dispensa do aviso</span><input name="notice_reference" minlength="12" maxlength="240" required></label>'+
+   '<label class="field"><span>Conferência do FGTS regular e registro de obrigação em rotina separada</span><input name="fgts_regular_reference" minlength="12" maxlength="240" required></label>'+
    '<label class="field"><span>Digite APROVAR TRCT RESCISAO</span><input name="confirmation" autocomplete="off" required></label>'+
    '<div class="form-actions"><button class="btn secondary" type="button" id="pterm122Cancel">Voltar</button>'+
    '<button class="btn primary" type="submit">Homologar valores exatos do TRCT</button></div></form>',true);
