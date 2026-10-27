@@ -215,6 +215,15 @@ export async function payrollThirteenth70(action,c){
    bad70(d,'ADVANCE_DIFFERS','Adiantamento divergente da referencia calculada; requer conferência especifica.');
   const existing=(await advances70(env,companyId,year)).find(x=>x.employee_id===employeeId);
   if(existing)bad70(d,'ALREADY_DECLARED','Ja existe adiantamento ativo no ano para o empregado.');
+  // Não aceitar um pagamento externo sobre adiantamento já gerado no financeiro.
+  try{
+   const linked=await env.DB.prepare(
+    "SELECT l.payable_id FROM payroll_thirteenth_payables111 l JOIN payroll_thirteenth_runs71 r ON r.id=l.run_id AND r.company_id=l.company_id WHERE l.company_id=? AND r.calendar_year=? AND l.employee_id=? LIMIT 1"
+   ).bind(companyId,year,employeeId).first();
+   if(linked)bad70(d,'ADVANCE_ALREADY_FINANCED','O SAGAS ja gerou titulo financeiro de adiantamento para este funcionario. Concilie o titulo antes de registrar pagamento externo.');
+  }catch(e){
+   if(!/no such table: payroll_thirteenth_payables111/i.test(String(e)))throw e;
+  }
   const id=d.uuid();
   try{
    const r=await env.DB.prepare("INSERT INTO payroll_thirteenth_advances70 (id,company_id,calendar_year,employee_id,amount_cents,payment_date,document_ref,notes,source_fingerprint,status,created_by) VALUES (?,?,?,?,?,?,?,?,?,'ACTIVE',?)")
