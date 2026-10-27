@@ -1,5 +1,6 @@
 import { payrollFinance39 } from './sagas-payroll39.js';
 import { payrollEmployer40 } from './sagas-payroll-employer40.js';
+import { payrollEmployer120 } from './sagas-payroll-employer120.js';
 import { payrollProvisions42 } from './sagas-payroll-provisions42.js';
 import { payrollProvisions43, ensureProvisionLedger43 } from './sagas-payroll-provisions43.js';
 import { payrollProvisionAccounting45 } from './sagas-payroll-provisions45.js';
@@ -11404,6 +11405,34 @@ async function route(request, env) {
         d:{HttpError,requirePermission,ensureSchemaRevision,audit,uuid}
       })};
     return ok(await payrollProvisions42({env,companyId,auth,request,runId:p.id,d}));
+  }
+  // v120: contabilização patrimonial e títulos dos encargos patronais documentados.
+  const patronal120=routeMatch(path,'/api/payroll/monthly-runs/:id/employer-accounting');
+  if(path==='/api/payroll/employer/accounting/settings'&&(method==='GET'||method==='POST')||
+     path==='/api/payroll/employer/accounting/history'&&method==='GET'||
+     patronal120&&(method==='GET'||method==='POST')){
+    await ensureSchemaRevision(env,'payroll-calculation-foundation',1,()=>ensurePayrollCalculationFoundation34(env));
+    await ensureSchemaRevision(env,'payroll-monthly-review',1,()=>ensurePayrollMonthlyReviewSchema36(env));
+    await ensureSchemaRevision(env,'purchasing',1,async()=>{
+      await ensurePurchasingSchema(env);await ensurePurchaseIntegrationSchema(env);await ensureRmPurchasingSchema(env);
+    });
+    await ensureSchemaRevision(env,'financial',1,async()=>{
+      await ensureFinancialAccountingEventSchema(env);await ensureFinancialCashAccountSchema(env);
+    });
+    // As configurações das naturezas e do lote são as mesmas da folha mensal.
+    await payrollFinance39('settings',{env,companyId,auth,request,
+      d:{HttpError,requirePermission,audit,ensureSchemaRevision,
+       payrollMonthlyRunDetail35,payrollMonthlyConference36,buildInternalPostedEntry,centsToMoney,nextPayableNumber,uuid}
+    });
+    const body=method==='POST'?await readJson(request):{};
+    const action=patronal120?method==='GET'?'preview':'integrate':
+      path.endsWith('/history')?'history':method==='GET'?'settings':'save';
+    return ok(await payrollEmployer120(action,{env,companyId,auth,request,body,runId:patronal120?.id,
+      d:{HttpError,requirePermission,ensureSchemaRevision,audit,uuid,
+       payrollMonthlyRunDetail35,payrollMonthlyConference36,
+       buildInternalPostedEntry,centsToMoney,nextPayableNumber,
+       hash:payrollProcessingSnapshotHash28}
+    }));
   }
   // Etapas 40/41 - parametros patronais por empresa e previa somente de consulta.
   if(path==='/api/payroll/employer/settings'){
