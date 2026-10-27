@@ -30,6 +30,7 @@ import { payrollThirteenth70 } from './sagas-payroll-thirteenth70.js';
 import { payrollThirteenth71 } from './sagas-payroll-thirteenth71.js';
 import { payrollThirteenth111 } from './sagas-payroll-thirteenth111.js';
 import { payrollThirteenth112 } from './sagas-payroll-thirteenth112.js';
+import { payrollThirteenthAudit113 } from './sagas-payroll-thirteenth-audit113.js';
 import { payrollProvisionAccounting44 } from './sagas-payroll-provisions44.js';
 // SAGAS Worker v96 - Registro auditável do envelope próprio VACATION de férias | cumulativo desde v49
 // ===== utils.js =====
@@ -10981,6 +10982,13 @@ async function route(request, env) {
       competence:url.searchParams.get('competence'),
       body:method==='POST'?await readJson(request):{},
       d:{HttpError,requirePermission,ensureSchemaRevision,audit,uuid}
+    }));
+  }
+  // v113: auditoria de leitura do 13º no D1: sem migração, postagem ou baixa.
+  if(path==='/api/payroll/thirteenth/audit'&&method==='GET'){
+    return ok(await payrollThirteenthAudit113({
+      env,companyId,auth,request,year:url.searchParams.get('year'),
+      d:{HttpError,requirePermission}
     }));
   }
   // v112: liquidação da 2ª parcela do 13º com provisão, retenções, FGTS e títulos.
