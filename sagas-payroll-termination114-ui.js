@@ -70,10 +70,12 @@ function payrollTermination114Show(p){
   '<div class="form-actions">'+
   '<button type="button" class="btn secondary" id="term114Back">Alterar simulação</button>'+
   '<button type="button" class="btn secondary" id="term114History">Histórico preliminar</button>'+
+  '<button type="button" class="btn secondary" id="term115Documents">Conferir documentos e bases</button>'+
   (can('payroll.manage')?'<button type="button" class="btn primary" id="term114Save">Registrar prévia DRAFT</button>':'')+
   '</div>',true);
  document.getElementById('term114Back').onclick=()=>payrollTermination114Open().catch(e=>toast(e.message,'error'));
  document.getElementById('term114History').onclick=()=>payrollTermination114History(p.employee.id,p.employee.name).catch(e=>toast(e.message,'error'));
+ document.getElementById('term115Documents').onclick=()=>payrollTermination115Open(p).catch(e=>toast(e.message,'error'));
  if(document.getElementById('term114Save'))document.getElementById('term114Save').onclick=async()=>{
   const button=document.getElementById('term114Save');button.disabled=true;
   try{
