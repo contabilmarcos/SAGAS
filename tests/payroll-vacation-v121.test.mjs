@@ -28,11 +28,11 @@ const posted=[
  {employee_id:'E1',component:'FERIAS',occurrence_id:'O1',cost_center_id:'cc1',
   movement_id:'M1',journal_entry_id:'J1',amount_cents:90000,gl_credit_cents:90000,
   gl_credit_account_id:'FERIAS_CLEAR',journal_debit_cents:90000,journal_credit_cents:90000,
-  journal_status:'POSTED',posting_kind:'USE',movement_count:1},
+  journal_status:'POSTED',posting_kind:'USE',posting_gl_verified:true},
  {employee_id:'E1',component:'TERCO_FERIAS',occurrence_id:'O1',cost_center_id:'cc1',
   movement_id:'M2',journal_entry_id:'J2',amount_cents:30000,gl_credit_cents:30000,
   gl_credit_account_id:'TERCO_CLEAR',journal_debit_cents:30000,journal_credit_cents:30000,
-  journal_status:'POSTED',posting_kind:'USE',movement_count:1}
+  journal_status:'POSTED',posting_kind:'USE',posting_gl_verified:true}
 ];
 const detail={run,envelopes:[envelope],totals:{net_cents:25000}},batch={id:'batch',status:'OPEN'},review={approved:true,review:{closed_at:'2026-10-31'},problems:[]};
 const go=(p=pkg,l=ledger,dt=detail,li=posted,b=batch,old=null,r=review)=>plan121(p,l,dt,li,b,old,r);
@@ -47,13 +47,17 @@ test('conciliação completa gera minuta de integração permitida',()=>{
  assert.equal(p.lines.find(x=>x.event_code==='ADIANTAMENTO_FERIAS'&&x.side==='D').account_id,'ADV_DEB');
 });
 test('adiantamento não é emitido como segundo título',()=>assert.equal(go().financial_total_cents,25000));
-test('não permite baixas compartilhadas por outros empregados',()=>{
- const links=copy(posted);links[0].movement_count=2;
- assert.ok(go(pkg,ledger,detail,links).problems.some(x=>x.code==='PROVISION_JOURNAL_SHARED'));
+test('diário compartilhado é permitido se conciliado por centro de custo',()=>{
+ const links=copy(posted);links[0].posting_gl_verified=true;links[0].gl_credit_cents=190000;
+ assert.equal(go(pkg,ledger,detail,links).ready,true);
+});
+test('diário compartilhado sem conferência do total por centro é bloqueado',()=>{
+ const links=copy(posted);links[0].posting_gl_verified=false;
+ assert.ok(go(pkg,ledger,detail,links).problems.some(x=>x.code==='PROVISION_JOURNAL_UNALLOCATED'));
 });
 test('diário de baixa anulado impede contabilização',()=>{
  const links=copy(posted);links[0].journal_status='VOID';
- assert.ok(go(pkg,ledger,detail,links).problems.some(x=>x.code==='PROVISION_JOURNAL_SHARED'));
+ assert.ok(go(pkg,ledger,detail,links).problems.some(x=>x.code==='PROVISION_JOURNAL_UNALLOCATED'));
 });
 test('baixa de provisão sem vínculo à ocorrência',()=>{
  const l=copy(ledger);l.items[0].components[0].linked_to_occurrence=false;
@@ -91,6 +95,10 @@ test('saldo insuficiente legado não bloqueia quando a baixa integral foi posta'
  const p=copy(pkg);p.problems=[{code:'SALDO_PROVISAO_INSUFICIENTE',message:'Saldo após baixa'}];
  const l=copy(ledger);l.problems=copy(p.problems);
  assert.equal(go(p,l).ready,true);
+});
+test('conta transitória inválida na conciliação patronal bloqueia',()=>{
+ const links=copy(posted);links[0].gl_credit_account_id=null;
+ assert.ok(go(pkg,ledger,detail,links).problems.some(x=>x.code==='PROVISION_JOURNAL_UNALLOCATED'));
 });
 test('não altera a memória original dos eventos',()=>{
  const p=copy(pkg);
