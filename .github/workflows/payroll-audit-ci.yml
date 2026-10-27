@@ -6,6 +6,8 @@ on:
       - '.github/workflows/payroll-audit-ci.yml'
       - 'sagas-payroll-live-audit124.js'
       - 'tests/payroll-live-audit-v124.test.mjs'
+      - 'sagas-payroll-reopen125.js'
+      - 'tests/payroll-reopen-v125.test.mjs'
   workflow_dispatch:
 
 permissions:
@@ -22,5 +24,7 @@ jobs:
           node-version: '22'
       - name: Validar sintaxe da auditoria
         run: node --check sagas-payroll-live-audit124.js
-      - name: Testar auditoria sem acesso ao banco real
-        run: node --test tests/payroll-live-audit-v124.test.mjs
+      - name: Validar sintaxe da reabertura
+        run: node --check sagas-payroll-reopen125.js
+      - name: Testar auditoria e reabertura sem acesso ao banco real
+        run: node --test tests/payroll-live-audit-v124.test.mjs tests/payroll-reopen-v125.test.mjs
