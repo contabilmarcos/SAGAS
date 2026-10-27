@@ -32,6 +32,7 @@ import { payrollThirteenth111 } from './sagas-payroll-thirteenth111.js';
 import { payrollThirteenth112 } from './sagas-payroll-thirteenth112.js';
 import { payrollThirteenthAudit113 } from './sagas-payroll-thirteenth-audit113.js';
 import { payrollTermination114 } from './sagas-payroll-termination114.js';
+import { payrollTermination115 } from './sagas-payroll-termination115.js';
 import { payrollProvisionAccounting44 } from './sagas-payroll-provisions44.js';
 // SAGAS Worker v96 - Registro auditável do envelope próprio VACATION de férias | cumulativo desde v49
 // ===== utils.js =====
@@ -10983,6 +10984,37 @@ async function route(request, env) {
       competence:url.searchParams.get('competence'),
       body:method==='POST'?await readJson(request):{},
       d:{HttpError,requirePermission,ensureSchemaRevision,audit,uuid}
+    }));
+  }
+  // v115: conciliação documental rescisória sem aprovação, pagamentos ou diário.
+  const workpaper115=routeMatch(path,'/api/payroll/termination/workpapers/:id');
+  if(path==='/api/payroll/termination/reconciliation'&&method==='POST'||
+     path==='/api/payroll/termination/evidence'&&method==='POST'||
+     path==='/api/payroll/termination/workpapers'&&(method==='GET'||method==='POST')||
+     workpaper115&&method==='GET'){
+    await ensureSchemaRevision(env,'payroll-employee-history',1,()=>ensurePayrollEmployeeRecordsSchema(env));
+    await ensureSchemaRevision(env,'payroll-employee-cost-center39',1,()=>ensurePayrollCostCenter39(env));
+    await ensureSchemaRevision(env,'payroll-employee-numbers',1,()=>ensurePayrollEmployeeNumbersSchema(env));
+    await ensureSchemaRevision(env,'payroll-calculation-foundation',1,()=>ensurePayrollCalculationFoundation34(env));
+    await ensureSchemaRevision(env,'payroll-provision-ledger43',1,()=>ensureProvisionLedger43(env));
+    await payrollThirteenth70('advances',{
+      env,companyId,auth,request,year:'2026',
+      d:{HttpError,requirePermission,ensureSchemaRevision,audit,uuid}
+    });
+    await payrollThirteenth71('history',{
+      env,companyId,auth,request,year:'2026',
+      d:{HttpError,requirePermission,ensureSchemaRevision,audit,uuid}
+    });
+    const action=workpaper115?'detail':method==='GET'?'history':
+      path.endsWith('/reconciliation')?'preview':
+      path.endsWith('/evidence')?'save':'record';
+    return ok(await payrollTermination115(action,{
+      env,companyId,auth,request,
+      employeeId:url.searchParams.get('employee_id'),
+      runId:workpaper115?.id,
+      body:method==='POST'?await readJson(request):{},
+      d:{HttpError,requirePermission,ensureSchemaRevision,audit,uuid,
+       hash:payrollProcessingSnapshotHash28}
     }));
   }
   // v114: prévia de rescisão e registro DRAFT, sem alteração funcional/financeira.
