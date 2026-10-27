@@ -321,7 +321,7 @@ export async function payrollTermination123(action,c){
   const notice=doc123(body.notice_reference,d,'aviso prévio',12);
   const regular=doc123(body.fgts_regular_reference,d,'FGTS regular já escriturado ou a escriturar separadamente',12);
   const id=d.uuid();
-  await env.DB.prepare("INSERT INTO payroll_termination_approvals123(id,company_id,employee_id,termination_date,kind,notice_kind,source_fingerprint,gross_cents,net_cents,payment_date,fgts_document_id,fgts_fine_cents,trct_reference,tax_reference,vacation_reference,notice_reference,fgts_regular_reference,approved_by) VALUES(?,?,?,?,?,'WITHOUT_CAUSE',?,?,?,?,?,?,?,?,?,?,?,?)")
+  await env.DB.prepare("INSERT INTO payroll_termination_approvals123(id,company_id,employee_id,termination_date,kind,notice_kind,source_fingerprint,gross_cents,net_cents,payment_date,fgts_document_id,fgts_fine_cents,trct_reference,tax_reference,vacation_reference,notice_reference,fgts_regular_reference,approved_by) VALUES(?,?,?,?,'WITHOUT_CAUSE',?,?,?,?,?,?,?,?,?,?,?,?,?)")
    .bind(id,companyId,p.employee.id,p.termination_date,p.notice_kind,p.plan_source_fingerprint,
     p.gross_cents,p.net_cents,p.payable_due_date,p.fgts.id,p.fgts_fine_cents,
     trct,tax,vacation,notice,regular,auth.user.id).run();
