@@ -23,10 +23,11 @@ function harness({missingFgts=false,external=false,alreadyPosted=false,badAccoun
    queries.push({sql,params});
    const stmt={
     first:async()=>{
+     if(sql.includes('SELECT COUNT(l.payable_id) AS link_count'))return {link_count:1,valid_count:1,total_cents:150000,invalid_count:0};
      if(sql.includes('FROM payroll_thirteenth_runs71 WHERE company_id=? AND id=?'))return run;
      if(sql.includes('FROM payroll_finance_batches38'))return {batch_id:'batch1'};
      if(sql.includes('FROM payroll_thirteenth_postings111')&&sql.includes('LEFT JOIN journal_entries'))
-      return alreadyPosted?{run_id:'run1',journal_entry_id:'journal1',journal_status:'POSTED'}:null;
+      return alreadyPosted?{run_id:'run1',journal_entry_id:'journal1',journal_status:'POSTED',payable_count:1,payable_total_cents:150000}:null;
      if(sql.includes('FROM payroll_thirteenth_runs71 WHERE company_id=? AND calendar_year'))return {id:'run1'};
      if(sql.includes('FROM journal_batches'))return {id:'batch1',status:'OPEN'};
      if(sql.includes('FROM cost_centers'))return {id:'cc1',code:'01',active:1};
