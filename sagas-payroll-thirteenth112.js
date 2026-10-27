@@ -183,6 +183,21 @@ async function preview112(c){
  const sum=arr=>arr.reduce((a,b)=>a+Number(b.amount_cents),0);
  const sides=arr=>({debit:sum(arr.filter(x=>x.side==='D')),credit:sum(arr.filter(x=>x.side==='C'))});
  const a=sides(linesA),b=sides(linesB);
+ // O crédito da baixa da provisão deve ser liquidado pelas partidas de
+ // adiantamento, retenções e líquido, exatamente na MESMA conta e CC.
+ const accountSums=(items)=>{
+  const map=new Map();
+  for(const l of items){
+   const key=[l.account_id,l.cost_center_id,l.branch_id||''].join('|');
+   map.set(key,(map.get(key)||0)+l.amount_cents);
+  }
+  return map;
+ };
+ const clearingCredit=accountSums(linesA.filter(x=>x.side==='C'));
+ const clearingDebit=accountSums(linesB.filter(x=>x.side==='D'&&x.component!=='FGTS_SECOND'));
+ if(clearingCredit.size!==clearingDebit.size||
+   [...clearingCredit].some(([key,value])=>clearingDebit.get(key)!==value))
+  block('CLEARING_ACCOUNT_MISMATCH','A conta credora da baixa da provisão deve coincidir com a conta devedora da quitação em cada centro de custo. Ajuste os defaults das naturezas.');
  const totals={provision_cents:employeeTotals.reduce((t,x)=>t+x.provision_use_cents,0),
   advance_cents:employeeTotals.reduce((t,x)=>t+x.advance_cents,0),
   inss_cents:employeeTotals.reduce((t,x)=>t+x.inss_cents,0),
