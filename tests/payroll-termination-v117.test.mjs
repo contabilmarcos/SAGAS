@@ -92,7 +92,7 @@ test('alinha tributos manuais sem liberar fechamento',()=>{
  assert.equal(next.financial_generated,false);
  assert.equal(next.accounting_generated,false);
 });
-test('se a rescisao ainda possui pendencias, nao valida a memoria tributaria',()=>{
+test('pendencias herdadas nao bloqueiam conferencia preliminar, mas nunca autorizam fechamento',()=>{
  const first=assessTaxes117(b,proof());
  const base={...b,problems:[{code:'VACATION_HISTORY'}],deduction_documentation:{
   inss_salary_cents:first.tax_summary.inss_month_due_cents,
@@ -101,5 +101,7 @@ test('se a rescisao ainda possui pendencias, nao valida a memoria tributaria',()
   irrf_thirteenth_cents:first.tax_summary.irrf_thirteenth_due_cents
  }};
  const r=assessTaxes117(base,proof());
- assert.equal(r.tax_ready_for_review,false);
+ assert.equal(r.tax_ready_for_review,true);
+ assert.equal(r.tax_ready_for_closing,false);
+ assert.ok(r.tax_warnings.some(x=>x.includes('pendências herdadas')));
 });
