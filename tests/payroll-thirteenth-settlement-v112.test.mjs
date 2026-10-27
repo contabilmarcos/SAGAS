@@ -42,6 +42,7 @@ function setup(opts={}){
     if(sql.includes('FROM payroll_movements m JOIN'))return {results:[]};
     if(sql.includes('FROM payroll_employee_dependents'))return {results:[]};
     if(sql.includes('FROM payroll_thirteenth_advances70 WHERE'))return {results:advance};
+    if(sql.includes('FROM payroll_thirteenth_payables111 l JOIN'))return {results:[]};
     if(sql.includes('FROM payroll_thirteenth_natures112'))return {results:mapping};
     if(sql.includes('FROM payroll_provision_movements43 m LEFT JOIN'))return {results:ledger};
     if(sql.includes('FROM budget_nature_accounts')){
