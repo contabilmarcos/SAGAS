@@ -10991,15 +10991,17 @@ async function route(request, env) {
     await ensureSchemaRevision(env,'payroll-employee-cost-center39',1,()=>ensurePayrollCostCenter39(env));
     await ensureSchemaRevision(env,'payroll-employee-numbers',1,()=>ensurePayrollEmployeeNumbersSchema(env));
     await ensureSchemaRevision(env,'payroll-provision-ledger43',1,()=>ensureProvisionLedger43(env));
+    // Naturezas, plano de contas e financeiro precisam existir antes das
+    // consultas de mapeamento 45/39, inclusive na primeira utilização.
+    await ensureSchemaRevision(env,'purchasing',1,async()=>{
+      await ensurePurchasingSchema(env);await ensurePurchaseIntegrationSchema(env);await ensureRmPurchasingSchema(env);
+    });
     await payrollProvisionAccounting45('use-settings',{
       env,companyId,auth,request,
       d:{HttpError,requirePermission,ensureSchemaRevision,audit,uuid}
     });
     await payrollFinance39('settings',{
       env,companyId,auth,request,d:{HttpError,requirePermission,ensureSchemaRevision,audit,uuid}
-    });
-    await ensureSchemaRevision(env,'purchasing',1,async()=>{
-      await ensurePurchasingSchema(env);await ensurePurchaseIntegrationSchema(env);await ensureRmPurchasingSchema(env);
     });
     const settings=path.endsWith('/settings');
     const action=settings?(method==='GET'?'settings':'save'):(method==='GET'?'preview':'integrate');
