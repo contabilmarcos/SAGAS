@@ -68,6 +68,16 @@ async function preview111(c){
  if(newest?.id!==runId)block('OLDER_REVISION','Somente a última revisão da primeira parcela pode ser integrada.');
  if(old)block('ALREADY_POSTED','Esta parcela já foi integrada; não gerar outro título.');
  if(old&&old.journal_status!=='POSTED')block('POSTING_CHANGED','Lançamento contábil vinculado foi alterado ou anulado.');
+ if(old){
+  const linked=await env.DB.prepare(
+   "SELECT COUNT(l.payable_id) AS link_count,COUNT(p.id) AS valid_count,COALESCE(SUM(p.amount_cents),0) AS total_cents,COALESCE(SUM(CASE WHEN p.id IS NULL OR p.source_type<>'PAYROLL_THIRTEENTH' OR p.source_id<>l.run_id||':'||l.employee_id OR p.status='CANCELLED' THEN 1 ELSE 0 END),0) AS invalid_count FROM payroll_thirteenth_payables111 l LEFT JOIN financial_payables p ON p.id=l.payable_id AND p.company_id=l.company_id WHERE l.company_id=? AND l.run_id=?"
+  ).bind(companyId,runId).first();
+  if(Number(linked?.link_count)!==Number(old.payable_count)||
+     Number(linked?.valid_count)!==Number(old.payable_count)||
+     Number(linked?.total_cents)!==Number(old.payable_total_cents)||
+     Number(linked?.invalid_count)!==0)
+   block('PAYABLES_CHANGED','Vínculos ou valores dos títulos integrados foram modificados. Exige conciliação.');
+ }
  const external=new Set((advances.results||[]).map(x=>x.employee_id));
  if(external.size)block('EXTERNAL_ADVANCE','Existe adiantamento externo documentado. Não gere título novamente para estes empregados.');
  if(!detail.employees.length||detail.employees.length>70)block('RUN_LIMIT','A integração atende 1 a 70 funcionários por lote.');
