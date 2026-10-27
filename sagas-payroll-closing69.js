@@ -98,9 +98,60 @@ export async function payrollMonthlyEndToEnd69(c){
    journal_total_cents:financialRecord?.total_debit_cents??null,
    payable_count:titles?.payable_count??null,
    note:'Títulos do líquido não equivalem a pagamento bancário. A contabilização já feita é conciliada por sua origem histórica.'}));
- const employerProblems=employer?.problems||[errors.ENCARGOS||{code:'NO_PREVIEW',message:'Encargos não disponíveis.'}];
- sections.push(step69('ENCARGOS','Prévia dos encargos patronais',employerProblems.length?'PENDENTE':'CONFERIR',
-  employerProblems,{totals:employer?.totals||null,note:'Prévia patronal não comprova pagamento de FGTS, INSS ou outras guias.'}));
+ // v120: conciliar efetivamente os lançamentos e títulos, não apenas a prévia.
+ const employerPosting=await call('PATRONAL_GRAVADO',async()=>{
+  try{return await env.DB.prepare("SELECT p.run_id,p.amount_cents,p.journal_entry_id,p.payable_count,j.status AS journal_status,j.source_module,j.source_reference,j.total_debit_cents,j.total_credit_cents FROM payroll_employer_postings120 p LEFT JOIN journal_entries j ON j.company_id=p.company_id AND j.id=p.journal_entry_id WHERE p.company_id=? AND p.run_id=?").bind(companyId,runId).first()}
+  catch(e){if(/no such table/i.test(String(e)))return null;throw e}
+ });
+ const patronalTitles=employerPosting?await call('PATRONAL_TITULOS',()=>env.DB.prepare(
+  "SELECT COUNT(l.payable_id) AS link_count,COUNT(t.id) AS payable_count,COALESCE(SUM(l.amount_cents),0) AS expected_cents,COALESCE(SUM(t.amount_cents),0) AS total_cents,COALESCE(SUM(CASE WHEN t.id IS NULL OR t.company_id<>? OR t.source_type<>'PAYROLL_EMPLOYER' OR t.source_id<>(l.run_id||':'||l.component) OR t.status='CANCELLED' OR t.amount_cents<>l.amount_cents THEN 1 ELSE 0 END),0) AS invalid_count FROM payroll_employer_payables120 l LEFT JOIN financial_payables t ON t.id=l.payable_id AND t.company_id=l.company_id WHERE l.company_id=? AND l.run_id=?"
+ ).bind(companyId,companyId,runId).first()):null;
+ const patronalLines=employerPosting?await call('PATRONAL_PARTIDAS',()=>env.DB.prepare(
+  "SELECT side,cost_center_id,SUM(amount_cents) AS cents FROM journal_lines WHERE company_id=? AND entry_id=? GROUP BY side,cost_center_id"
+ ).bind(companyId,employerPosting.journal_entry_id).all()):null;
+ const employerProblems=[];
+ if(employerPosting){
+  const amount=Number(employerPosting.amount_cents);
+  if(employerPosting.journal_status!=='POSTED'||employerPosting.source_module!=='PAYROLL'||
+     employerPosting.source_reference!=='EMPLOYER120:'+runId)
+   employerProblems.push({code:'PATRONAL_JOURNAL_INVALID',message:'Diário patronal ausente, anulado ou com origem divergente.'});
+  if(!Number.isSafeInteger(amount)||amount<=0||
+     (employer?.totals&&Number(employer.totals.total_cents)!==amount))
+   employerProblems.push({code:'PATRONAL_AMOUNT_INVALID',message:'Total patronal gravado diverge da prévia.'});
+  if(!patronalTitles||Number(patronalTitles.link_count)!==Number(employerPosting.payable_count)||
+     Number(patronalTitles.payable_count)!==Number(employerPosting.payable_count)||
+     Number(patronalTitles.expected_cents)!==amount||Number(patronalTitles.total_cents)!==amount||
+     Number(patronalTitles.invalid_count)!==0)
+   employerProblems.push({code:'PATRONAL_PAYABLES_INVALID',message:'Títulos patronais divergentes, ausentes ou cancelados.'});
+  if(!patronalLines)employerProblems.push({code:'PATRONAL_LINES_UNAVAILABLE',message:'Não foi possível consultar as partidas patronais.'});
+  else{
+   let debit=0,credit=0;
+   const byCenter=new Map();
+   for(const line of patronalLines.results||[]){
+    const n=Number(line.cents),side=line.side,cc=line.cost_center_id;
+    if(!Number.isSafeInteger(n)||n<=0||!cc||!['D','C'].includes(side))
+     employerProblems.push({code:'PATRONAL_LINE_INVALID',message:'Partida patronal inválida ou sem centro de custo.'});
+    if(side==='D')debit+=n;if(side==='C')credit+=n;
+    const z=byCenter.get(cc)||{D:0,C:0};
+    if(['D','C'].includes(side))z[side]+=n;
+    byCenter.set(cc,z);
+   }
+   if(debit!==amount||credit!==amount||
+      debit!==Number(employerPosting.total_debit_cents)||credit!==Number(employerPosting.total_credit_cents)||
+      [...byCenter.values()].some(x=>x.D!==x.C))
+    employerProblems.push({code:'PATRONAL_JOURNAL_UNBALANCED',message:'Diário patronal divergente ou desequilibrado por centro de custo.'});
+  }
+ }else employerProblems.push(...(employer?.problems?.length?employer.problems:
+  [{code:'PATRONAL_NOT_POSTED',message:'Integre os encargos patronais e seus títulos após a conferência da DCTFWeb e das guias.'}]));
+ if(errors.PATRONAL_GRAVADO||errors.PATRONAL_TITULOS||errors.PATRONAL_PARTIDAS)
+  employerProblems.push({code:'PATRONAL_AUDIT_UNAVAILABLE',message:'Não foi possível conferir todos os registros patronais.'});
+ const employerComplete=!!employerPosting&&!employerProblems.length;
+ sections.push(step69('ENCARGOS','Encargos patronais — contabilidade e financeiro',
+  employerComplete?'CONCLUIDO':employerPosting?'PENDENTE':employer?'PRONTO':'PENDENTE',
+  employerProblems,{totals:employer?.totals||null,integrated:!!employerPosting,
+   journal_entry_id:employerPosting?.journal_entry_id||null,
+   payable_count:patronalTitles?.payable_count||0,
+   note:'CPP/RAT/terceiros/PIS; FGTS já está na folha. Guias e pagamentos bancários permanecem separados.'}));
  const pProblems=provision?.unresolved_employee_count?
   [{code:'MEDIAS_PENDENTES',message:'Funcionários com remuneração variável exigem cálculo das médias antes de constituir provisões.'}]:[];
  if(!provision)pProblems.push(errors.PROVISOES||{code:'NO_PREVIEW',message:'Prévia das provisões indisponível.'});
@@ -177,7 +228,7 @@ export async function payrollMonthlyEndToEnd69(c){
  const finished=sections.filter(x=>x.status==='CONCLUIDO').map(x=>x.id);
  return {kind:'SAGAS_MONTHLY_CLOSING_V107',read_only:true,run_id:runId,competence:run.competence,
   employee_count:detail.envelopes.length,sections,finished,blocked:critical,
-  monthly_operational_ready:payrollOk&&financialComplete&&provisionConfirmed&&!pProblems.length&&postingDone&&['CONCLUIDO','SEM_MOVIMENTOS'].includes(useStatus)&&!hasVacations,
+  monthly_operational_ready:payrollOk&&financialComplete&&employerComplete&&provisionConfirmed&&!pProblems.length&&postingDone&&['CONCLUIDO','SEM_MOVIMENTOS'].includes(useStatus)&&!hasVacations,
   total_process_homologated:false,
   next_actions:sections.filter(s=>['PENDENTE','PRONTO'].includes(s.status)||(s.status==='CONFERIR'&&s.problems.length)).map(s=>({
    stage:s.id,status:s.status,first_problem:s.problems[0]?.message||null
