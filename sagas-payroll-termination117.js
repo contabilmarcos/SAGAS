@@ -59,6 +59,10 @@ function moneyMap117(values){
   return null;
  if(!Number.isSafeInteger(values.dependents)||values.dependents<0||values.dependents>20)
   return null;
+ if(!/^20\d{2}-\d{2}-\d{2}$/.test(String(values.payment_date||''))||
+    !Number.isFinite(Date.parse(values.payment_date+'T12:00:00Z'))||
+    new Date(values.payment_date+'T12:00:00Z').toISOString().slice(0,10)!==values.payment_date)
+  return null;
  return values;
 }
 export function assessTaxes117(base,context){
@@ -107,6 +111,10 @@ export function assessTaxes117(base,context){
  try{c=moneyMap117(JSON.parse(context.context_json))}catch{c=null}
  if(!c){
   issues.push({code:'CONTEXT_INVALID',message:'Informações do contexto tributário inválidas.'});
+  return result;
+ }
+ if(c.payment_date.slice(0,4)!=='2026'||c.payment_date<base.termination_date){
+  issues.push({code:'PAYMENT_DATE_UNSUPPORTED',message:'A data prevista de pagamento deve ser igual ou posterior à rescisão e permanecer em 2026 para utilizar a tabela do IRRF deste módulo.'});
   return result;
  }
  const monthBase=add117(a.salary_balance_cents,c.other_monthly_cents);
@@ -216,7 +224,13 @@ export async function payrollTermination117(action,c){
   const dependents=Number(body.dependents);
   if(!Number.isSafeInteger(dependents)||dependents<0||dependents>20)
    fail117(d,'DEPENDENTS_INVALID','Quantidade de dependentes inválida.',400);
-  const values={dependents};
+  const paymentDate=String(body.payment_date||'');
+  if(!/^2026-\d{2}-\d{2}$/.test(paymentDate)||
+     !Number.isFinite(Date.parse(paymentDate+'T12:00:00Z'))||
+     new Date(paymentDate+'T12:00:00Z').toISOString().slice(0,10)!==paymentDate||
+     paymentDate<base.termination_date)
+   fail117(d,'PAYMENT_DATE_INVALID','Informe data válida de pagamento em 2026, igual ou posterior à data de desligamento.',400);
+  const values={dependents,payment_date:paymentDate};
   for(const k of MONEY_FIELDS117){
    if(!valid117(body[k]))fail117(d,'TAX_CONTEXT_INVALID','Centavos inválidos: '+k,400);
    values[k]=body[k];
