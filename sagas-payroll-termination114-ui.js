@@ -20,9 +20,12 @@ async function payrollTermination114Open(){
   '<option value="WORKED">Trabalhado</option>'+
   '<option value="WAIVED">Dispensado (verificar documentação)</option></select></label>'+
   '<div class="form-actions"><button type="submit" class="btn primary">Calcular prévia</button>'+
+  '<button type="button" class="btn secondary" id="term114Audit124">Auditar D1 da folha</button>'+ 
   '<button type="button" class="btn secondary" id="term114Cancel">Fechar</button></div></form>',true);
  const form=document.getElementById('termination114Form');
  document.getElementById('term114Cancel').onclick=closeModal;
+ document.getElementById('term114Audit124').onclick=()=>payrollLiveAudit124Open().catch(e=>toast(e.message,'error'));
+
  function syncNotice(){
   const select=form.elements.notice_kind,resignation=form.elements.kind.value==='RESIGNATION';
   [...select.options].forEach(option=>{
