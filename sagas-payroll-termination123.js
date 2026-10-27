@@ -6,6 +6,7 @@
 import {payrollTermination117} from './sagas-payroll-termination117.js';
 import {payrollTermination118} from './sagas-payroll-termination118.js';
 import {payrollTermination119,split119} from './sagas-payroll-termination119.js';
+import {payrollTerminationAudit123} from './sagas-payroll-termination123-audit.js';
 const MAX123=99999999999;
 const AUTHORIZED123=new Set([
  'PRECHECK_SOURCE_VACATION_RIGHTS_UNVERIFIED',
@@ -189,6 +190,8 @@ async function fgtsJournal123(env,companyId,amount,center){
 }
 async function preview123(c){
  const {env,companyId,employeeId,body={},d}=c;
+ const finalized=await env.DB.prepare("SELECT id FROM payroll_termination_postings123 WHERE company_id=? AND employee_id=? AND termination_date=?").bind(companyId,String(body.employee_id||employeeId||''),String(body.termination_date||'')).first();
+ if(finalized)return payrollTerminationAudit123(c);
  const input={employee_id:String(body.employee_id||employeeId||''),
   termination_date:body.termination_date,kind:body.kind,notice_kind:body.notice_kind};
  if(!input.employee_id||!strictDate123(input.termination_date))
@@ -240,7 +243,7 @@ async function preview123(c){
 }
 export async function payrollTermination123(action,c){
  const {env,companyId,auth,d,request,body={}}=c;
- const isRead=['settings','preview','history'].includes(action);
+ const isRead=['settings','preview','history','audit'].includes(action);
  await d.requirePermission(env,auth.user.id,companyId,isRead?'payroll.read':'payroll.manage');
  await d.ensureSchemaRevision(env,'payroll-dismissal123',1,()=>schema123(env));
  if(action==='settings'){
@@ -263,6 +266,7 @@ export async function payrollTermination123(action,c){
    entityId:companyId,after:{supplier_id:supplierId}});
   return {saved:true,supplier_id:supplierId};
  }
+ if(action==='audit')return payrollTerminationAudit123(c);
  if(action==='history'){
   return {records:(await env.DB.prepare("SELECT id,employee_id,termination_date,fgts_fine_cents,employee_payable_id,fgts_payable_id,posted_at FROM payroll_termination_postings123 WHERE company_id=? AND employee_id=? ORDER BY posted_at DESC LIMIT 100").bind(companyId,String(c.employeeId||'')).all()).results||[]};
  }
