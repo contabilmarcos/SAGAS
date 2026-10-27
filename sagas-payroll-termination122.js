@@ -50,6 +50,8 @@ export function assess122(review,diag,plan,approval,existing,employee){
   add('YEAR_UNSUPPORTED','Cálculo tributário e conclusão desta rotina restritos a 2026.');
  if(!strictDate122(review?.termination_date))
   add('DATE_INVALID','Data de desligamento inválida.');
+ if(strictDate122(review?.termination_date)&&review.termination_date>new Date().toISOString().slice(0,10))
+  add('FUTURE_TERMINATION','Data futura: não é permitido alterar a situação funcional antes do desligamento.');
  if(!review?.documentary_ready||!review?.deduction_ready||!review?.tax_ready_for_review||
     review?.tax_issues?.length||review?.documentary_issues?.length||review?.deduction_issues?.length)
   add('DOCUMENTARY_TAX_NOT_READY','TRCT, férias, descontos, INSS e IRRF precisam estar integralmente conciliados.');
@@ -116,11 +118,11 @@ export function assess122(review,diag,plan,approval,existing,employee){
   ready_for_integration:problems.length===0&&!!approval&&!existing,
   accounting_generated:!!existing,financial_generated:!!existing,
   employee_status_changed:!!existing,read_only:true,
-  note:'Somente pedido de demissão homologado. O TRCT é conferido e atestado externamente; o sistema não emite nem valida documentos oficiais.'};
+  note:'Somente pedido de demissão homologado. O FGTS regular é conferido documentalmente, mas NÃO é recolhido, gerado no financeiro ou contabilizado nesta rotina. O TRCT não é emitido ou validado automaticamente.'};
 }
 async function schema122(env){
  await env.DB.batch([
-  env.DB.prepare("CREATE TABLE IF NOT EXISTS payroll_termination_approvals122(id TEXT PRIMARY KEY,company_id TEXT NOT NULL,employee_id TEXT NOT NULL REFERENCES payroll_employees(id) ON DELETE RESTRICT,termination_date TEXT NOT NULL,kind TEXT NOT NULL CHECK(kind='RESIGNATION'),notice_kind TEXT NOT NULL,source_fingerprint TEXT NOT NULL,gross_cents INTEGER NOT NULL CHECK(gross_cents>0),net_cents INTEGER NOT NULL CHECK(net_cents>0),payment_date TEXT NOT NULL,trct_reference TEXT NOT NULL,tax_reference TEXT NOT NULL,vacation_reference TEXT NOT NULL,notice_reference TEXT NOT NULL,approved_by TEXT NOT NULL,approved_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,UNIQUE(company_id,employee_id,termination_date))"),
+  env.DB.prepare("CREATE TABLE IF NOT EXISTS payroll_termination_approvals122(id TEXT PRIMARY KEY,company_id TEXT NOT NULL,employee_id TEXT NOT NULL REFERENCES payroll_employees(id) ON DELETE RESTRICT,termination_date TEXT NOT NULL,kind TEXT NOT NULL CHECK(kind='RESIGNATION'),notice_kind TEXT NOT NULL,source_fingerprint TEXT NOT NULL,gross_cents INTEGER NOT NULL CHECK(gross_cents>0),net_cents INTEGER NOT NULL CHECK(net_cents>0),payment_date TEXT NOT NULL,trct_reference TEXT NOT NULL,tax_reference TEXT NOT NULL,vacation_reference TEXT NOT NULL,notice_reference TEXT NOT NULL,fgts_regular_reference TEXT NOT NULL,approved_by TEXT NOT NULL,approved_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,UNIQUE(company_id,employee_id,termination_date))"),
   env.DB.prepare("CREATE TABLE IF NOT EXISTS payroll_termination_postings122(id TEXT PRIMARY KEY,company_id TEXT NOT NULL,approval_id TEXT NOT NULL UNIQUE REFERENCES payroll_termination_approvals122(id) ON DELETE RESTRICT,employee_id TEXT NOT NULL REFERENCES payroll_employees(id) ON DELETE RESTRICT,termination_date TEXT NOT NULL,source_fingerprint TEXT NOT NULL,provision_journal_id TEXT,provision_posting_id TEXT,settlement_journal_id TEXT NOT NULL,payable_id TEXT,history_id TEXT NOT NULL REFERENCES payroll_employee_functional_history(id) ON DELETE RESTRICT,provision_cents INTEGER NOT NULL,net_cents INTEGER NOT NULL,posted_by TEXT NOT NULL,posted_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,UNIQUE(company_id,employee_id,termination_date))"),
   env.DB.prepare("CREATE TABLE IF NOT EXISTS payroll_termination_payables122(company_id TEXT NOT NULL,posting_id TEXT NOT NULL REFERENCES payroll_termination_postings122(id) ON DELETE RESTRICT,payable_id TEXT NOT NULL UNIQUE REFERENCES financial_payables(id) ON DELETE RESTRICT,employee_id TEXT NOT NULL,net_cents INTEGER NOT NULL,PRIMARY KEY(company_id,posting_id))")
  ]);
@@ -194,11 +196,12 @@ export async function payrollTermination122(action,c){
   const tax=doc122(body.tax_reference,d,'conferência de INSS e IRRF',12);
   const vacation=doc122(body.vacation_reference,d,'conferência dos períodos de férias',12);
   const notice=doc122(body.notice_reference,d,'documento do aviso',12);
+  const fgts=doc122(body.fgts_regular_reference,d,'referência da conferência do FGTS regular',12);
   const id=d.uuid();
-  await env.DB.prepare("INSERT INTO payroll_termination_approvals122(id,company_id,employee_id,termination_date,kind,notice_kind,source_fingerprint,gross_cents,net_cents,payment_date,trct_reference,tax_reference,vacation_reference,notice_reference,approved_by) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
+  await env.DB.prepare("INSERT INTO payroll_termination_approvals122(id,company_id,employee_id,termination_date,kind,notice_kind,source_fingerprint,gross_cents,net_cents,payment_date,trct_reference,tax_reference,vacation_reference,notice_reference,fgts_regular_reference,approved_by) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
    .bind(id,companyId,p.employee.id,p.termination_date,p.termination_kind,p.notice_kind,
     p.plan_source_fingerprint,p.gross_cents,p.net_cents,p.payable_due_date,
-    trct,tax,vacation,notice,auth.user.id).run();
+    trct,tax,vacation,notice,fgts,auth.user.id).run();
   await d.audit(env,{companyId,userId:auth.user.id,request,action:'APPROVE',
    entity:'payroll_termination_approvals122',entityId:id,
    after:{employee_id:p.employee.id,date:p.termination_date,gross_cents:p.gross_cents,
