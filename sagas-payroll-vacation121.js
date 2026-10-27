@@ -169,7 +169,7 @@ export function plan121(pkg,ledger,detail,postingLinks,batch,existing,review){
 }
 async function schema121(env){
  await env.DB.batch([
-  env.DB.prepare("CREATE TABLE IF NOT EXISTS payroll_vacation_integrations121(run_id TEXT PRIMARY KEY,company_id TEXT NOT NULL,source_fingerprint TEXT NOT NULL,journal_entry_id TEXT NOT NULL,advance_evidence_reference TEXT NOT NULL,source_summary_json TEXT NOT NULL,posted_by TEXT NOT NULL,posted_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)")
+  env.DB.prepare("CREATE TABLE IF NOT EXISTS payroll_vacation_integrations121(run_id TEXT PRIMARY KEY REFERENCES payroll_finance_postings37(run_id) ON DELETE RESTRICT,company_id TEXT NOT NULL,source_fingerprint TEXT NOT NULL,journal_entry_id TEXT NOT NULL,advance_evidence_reference TEXT NOT NULL,source_summary_json TEXT NOT NULL,posted_by TEXT NOT NULL,posted_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)")
  ]);
 }
 async function postedLinks121(env,companyId,pkg){
@@ -267,9 +267,11 @@ export async function payrollVacation121(action,c){
  }
  if(total!==p.financial_total_cents||ids.length!==p.payable_count||stmts.length>220)
   stop121(d,'TOTAL_OR_LIMIT','Títulos divergentes do líquido residual ou limite de partidas excedido.');
+ const postingIndex=stmts.length;
  stmts.push(env.DB.prepare("INSERT INTO payroll_finance_postings37(run_id,company_id,source_fingerprint,journal_entry_id,payable_count,payable_total_cents,posted_by) SELECT ?,?,?,?,?,?,? WHERE EXISTS(SELECT 1 FROM payroll_calc_runs WHERE company_id=? AND id=? AND source_fingerprint=? AND status='APPROVED')")
   .bind(runId,companyId,detail.run.source_fingerprint,journal.entryId,ids.length,total,auth.user.id,
    companyId,runId,detail.run.source_fingerprint));
+ const integrationIndex=stmts.length;
  stmts.push(env.DB.prepare("INSERT INTO payroll_vacation_integrations121(run_id,company_id,source_fingerprint,journal_entry_id,advance_evidence_reference,source_summary_json,posted_by) VALUES(?,?,?,?,?,?,?)")
   .bind(runId,companyId,p.source_fingerprint,journal.entryId,proof,
     JSON.stringify({run_id:runId,reclassifications:p.provisional_reclassifications,payables:ids,
@@ -277,7 +279,9 @@ export async function payrollVacation121(action,c){
  if(stmts.length>220)stop121(d,'TRANSACTION_LIMIT','Número de partidas superior ao permitido.');
  try{
   const completed=await env.DB.batch(stmts);
-  if(completed.some(s=>s.success===false))stop121(d,'POSTING_FAILED','Falha ao gravar diário e títulos.');
+  if(completed.some(s=>s.success===false)||Number(completed[postingIndex]?.meta?.changes)!==1||
+     Number(completed[integrationIndex]?.meta?.changes)!==1)
+   stop121(d,'POSTING_FAILED','A origem da folha ou da integração não foi gravada. Verifique as partidas.');
  }catch(e){
   if(/UNIQUE|FOREIGN KEY|constraint failed/i.test(String(e)))
    stop121(d,'CONCURRENT_POSTING','Folha ou vínculo atualizado por outra operação. Consulte novamente.');
