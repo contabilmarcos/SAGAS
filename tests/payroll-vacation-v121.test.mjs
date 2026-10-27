@@ -106,3 +106,16 @@ test('não altera a memória original dos eventos',()=>{
  go(p);
  assert.equal(JSON.stringify(p),snapshot);
 });
+
+test('filial da conta transitória precisa coincidir com débito reclassificado',()=>{
+ const links=copy(posted);links[0].gl_credit_branch_id='branch-other';
+ assert.ok(go(pkg,ledger,detail,links).problems.some(x=>x.code==='PROVISION_BRANCH_MISMATCH'));
+});
+test('conta coincidente no adiantamento é bloqueada',()=>{
+ const p=copy(pkg);p.lines.find(x=>x.event_code==='ADIANTAMENTO_FERIAS'&&x.side==='C').account_id='ADV_DEB';
+ assert.ok(go(p).problems.some(x=>x.code==='EVENT_SAME_ACCOUNT'));
+});
+test('dois centros de custo sem conciliação das linhas gera bloqueio',()=>{
+ const links=copy(posted);links[0].posting_gl_verified=false;
+ assert.ok(go(pkg,ledger,detail,links).problems.some(x=>x.code==='PROVISION_JOURNAL_UNALLOCATED'));
+});
