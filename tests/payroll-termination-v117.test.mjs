@@ -12,7 +12,7 @@ const b={
  notice_indemnity_cents:40000
  }
 };
-const c={dependents:0,other_monthly_cents:0,other_thirteenth_cents:0,
+const c={dependents:0,payment_date:'2026-10-31',other_monthly_cents:0,other_thirteenth_cents:0,
  prior_inss_month_cents:0,prior_inss_thirteenth_cents:0,
  prior_irrf_month_cents:0,prior_irrf_thirteenth_cents:0,
  pension_month_cents:0,pension_thirteenth_cents:0};
@@ -104,4 +104,10 @@ test('pendencias herdadas nao bloqueiam conferencia preliminar, mas nunca autori
  assert.equal(r.tax_ready_for_review,true);
  assert.equal(r.tax_ready_for_closing,false);
  assert.ok(r.tax_warnings.some(x=>x.includes('pendências herdadas')));
+});
+
+test('nao usa tabela IRRF 2026 para pagamento posterior em 2027',()=>{
+ const r=assessTaxes117(b,proof({payment_date:'2027-01-04'}));
+ assert.equal(r.tax_ready_for_review,false);
+ assert.ok(r.tax_issues.some(x=>x.code==='PAYMENT_DATE_UNSUPPORTED'));
 });
