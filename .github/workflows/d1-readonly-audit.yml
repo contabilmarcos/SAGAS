@@ -1,0 +1,163 @@
+name: SAGAS - Diagnostico D1 real somente leitura
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/d1-readonly-audit.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sagas-audit-d1-readonly
+  cancel-in-progress: false
+
+jobs:
+  check-d1:
+    name: Conferir D1 existente sem alterar dados
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Consultar integridade por SQL somente leitura
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_D1_DATABASE_ID: ${{ secrets.CLOUDFLARE_D1_DATABASE_ID }}
+        run: |
+          node --input-type=module <<'NODE'
+          import { appendFileSync } from 'node:fs';
+          const required = k => {
+            const v = String(process.env[k] || '').trim();
+            if (!v) throw new Error('D1_CONFIG_MISSING: ' + k);
+            return v;
+          };
+          const account = required('CLOUDFLARE_ACCOUNT_ID');
+          const token = required('CLOUDFLARE_API_TOKEN');
+          const id = required('CLOUDFLARE_D1_DATABASE_ID');
+          const endpoint = 'https://api.cloudflare.com/client/v4/accounts/' +
+            encodeURIComponent(account) + '/d1/database/' + encodeURIComponent(id) + '/query';
+          let requestCount = 0;
+          async function select(sql) {
+            if (!/^SELECT\s/i.test(sql) || sql.includes(';') ||
+                /\b(INSERT|UPDATE|DELETE|ALTER|DROP|CREATE|REPLACE|ATTACH|DETACH|VACUUM)\b/i.test(sql))
+              throw new Error('UNSAFE_SQL_REJECTED');
+            const res = await fetch(endpoint, {
+              method: 'POST',
+              headers: { Authorization: 'Bearer ' + token,
+                'Content-Type': 'application/json' },
+              body: JSON.stringify({ sql })
+            });
+            if (!res.ok)
+              throw new Error('D1_READONLY_HTTP_' + res.status +
+                ': falta acesso D1 Read no token ou o banco indicado nao e acessivel.');
+            const body = await res.json();
+            const part = body.result?.[0];
+            if (!body.success || !part?.success || !Array.isArray(part.results))
+              throw new Error('D1_QUERY_FAILED');
+            if (part.meta?.changed_db === true || Number(part.meta?.changes || 0) !== 0)
+              throw new Error('READONLY_QUERY_UNEXPECTED_WRITE');
+            requestCount++;
+            return part.results;
+          }
+          const names = new Set((await select(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+          )).map(x => x.name));
+          const requiredTables = ['journal_entries', 'journal_lines',
+            'payroll_employees', 'financial_payables'];
+          const missing = requiredTables.filter(x => !names.has(x));
+          const modules = [
+            ['MENSAL','payroll_finance_postings37'],
+            ['ENCARGOS','payroll_employer_postings120'],
+            ['FERIAS','payroll_vacation_integrations121'],
+            ['PROVISOES','payroll_provision_postings45'],
+            ['13_SALARIO','payroll_thirteenth_postings112'],
+            ['PEDIDO_DEMISSAO','payroll_termination_postings122'],
+            ['DISPENSA_SEM_JUSTA_CAUSA','payroll_termination_postings123']
+          ];
+          const checked = [];
+          for (const [label,table] of modules) {
+            if (!names.has(table)) { checked.push({label,status:'NAO_INICIALIZADO'}); continue; }
+            const result = await select('SELECT COUNT(*) AS qty FROM ' + table);
+            checked.push({label,status:Number(result[0]?.qty) > 0 ?
+              'COM_HISTORICO' : 'SEM_HISTORICO'});
+          }
+          const validity = [];
+          async function verify(label,table,sql) {
+            if (!names.has(table) || !names.has('journal_entries')) {
+              validity.push({label,status:'SEM_HISTORICO'}); return;
+            }
+            const result = await select(sql);
+            const invalid = Number(result[0]?.invalid_count || 0);
+            const total = Number(result[0]?.count_all || 0);
+            if (!Number.isSafeInteger(invalid) || invalid < 0 ||
+                !Number.isSafeInteger(total) || total < 0)
+              throw new Error('D1_INVALID_SUMMARY');
+            validity.push({label,status:invalid ? 'DIVERGENTE' :
+              total ? 'CONFERIDO' : 'SEM_HISTORICO'});
+          }
+          await verify('MENSAL','payroll_finance_postings37',
+            "SELECT COUNT(*) AS count_all,COALESCE(SUM(CASE WHEN j.id IS NULL OR j.status<>'POSTED' " +
+            "OR j.source_module<>'PAYROLL' OR j.source_reference<>'MONTHLY:'||p.run_id " +
+            "OR j.total_debit_cents<>j.total_credit_cents THEN 1 ELSE 0 END),0) AS invalid_count " +
+            "FROM payroll_finance_postings37 p LEFT JOIN journal_entries j " +
+            "ON j.id=p.journal_entry_id AND j.company_id=p.company_id");
+          await verify('ENCARGOS','payroll_employer_postings120',
+            "SELECT COUNT(*) AS count_all,COALESCE(SUM(CASE WHEN j.id IS NULL OR j.status<>'POSTED' " +
+            "OR j.total_debit_cents<>p.amount_cents OR j.total_credit_cents<>p.amount_cents " +
+            "THEN 1 ELSE 0 END),0) AS invalid_count FROM payroll_employer_postings120 p " +
+            "LEFT JOIN journal_entries j ON j.id=p.journal_entry_id AND j.company_id=p.company_id");
+          await verify('FERIAS','payroll_vacation_integrations121',
+            "SELECT COUNT(*) AS count_all,COALESCE(SUM(CASE WHEN j.id IS NULL OR j.status<>'POSTED' " +
+            "OR j.source_reference<>'MONTHLY:'||v.run_id OR j.total_debit_cents<>j.total_credit_cents " +
+            "THEN 1 ELSE 0 END),0) AS invalid_count FROM payroll_vacation_integrations121 v " +
+            "LEFT JOIN journal_entries j ON j.id=v.journal_entry_id AND j.company_id=v.company_id");
+          await verify('PROVISOES','payroll_provision_postings45',
+            "SELECT COUNT(*) AS count_all,COALESCE(SUM(CASE WHEN j.id IS NULL OR j.status<>'POSTED' " +
+            "OR j.total_debit_cents<>p.total_cents OR j.total_credit_cents<>p.total_cents " +
+            "THEN 1 ELSE 0 END),0) AS invalid_count FROM payroll_provision_postings45 p " +
+            "LEFT JOIN journal_entries j ON j.id=p.journal_entry_id AND j.company_id=p.company_id");
+          await verify('PEDIDO_DEMISSAO','payroll_termination_postings122',
+            "SELECT COUNT(*) AS count_all,COALESCE(SUM(CASE WHEN j.id IS NULL OR j.status<>'POSTED' " +
+            "OR e.id IS NULL OR e.active<>0 OR f.id IS NULL OR f.status='CANCELLED' " +
+            "OR f.amount_cents<>p.net_cents THEN 1 ELSE 0 END),0) AS invalid_count " +
+            "FROM payroll_termination_postings122 p LEFT JOIN journal_entries j " +
+            "ON j.id=p.settlement_journal_id AND j.company_id=p.company_id " +
+            "LEFT JOIN payroll_employees e ON e.id=p.employee_id AND e.company_id=p.company_id " +
+            "LEFT JOIN financial_payables f ON f.id=p.payable_id AND f.company_id=p.company_id");
+          await verify('DISPENSA_SEM_JUSTA_CAUSA','payroll_termination_postings123',
+            "SELECT COUNT(*) AS count_all,COALESCE(SUM(CASE WHEN j.id IS NULL OR j.status<>'POSTED' " +
+            "OR g.id IS NULL OR g.status<>'POSTED' OR e.id IS NULL OR e.active<>0 " +
+            "OR f.id IS NULL OR f.status='CANCELLED' OR f.amount_cents<>p.fgts_fine_cents " +
+            "THEN 1 ELSE 0 END),0) AS invalid_count FROM payroll_termination_postings123 p " +
+            "LEFT JOIN journal_entries j ON j.id=p.settlement_journal_id AND j.company_id=p.company_id " +
+            "LEFT JOIN journal_entries g ON g.id=p.fgts_journal_id AND g.company_id=p.company_id " +
+            "LEFT JOIN payroll_employees e ON e.id=p.employee_id AND e.company_id=p.company_id " +
+            "LEFT JOIN financial_payables f ON f.id=p.fgts_payable_id AND f.company_id=p.company_id");
+          const divergence = validity.filter(x => x.status==='DIVERGENTE');
+          const report = [
+            '## SAGAS - auditoria real D1 somente leitura',
+            '',
+            'Somente consultas SELECT. Nenhum dado pessoal nem valor foi exposto.',
+            '',
+            '| Modulo | Historico | Integridade contabil |',
+            '|---|---|---|',
+            ...checked.map(x => '| ' + x.label + ' | ' + x.status + ' | ' +
+              (validity.find(y => y.label===x.label)?.status || 'NAO_VERIFICADA') + ' |'),
+            '',
+            'Tabelas-base ausentes: ' + missing.length,
+            '',
+            'Vinculos divergentes: ' + divergence.length,
+            '',
+            'Nao substitui conferencia humana do TRCT, folha, guias, banco ou eSocial.'
+          ].join('\n');
+          if (process.env.GITHUB_STEP_SUMMARY)
+            appendFileSync(process.env.GITHUB_STEP_SUMMARY, report + '\n');
+          console.log('D1_READONLY_AUDIT', JSON.stringify({
+            read_only:true, sql_requests:requestCount, missing_core:missing.length,
+            modules:checked,integrity:validity,mutations:0
+          }));
+          if (missing.length || divergence.length)
+            throw new Error('D1_READONLY_AUDIT_PENDING: confira o relatorio acima.');
+          NODE
