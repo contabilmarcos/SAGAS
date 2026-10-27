@@ -34,6 +34,7 @@ import { payrollThirteenthAudit113 } from './sagas-payroll-thirteenth-audit113.j
 import { payrollTermination114 } from './sagas-payroll-termination114.js';
 import { payrollTermination115 } from './sagas-payroll-termination115.js';
 import { payrollTermination116 } from './sagas-payroll-termination116.js';
+import { payrollTermination117 } from './sagas-payroll-termination117.js';
 import { payrollProvisionAccounting44 } from './sagas-payroll-provisions44.js';
 // SAGAS Worker v96 - Registro auditável do envelope próprio VACATION de férias | cumulativo desde v49
 // ===== utils.js =====
@@ -10985,6 +10986,39 @@ async function route(request, env) {
       competence:url.searchParams.get('competence'),
       body:method==='POST'?await readJson(request):{},
       d:{HttpError,requirePermission,ensureSchemaRevision,audit,uuid}
+    }));
+  }
+  // v117: cálculo orientativo de INSS/IRRF 2026 e comparação documental, sem fechamento.
+  const taxWorkpaper117=routeMatch(path,'/api/payroll/termination/tax-workpapers/:id');
+  if(path==='/api/payroll/termination/tax-review'&&method==='POST'||
+     path==='/api/payroll/termination/tax-context'&&method==='POST'||
+     path==='/api/payroll/termination/tax-workpapers'&&(method==='GET'||method==='POST')||
+     taxWorkpaper117&&method==='GET'){
+    await ensureSchemaRevision(env,'payroll-employee-history',1,()=>ensurePayrollEmployeeRecordsSchema(env));
+    await ensureSchemaRevision(env,'payroll-employee-cost-center39',1,()=>ensurePayrollCostCenter39(env));
+    await ensureSchemaRevision(env,'payroll-employee-numbers',1,()=>ensurePayrollEmployeeNumbersSchema(env));
+    await ensureSchemaRevision(env,'payroll-calculation-foundation',1,()=>ensurePayrollCalculationFoundation34(env));
+    await ensureSchemaRevision(env,'payroll-provision-ledger43',1,()=>ensureProvisionLedger43(env));
+    const input=method==='POST'?await readJson(request):{};
+    const year=/^20\d{2}-\d{2}-\d{2}$/.test(String(input.termination_date||''))?
+       input.termination_date.slice(0,4):String(new Date().getUTCFullYear());
+    await payrollThirteenth70('advances',{
+      env,companyId,auth,request,year,
+      d:{HttpError,requirePermission,ensureSchemaRevision,audit,uuid}
+    });
+    await payrollThirteenth71('history',{
+      env,companyId,auth,request,year,
+      d:{HttpError,requirePermission,ensureSchemaRevision,audit,uuid}
+    });
+    const action=taxWorkpaper117?'detail':method==='GET'?'history':
+      path.endsWith('/tax-review')?'preview':
+      path.endsWith('/tax-context')?'save':'record';
+    return ok(await payrollTermination117(action,{
+      env,companyId,auth,request,
+      employeeId:url.searchParams.get('employee_id'),
+      runId:taxWorkpaper117?.id,body:input,
+      d:{HttpError,requirePermission,ensureSchemaRevision,audit,uuid,
+       hash:payrollProcessingSnapshotHash28}
     }));
   }
   // v116: descontos documentados e líquido de referência; SEM aprovar, pagar ou contabilizar.
