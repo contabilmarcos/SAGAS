@@ -42,6 +42,7 @@ import { payrollTermination119 } from './sagas-payroll-termination119.js';
 import { payrollTermination122 } from './sagas-payroll-termination122.js';
 import { payrollTermination123 } from './sagas-payroll-termination123.js';
 import { payrollLiveAudit124 } from './sagas-payroll-live-audit124.js';
+import { payrollCompetenceReopen125 } from './sagas-payroll-reopen125.js';
 import { payrollProvisionAccounting44 } from './sagas-payroll-provisions44.js';
 // SAGAS Worker v96 - Registro auditável do envelope próprio VACATION de férias | cumulativo desde v49
 // ===== utils.js =====
@@ -9920,11 +9921,11 @@ async function payrollMonthlyRunCreate35(env,request,auth,companyId,competenceId
   const previous=await env.DB.prepare(`SELECT id,revision,source_fingerprint,payment_date,status
     FROM payroll_calc_runs WHERE company_id=? AND competence_id=? AND process_kind='MONTHLY'
     ORDER BY revision DESC LIMIT 1`).bind(companyId,competenceId).first();
-  if(previous?.source_fingerprint===source.fingerprint && previous.payment_date===date){
+  if(previous?.status!=='VOID' && previous?.source_fingerprint===source.fingerprint && previous.payment_date===date){
     const detail=await payrollMonthlyRunDetail35(env,companyId,previous.id);
     return {...detail,reused:true};
   }
-  if(previous && previous.status!=='CALCULATED')
+  if(previous && !['CALCULATED','VOID'].includes(previous.status))
     throw new HttpError(409,'Ha um processamento ja revisado ou aprovado. Nao e permitido substitui-lo automaticamente.','RUN_LOCKED');
   const revision=previous?Number(previous.revision)+1:1;
   if(!Number.isSafeInteger(revision)||revision>99999)throw new HttpError(409,'Limite de revisoes atingido.','LIMIT');
@@ -12026,6 +12027,14 @@ async function route(request, env) {
     await requirePermission(env,auth.user.id,companyId,'payroll.read');
     return ok(await payrollMovementPreview(env,companyId,url.searchParams.get('competence_id')));
   }
+  // v125: reabertura segura apos conferencia das dependencias da folha.
+  p=routeMatch(path,'/api/payroll/competences/:id/reopen');
+  if(p&&(method==='GET'||method==='POST'))
+    return ok(await payrollCompetenceReopen125(method==='GET'?'preview':'reopen',{
+      env,companyId,competenceId:p.id,auth,request,
+      d:{HttpError,requirePermission,audit},
+      body:method==='POST'?await readJson(request):null
+    }));
   // Folha — operação inicial; sempre antes das rotas genéricas :kind.
   if(path==='/api/payroll/competences'){
     if(method==='GET'){
