@@ -107,7 +107,7 @@ async function preview111(c){
   for(const [component,amount] of [['FIRST_ADVANCE',adv],['FIRST_FGTS',fgts]]){
    if(!amount)continue;
    const mapping=cfg.get(component);
-   if(!mapping||mapping.active!==1&&mapping.active!=='1'||mapping.synthetic_analytic!=='ANALYTIC')continue;
+   if(!mapping||Number(mapping.active)!==1||mapping.synthetic_analytic!=='ANALYTIC')continue;
    const cacheKey=mapping.nature_id+'|'+cc.id;
    if(!natureCache.has(cacheKey))
     natureCache.set(cacheKey,await defaults111(env,companyId,mapping.nature_id,cc,d));
