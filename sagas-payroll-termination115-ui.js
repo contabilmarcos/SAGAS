@@ -97,10 +97,12 @@ function payrollTermination115Show(p){
   (p.warnings||[]).map(x=>'<p class="help">'+esc(x)+'</p>').join('')+
   '<p class="help">A multa do FGTS é uma referência separada do valor líquido. Ainda não há cálculo final das incidências, impostos, compensações ou integração contábil e financeira.</p>'+
   '<div class="form-actions"><button class="btn secondary" id="pterm115Edit" type="button">Editar bases</button>'+
+  '<button class="btn secondary" id="pterm115History" type="button">Histórico documental</button>'+
   (p.documentary_ready&&can('payroll.manage')?
   '<button class="btn primary" id="pterm115Record" type="button">Registrar memória DRAFT</button>':'')+
   '</div>',true);
  document.getElementById('pterm115Edit').onclick=()=>payrollTermination115Open(p).catch(e=>toast(e.message,'error'));
+ document.getElementById('pterm115History').onclick=()=>payrollTermination115History(p.employee.id,p.employee.name).catch(e=>toast(e.message,'error'));
  const save=document.getElementById('pterm115Record');
  if(save)save.onclick=async()=>{
   save.disabled=true;
@@ -113,4 +115,26 @@ function payrollTermination115Show(p){
    payrollTermination115Show(p);
   }catch(e){toast(e.message,'error');save.disabled=false}
  };
+}
+async function payrollTermination115History(employeeId,name){
+ const response=await api('/api/payroll/termination/workpapers?employee_id='+encodeURIComponent(employeeId));
+ const runs=response.runs||[];
+ const rows=runs.map((r,i)=>'<tr><td>'+esc(r.termination_date)+'</td>'+
+  '<td>'+esc(r.kind)+'</td><td>'+esc(r.revision)+'</td>'+
+  '<td>DRAFT</td><td><button type="button" class="btn secondary sm" data-pterm115-workpaper="'+i+'">Conferir</button></td></tr>').join('');
+ openModal('Histórico documental de rescisão — '+esc(name),
+  'Fotografias documentais versionadas; nenhum registro representa pagamento ou desligamento.',
+  '<div class="table-wrap"><table class="table"><thead><tr><th>Data</th><th>Modalidade</th>'+
+  '<th>Revisão</th><th>Situação</th><th>Ação</th></tr></thead><tbody>'+
+  (rows||'<tr><td colspan="5">Nenhuma memória documental registrada.</td></tr>')+
+  '</tbody></table></div>'+
+  '<div class="form-actions"><button type="button" class="btn secondary" id="pterm115New">Nova prévia</button></div>',true);
+ document.getElementById('pterm115New').onclick=()=>payrollTermination114Open().catch(e=>toast(e.message,'error'));
+ $$('[data-pterm115-workpaper]').forEach(btn=>btn.onclick=async()=>{
+  try{
+   const item=runs[Number(btn.dataset.pterm115Workpaper)];
+   const r=await api('/api/payroll/termination/workpapers/'+encodeURIComponent(item.id));
+   payrollTermination115Show(r.snapshot);
+  }catch(e){toast(e.message,'error')}
+ });
 }
