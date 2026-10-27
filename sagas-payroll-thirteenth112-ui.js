@@ -18,9 +18,11 @@ async function payrollThirteenth112Settings(runId,year){
   '<p class="help">Configure também a natureza de <b>baixa DECIMO_TERCEIRO</b> no Controle de Provisões. O crédito dessa baixa precisa ser a mesma conta debitada nas naturezas de adiantamento, retenções e líquido; o FGTS usa contas próprias.</p>'+
   '<div class="table-wrap"><table class="table"><thead><tr><th>Componente</th><th>Natureza</th><th>Ação</th></tr></thead><tbody>'+
   rows+'</tbody></table></div>'+
-  '<div class="form-actions"><button class="btn secondary" id="p13s112Back">Histórico do 13º</button>'+
+  '<div class="form-actions"><button class="btn secondary" id="p13s112Use">Natureza de baixa da provisão</button>'+
+  '<button class="btn secondary" id="p13s112Back">Histórico do 13º</button>'+
   '<button class="btn primary" id="p13s112Preview">Conferir partidas</button></div>',true);
  document.getElementById('p13s112Back').onclick=()=>payrollThirteenth71History(year,'SECOND').catch(e=>toast(e.message,'error'));
+ document.getElementById('p13s112Use').onclick=()=>payrollProvision45UseSettings(year+'-12').catch(e=>toast(e.message,'error'));
  document.getElementById('p13s112Preview').onclick=()=>payrollThirteenth112Preview(runId,year).catch(e=>toast(e.message,'error'));
  $$('[data-p13s112-save]').forEach(btn=>{
   btn.disabled=!can('payroll.manage');
