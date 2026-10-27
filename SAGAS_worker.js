@@ -23,6 +23,7 @@ import { payrollVacationMonthly100, payrollVacationMonthlySchema100 } from './sa
 import { payrollVacationClosure63 } from './sagas-payroll-vacation63.js';
 import { payrollVacationAccounting64 } from './sagas-payroll-vacation64.js';
 import { payrollVacationPosting65 } from './sagas-payroll-vacation65.js';
+import { payrollVacation121 } from './sagas-payroll-vacation121.js';
 import { payrollVacationAdvance66, payrollVacationAdvanceSchema66 } from './sagas-payroll-vacation66.js';
 import { payrollVacationProvision67 } from './sagas-payroll-vacation67.js';
 import { payrollVacationUseLink68, payrollVacationUseLinkSchema68 } from './sagas-payroll-vacation68.js';
@@ -11622,6 +11623,41 @@ async function route(request, env) {
           payrollMonthlyRunDetail35,payrollMonthlyConference36}
       })};
     return ok(await payrollVacationProvision67({env,companyId,auth,request,runId:p.id,d}));
+  }
+  // v121: integração segura da FOLHA com férias, usando baixas já contabilizadas.
+  // Não cria segundo pagamento de adiantamento. Reclassifica débito da despesa
+  // para conta de liquidação ligada ao diário anterior, por funcionário/CC.
+  p=routeMatch(path,'/api/payroll/monthly-runs/:id/vacation-final-integration');
+  if(p&&(method==='GET'||method==='POST')){
+    await ensureSchemaRevision(env,'payroll-calculation-foundation',1,()=>ensurePayrollCalculationFoundation34(env));
+    await ensureSchemaRevision(env,'payroll-monthly-review',1,()=>ensurePayrollMonthlyReviewSchema36(env));
+    await ensureSchemaRevision(env,'payroll-vacation-monthly-use100',1,()=>payrollVacationMonthlySchema100(env));
+    await ensureSchemaRevision(env,'payroll-provision-ledger43',1,()=>ensureProvisionLedger43(env));
+    await ensureSchemaRevision(env,'payroll-vacation-advance-link66',1,()=>payrollVacationAdvanceSchema66(env));
+    await ensureSchemaRevision(env,'purchasing',1,async()=>{
+      await ensurePurchasingSchema(env);await ensurePurchaseIntegrationSchema(env);await ensureRmPurchasingSchema(env);
+    });
+    await ensureSchemaRevision(env,'financial',1,async()=>{
+      await ensureFinancialAccountingEventSchema(env);await ensureFinancialCashAccountSchema(env);
+    });
+    await ensureSchemaRevision(env,'financial_payment_columns',1,()=>ensureFinancialCashAccountSchema(env));
+    await payroll37Call('settings');
+    await payrollProvisionAccounting45('use-settings',{
+      env,companyId,auth,request,d:{HttpError,requirePermission,ensureSchemaRevision,audit,uuid}
+    });
+    await ensureSchemaRevision(env,'payroll-vacation-use-link68',1,()=>payrollVacationUseLinkSchema68(env));
+    const body=method==='POST'?await readJson(request):{};
+    const deps={HttpError,requirePermission,ensureSchemaRevision,audit,uuid,
+      hash:payrollProcessingSnapshotHash28,
+      monthlyRunDetail:payrollMonthlyRunDetail35,monthlyConference:payrollMonthlyConference36,
+      buildInternalPostedEntry,centsToMoney,nextPayableNumber,
+      employerPreview:runId=>payrollEmployer40('preview',{
+        env,companyId,auth,request,runId,d:{HttpError,requirePermission,ensureSchemaRevision,
+         payrollMonthlyRunDetail35,payrollMonthlyConference36}
+      })};
+    return ok(await payrollVacation121(method==='GET'?'preview':'integrate',{
+      env,companyId,auth,request,runId:p.id,body,d:deps
+    }));
   }
   // v103: construir ou guardar conferência imutável de partidas propostas.
   // Não gera título financeiro, diário, provisão, pagamento nem guia.
