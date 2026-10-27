@@ -102,3 +102,14 @@ test('data anterior à admissão é rejeitada',async()=>{
  const x=setup();x.c.body.termination_date='2024-12-31';
  await assert.rejects(()=>payrollTermination114('preview',x.c),e=>e.code==='DATE_BEFORE_ADMISSION');
 });
+
+test('dispensa sem justa causa não aceita aviso dispensado sem indenização',async()=>{
+ const x=setup();x.c.body.notice_kind='WAIVED';
+ await assert.rejects(()=>payrollTermination114('preview',x.c),e=>e.code==='NOTICE_TYPE');
+});
+test('aviso indenizado que cruza ano gera bloqueio de 13º separado',async()=>{
+ const x=setup();x.c.body.termination_date='2026-12-20';
+ const p=await payrollTermination114('preview',x.c);
+ assert.ok(p.problems.some(x=>x.code==='NOTICE_CROSS_YEAR'));
+ assert.equal(p.ready_for_closing,false);
+});
