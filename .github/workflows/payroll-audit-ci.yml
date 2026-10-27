@@ -1,0 +1,26 @@
+name: SAGAS - Testes de integridade da folha (sem D1)
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/payroll-audit-ci.yml'
+      - 'sagas-payroll-live-audit124.js'
+      - 'tests/payroll-live-audit-v124.test.mjs'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit-unit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Validar sintaxe da auditoria
+        run: node --check sagas-payroll-live-audit124.js
+      - name: Testar auditoria sem acesso ao banco real
+        run: node --test tests/payroll-live-audit-v124.test.mjs
