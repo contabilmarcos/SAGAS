@@ -29,6 +29,7 @@ import { payrollMonthlyEndToEnd69 } from './sagas-payroll-closing69.js';
 import { payrollThirteenth70 } from './sagas-payroll-thirteenth70.js';
 import { payrollThirteenth71 } from './sagas-payroll-thirteenth71.js';
 import { payrollThirteenth111 } from './sagas-payroll-thirteenth111.js';
+import { payrollThirteenth112 } from './sagas-payroll-thirteenth112.js';
 import { payrollProvisionAccounting44 } from './sagas-payroll-provisions44.js';
 // SAGAS Worker v96 - Registro auditável do envelope próprio VACATION de férias | cumulativo desde v49
 // ===== utils.js =====
@@ -10968,6 +10969,35 @@ async function route(request, env) {
       competence:url.searchParams.get('competence'),
       body:method==='POST'?await readJson(request):{},
       d:{HttpError,requirePermission,ensureSchemaRevision,audit,uuid}
+    }));
+  }
+  // v112: liquidação da 2ª parcela do 13º com provisão, retenções, FGTS e títulos.
+  if((path==='/api/payroll/thirteenth/settlement'||
+      path==='/api/payroll/thirteenth/settlement/settings')&&
+     (method==='GET'||method==='POST')){
+    await ensureSchemaRevision(env,'payroll-employee-history',1,()=>ensurePayrollEmployeeRecordsSchema(env));
+    await ensureSchemaRevision(env,'payroll-employee-cost-center39',1,()=>ensurePayrollCostCenter39(env));
+    await ensureSchemaRevision(env,'payroll-employee-numbers',1,()=>ensurePayrollEmployeeNumbersSchema(env));
+    await ensureSchemaRevision(env,'payroll-provision-ledger43',1,()=>ensureProvisionLedger43(env));
+    await payrollProvisionAccounting45('use-settings',{
+      env,companyId,auth,request,
+      d:{HttpError,requirePermission,ensureSchemaRevision,audit,uuid}
+    });
+    await payrollFinance39('settings',{
+      env,companyId,auth,request,d:{HttpError,requirePermission,ensureSchemaRevision,audit,uuid}
+    });
+    await ensureSchemaRevision(env,'purchasing',1,async()=>{
+      await ensurePurchasingSchema(env);await ensurePurchaseIntegrationSchema(env);await ensureRmPurchasingSchema(env);
+    });
+    const settings=path.endsWith('/settings');
+    const action=settings?(method==='GET'?'settings':'save'):(method==='GET'?'preview':'integrate');
+    const payload=method==='POST'?await readJson(request):{};
+    return ok(await payrollThirteenth112(action,{
+      env,companyId,auth,request,runId:payload.run_id||url.searchParams.get('run_id'),
+      body:payload,
+      d:{HttpError,requirePermission,ensureSchemaRevision,audit,uuid,
+       hash:payrollProcessingSnapshotHash28,centsToMoney,nextPayableNumber,
+       buildEntry:buildInternalPostedEntry,taxes:payrollTaxHistoricalWithDependents}
     }));
   }
   // v111: adiantamento do 13o em diário e títulos a pagar; segunda parcela continua bloqueada aqui.
