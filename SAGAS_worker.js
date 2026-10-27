@@ -39,6 +39,7 @@ import { payrollTermination116 } from './sagas-payroll-termination116.js';
 import { payrollTermination117 } from './sagas-payroll-termination117.js';
 import { payrollTermination118 } from './sagas-payroll-termination118.js';
 import { payrollTermination119 } from './sagas-payroll-termination119.js';
+import { payrollTermination122 } from './sagas-payroll-termination122.js';
 import { payrollProvisionAccounting44 } from './sagas-payroll-provisions44.js';
 // SAGAS Worker v96 - Registro auditável do envelope próprio VACATION de férias | cumulativo desde v49
 // ===== utils.js =====
@@ -5017,20 +5018,20 @@ async function nextPayableNumber(env,companyId){
 
 async function listFinancialPayables(env,companyId,allowPayroll=false){
   const r=await env.DB.prepare(`
-    SELECT fp.*,CASE WHEN fp.source_type IN ('PAYROLL_MONTHLY','PAYROLL_THIRTEENTH') THEN COALESCE(printf('%05d',pen.number),'FOLHA') ELSE s.code END AS supplier_code,
-           CASE WHEN fp.source_type IN ('PAYROLL_MONTHLY','PAYROLL_THIRTEENTH') THEN pe.name ELSE s.name END AS supplier_name,
+    SELECT fp.*,CASE WHEN fp.source_type IN ('PAYROLL_MONTHLY','PAYROLL_THIRTEENTH','PAYROLL_TERMINATION') THEN COALESCE(printf('%05d',pen.number),'FOLHA') ELSE s.code END AS supplier_code,
+           CASE WHEN fp.source_type IN ('PAYROLL_MONTHLY','PAYROLL_THIRTEENTH','PAYROLL_TERMINATION') THEN pe.name ELSE s.name END AS supplier_name,
            rec.number AS receipt_number,o.number AS order_number,
            fca.code AS payment_cash_account_code,fca.name AS payment_cash_account_name,
            fae.number AS payment_event_number,fae.name AS payment_event_name
     FROM financial_payables fp
     LEFT JOIN purchase_suppliers s ON s.id=fp.supplier_id AND s.id=fp.supplier_id
-    LEFT JOIN payroll_employees pe ON pe.id=fp.supplier_id AND pe.company_id=fp.company_id AND fp.source_type IN ('PAYROLL_MONTHLY','PAYROLL_THIRTEENTH')
+    LEFT JOIN payroll_employees pe ON pe.id=fp.supplier_id AND pe.company_id=fp.company_id AND fp.source_type IN ('PAYROLL_MONTHLY','PAYROLL_THIRTEENTH','PAYROLL_TERMINATION')
     LEFT JOIN payroll_employee_numbers pen ON pen.employee_id=pe.id AND pen.company_id=fp.company_id
     LEFT JOIN purchase_receipts rec ON rec.id=fp.receipt_id
     LEFT JOIN purchase_orders o ON o.id=rec.order_id
     LEFT JOIN financial_cash_accounts fca ON fca.id=fp.payment_cash_account_id
     LEFT JOIN financial_accounting_events fae ON fae.id=fp.payment_accounting_event_id
-    WHERE fp.company_id=? AND (?=1 OR fp.source_type NOT IN ('PAYROLL_MONTHLY','PAYROLL_THIRTEENTH'))
+    WHERE fp.company_id=? AND (?=1 OR fp.source_type NOT IN ('PAYROLL_MONTHLY','PAYROLL_THIRTEENTH','PAYROLL_TERMINATION'))
     ORDER BY CASE fp.status WHEN 'OPEN' THEN 0 WHEN 'PAID' THEN 1 ELSE 2 END,fp.due_date,fp.number
   `).bind(companyId,allowPayroll?1:0).all();
   return (r.results||[]).map(x=>({...x,amount:centsToMoney(x.amount_cents),balance:centsToMoney(x.balance_cents)}));
@@ -5038,8 +5039,8 @@ async function listFinancialPayables(env,companyId,allowPayroll=false){
 
 async function getFinancialPayable(env,companyId,id){
   const x=await env.DB.prepare(`
-    SELECT fp.*,CASE WHEN fp.source_type IN ('PAYROLL_MONTHLY','PAYROLL_THIRTEENTH') THEN COALESCE(printf('%05d',pen.number),'FOLHA') ELSE s.code END AS supplier_code,
-           CASE WHEN fp.source_type IN ('PAYROLL_MONTHLY','PAYROLL_THIRTEENTH') THEN pe.name ELSE s.name END AS supplier_name,
+    SELECT fp.*,CASE WHEN fp.source_type IN ('PAYROLL_MONTHLY','PAYROLL_THIRTEENTH','PAYROLL_TERMINATION') THEN COALESCE(printf('%05d',pen.number),'FOLHA') ELSE s.code END AS supplier_code,
+           CASE WHEN fp.source_type IN ('PAYROLL_MONTHLY','PAYROLL_THIRTEENTH','PAYROLL_TERMINATION') THEN pe.name ELSE s.name END AS supplier_name,
            s.tax_id,rec.number AS receipt_number,o.number AS order_number,
            u.name AS created_by_name,pu.name AS paid_by_name,
            fca.code AS payment_cash_account_code,fca.name AS payment_cash_account_name,
@@ -5047,7 +5048,7 @@ async function getFinancialPayable(env,companyId,id){
            jb.code AS payment_batch_code
     FROM financial_payables fp
     LEFT JOIN purchase_suppliers s ON s.id=fp.supplier_id AND s.id=fp.supplier_id
-    LEFT JOIN payroll_employees pe ON pe.id=fp.supplier_id AND pe.company_id=fp.company_id AND fp.source_type IN ('PAYROLL_MONTHLY','PAYROLL_THIRTEENTH')
+    LEFT JOIN payroll_employees pe ON pe.id=fp.supplier_id AND pe.company_id=fp.company_id AND fp.source_type IN ('PAYROLL_MONTHLY','PAYROLL_THIRTEENTH','PAYROLL_TERMINATION')
     LEFT JOIN payroll_employee_numbers pen ON pen.employee_id=pe.id AND pen.company_id=fp.company_id
     LEFT JOIN purchase_receipts rec ON rec.id=fp.receipt_id
     LEFT JOIN purchase_orders o ON o.id=rec.order_id
@@ -5097,7 +5098,7 @@ async function buildFinancialPaymentAccountingLines(env,companyId,{eventId,cashA
   if(!cash.active) throw new HttpError(409,'A Conta/Caixa selecionada está inativa.','INACTIVE_CASH_ACCOUNT');
   const grossCents=Number(payable.balance_cents||0);
   const taxDigits=String(payable.tax_id||'').replace(/\D/g,'');
-  const supplierType=['PAYROLL_MONTHLY','PAYROLL_THIRTEENTH'].includes(payable.source_type)?'PF':taxDigits.length===14?'PJ':taxDigits.length===11?'PF':'UNKNOWN';
+  const supplierType=['PAYROLL_MONTHLY','PAYROLL_THIRTEENTH','PAYROLL_TERMINATION'].includes(payable.source_type)?'PF':taxDigits.length===14?'PJ':taxDigits.length===11?'PF':'UNKNOWN';
   const interest=Number(interestCents||0);
   const cashCents=grossCents+interest-Number(discountCents||0)-Number(advanceCents||0);
   if(cashCents<0) throw new HttpError(400,'Desconto e adiantamento não podem superar o valor do título somado aos juros.','INVALID_PAYMENT_VALUES');
@@ -5130,7 +5131,7 @@ async function buildFinancialPaymentAccountingLines(env,companyId,{eventId,cashA
 async function payFinancialPayable(env,request,auth,companyId,id,body){
   await requirePermission(env,auth.user.id,companyId,'financial.payable.manage');
   const before=await getFinancialPayable(env,companyId,id);
-  if(['PAYROLL_MONTHLY','PAYROLL_THIRTEENTH'].includes(before.source_type))await requirePermission(env,auth.user.id,companyId,'payroll.manage');
+  if(['PAYROLL_MONTHLY','PAYROLL_THIRTEENTH','PAYROLL_TERMINATION'].includes(before.source_type))await requirePermission(env,auth.user.id,companyId,'payroll.manage');
   if(before.status!=='OPEN') throw new HttpError(409,'Somente títulos em aberto podem ser pagos.','INVALID_STATUS');
   const date=isoDate(body.payment_date||new Date().toISOString().slice(0,10),'data do pagamento');
   const cashAccountId=cleanText(required(body.cash_account_id,'Conta/Caixa'),80);
@@ -5138,13 +5139,13 @@ async function payFinancialPayable(env,request,auth,companyId,id,body){
   if(!cash.active) throw new HttpError(409,'A Conta/Caixa selecionada está inativa.','INACTIVE_CASH_ACCOUNT');
   const discountCents=moneyToCents(body.discount||0),advanceCents=moneyToCents(body.advance||0),interestCents=moneyToCents(body.interest||0);
   if(discountCents<0||advanceCents<0||interestCents<0) throw new HttpError(400,'Desconto, adiantamento e juros não podem ser negativos.','INVALID_PAYMENT_VALUES');
-  if(['PAYROLL_MONTHLY','PAYROLL_THIRTEENTH'].includes(before.source_type) && (discountCents||advanceCents||interestCents))
+  if(['PAYROLL_MONTHLY','PAYROLL_THIRTEENTH','PAYROLL_TERMINATION'].includes(before.source_type) && (discountCents||advanceCents||interestCents))
     throw new HttpError(409,'Titulos de salarios liquidos nao aceitam juros, descontos ou adiantamentos nesta etapa.','PAYROLL_PAYMENT_RESTRICTED');
   const cashCents=Number(before.balance_cents||0)+interestCents-discountCents-advanceCents;
   if(cashCents<0) throw new HttpError(400,'Desconto e adiantamento não podem superar o valor do título somado aos juros.','INVALID_PAYMENT_VALUES');
 
   const eventId=cleanText(body.accounting_event_id,80)||null;
-  if(['PAYROLL_MONTHLY','PAYROLL_THIRTEENTH'].includes(before.source_type) && !eventId)
+  if(['PAYROLL_MONTHLY','PAYROLL_THIRTEENTH','PAYROLL_TERMINATION'].includes(before.source_type) && !eventId)
     throw new HttpError(409,'Pagamento de folha exige Evento Contabil Financeiro de baixa para conciliar Salarios a Pagar e Banco.','PAYROLL_ACCOUNTING_EVENT_REQUIRED');
   const batchId=eventId?(cleanText(required(body.accounting_batch_id,'lote contábil'),80)):null;
   let built=null;
@@ -5173,7 +5174,7 @@ async function cancelFinancialPayable(env,request,auth,companyId,id){
   await requirePermission(env,auth.user.id,companyId,'financial.payable.manage');
   const before=await getFinancialPayable(env,companyId,id);
   if(before.status!=='OPEN') throw new HttpError(409,'Somente títulos em aberto podem ser cancelados.','INVALID_STATUS');
-  if(['PAYROLL_MONTHLY','PAYROLL_THIRTEENTH'].includes(before.source_type)) throw new HttpError(409,'Titulos gerados pela folha nao podem ser cancelados isoladamente. Revise a integracao de origem.','PAYROLL_LINK_LOCKED');
+  if(['PAYROLL_MONTHLY','PAYROLL_THIRTEENTH','PAYROLL_TERMINATION'].includes(before.source_type)) throw new HttpError(409,'Titulos gerados pela folha nao podem ser cancelados isoladamente. Revise a integracao de origem.','PAYROLL_LINK_LOCKED');
   await env.DB.prepare(`UPDATE financial_payables SET status='CANCELLED',balance_cents=0,updated_at=CURRENT_TIMESTAMP WHERE id=? AND company_id=?`).bind(id,companyId).run();
   const after=await getFinancialPayable(env,companyId,id);
   await audit(env,{companyId,userId:auth.user.id,action:'CANCEL',entity:'financial_payable',entityId:id,before,after,request});
@@ -5191,7 +5192,7 @@ async function undoFinancialPayablePayment(env,request,auth,companyId,id){
   }
 
   const before=await getFinancialPayable(env,companyId,id);
-  if(['PAYROLL_MONTHLY','PAYROLL_THIRTEENTH'].includes(before.source_type))await requirePermission(env,auth.user.id,companyId,'payroll.manage');
+  if(['PAYROLL_MONTHLY','PAYROLL_THIRTEENTH','PAYROLL_TERMINATION'].includes(before.source_type))await requirePermission(env,auth.user.id,companyId,'payroll.manage');
   if(before.status!=='PAID') throw new HttpError(409,'Somente títulos baixados podem ter a baixa desfeita.','INVALID_STATUS');
   // v112: o adiantamento pago integra a fotografia da quitação do 13º.
   // Não reabrir o título da primeira parcela após ele ser utilizado.
@@ -10769,7 +10770,7 @@ async function route(request, env) {
   p=routeMatch(path,"/api/financial-payables/:id/pay"); if(p&&method==="POST")return ok({payable:await payFinancialPayable(env,request,auth,companyId,p.id,await readJson(request))});
   p=routeMatch(path,"/api/financial-payables/:id/unpay"); if(p&&method==="POST")return ok({payable:await undoFinancialPayablePayment(env,request,auth,companyId,p.id)});
   p=routeMatch(path,"/api/financial-payables/:id/cancel"); if(p&&method==="POST")return ok({payable:await cancelFinancialPayable(env,request,auth,companyId,p.id)});
-  p=routeMatch(path,"/api/financial-payables/:id"); if(p&&method==="GET"){await requirePermission(env,auth.user.id,companyId,"financial.payable.read");const payable=await getFinancialPayable(env,companyId,p.id);if(["PAYROLL_MONTHLY","PAYROLL_THIRTEENTH"].includes(payable.source_type))await requirePermission(env,auth.user.id,companyId,"payroll.read");return ok({payable});}
+  p=routeMatch(path,"/api/financial-payables/:id"); if(p&&method==="GET"){await requirePermission(env,auth.user.id,companyId,"financial.payable.read");const payable=await getFinancialPayable(env,companyId,p.id);if(["PAYROLL_MONTHLY","PAYROLL_THIRTEENTH","PAYROLL_TERMINATION"].includes(payable.source_type))await requirePermission(env,auth.user.id,companyId,"payroll.read");return ok({payable});}
 
   // Etapa 58 (v96): envelope próprio VACATION, vinculado ao recibo conciliado.
   if(path==='/api/payroll/vacation-envelope'&&(method==='GET'||method==='POST')){
@@ -10990,6 +10991,46 @@ async function route(request, env) {
       competence:url.searchParams.get('competence'),
       body:method==='POST'?await readJson(request):{},
       d:{HttpError,requirePermission,ensureSchemaRevision,audit,uuid}
+    }));
+  }
+  // v122: encerramento excepcional do pedido de demissão conferido por TRCT.
+  // Grava baixa, diários POSTED, título residual e situação DESLIGADO
+  // na mesma transação; sem guia, pagamento bancário ou eSocial.
+  if(path==='/api/payroll/termination/closing122'&&method==='POST'||
+     path==='/api/payroll/termination/closing122/history'&&method==='GET'){
+    await ensureSchemaRevision(env,'payroll-employee-history',1,()=>ensurePayrollEmployeeRecordsSchema(env));
+    await ensureSchemaRevision(env,'payroll-employee-cost-center39',1,()=>ensurePayrollCostCenter39(env));
+    await ensureSchemaRevision(env,'payroll-employee-numbers',1,()=>ensurePayrollEmployeeNumbersSchema(env));
+    await ensureSchemaRevision(env,'payroll-calculation-foundation',1,()=>ensurePayrollCalculationFoundation34(env));
+    await ensureSchemaRevision(env,'payroll-provision-ledger43',1,()=>ensureProvisionLedger43(env));
+    await ensureSchemaRevision(env,'purchasing',1,async()=>{
+      await ensurePurchasingSchema(env);await ensurePurchaseIntegrationSchema(env);await ensureRmPurchasingSchema(env);
+    });
+    await ensureSchemaRevision(env,'financial',1,async()=>{
+      await ensureFinancialAccountingEventSchema(env);await ensureFinancialCashAccountSchema(env);
+    });
+    await payrollFinance39('settings',{
+      env,companyId,auth,request,
+      d:{HttpError,requirePermission,ensureSchemaRevision,audit,uuid}
+    });
+    await payrollProvisionAccounting45('use-settings',{
+      env,companyId,auth,request,
+      d:{HttpError,requirePermission,ensureSchemaRevision,audit,uuid}
+    });
+    const input=method==='POST'?await readJson(request):{};
+    const year=/^20\d{2}-\d{2}-\d{2}$/.test(String(input.termination_date||''))?
+      input.termination_date.slice(0,4):String(new Date().getUTCFullYear());
+    await payrollThirteenth70('advances',{env,companyId,auth,request,year,
+      d:{HttpError,requirePermission,ensureSchemaRevision,audit,uuid}});
+    await payrollThirteenth71('history',{env,companyId,auth,request,year,
+      d:{HttpError,requirePermission,ensureSchemaRevision,audit,uuid}});
+    const action=method==='GET'?'history':String(input.action||'preview');
+    return ok(await payrollTermination122(action,{
+      env,companyId,auth,request,
+      employeeId:url.searchParams.get('employee_id'),body:input,
+      d:{HttpError,requirePermission,ensureSchemaRevision,audit,uuid,
+       hash:payrollProcessingSnapshotHash28,centsToMoney,nextPayableNumber,
+       buildEntry:buildInternalPostedEntry}
     }));
   }
   // v119: plano contábil e financeiro de rescisão: somente minutas, nunca baixa definitiva.
