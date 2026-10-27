@@ -96,11 +96,13 @@ function payrollTermination117Show(p){
   (p.tax_warnings||[]).map(x=>'<p class="help">'+esc(x)+'</p>').join('')+
   '<p class="help"><b>Fechamento:</b> ainda bloqueado. É necessário validar histórico de férias, incidências especiais, 13º já pago, FGTS, provisões e integração dos lançamentos antes da geração definitiva.</p>'+
   '<div class="form-actions"><button type="button" class="btn secondary" id="pterm117Edit">Editar contexto</button>'+
+  '<button type="button" class="btn secondary" id="pterm117Preclose">Diagnóstico de fechamento</button>'+
   '<button type="button" class="btn secondary" id="pterm117History">Histórico de conferência</button>'+
   (p.tax_ready_for_review&&can('payroll.manage')?
    '<button type="button" class="btn primary" id="pterm117Record">Registrar memória DRAFT</button>':'')+
   '</div>',true);
  document.getElementById('pterm117Edit').onclick=()=>payrollTermination117Open(p).catch(e=>toast(e.message,'error'));
+ document.getElementById('pterm117Preclose').onclick=()=>payrollTermination118Open(p).catch(e=>toast(e.message,'error'));
  document.getElementById('pterm117History').onclick=()=>payrollTermination117History(p.employee.id,p.employee.name).catch(e=>toast(e.message,'error'));
  const record=document.getElementById('pterm117Record');
  if(record)record.onclick=async()=>{
