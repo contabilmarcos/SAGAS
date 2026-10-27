@@ -11,13 +11,15 @@ async function payrollThirteenth71History(year,phase){
   '<button type="button" class="btn secondary sm" data-p13-detail="'+i+'">Conferir</button> '+
   (r.status==='CALCULATED'&&can('payroll.manage')?
    '<button type="button" class="btn primary sm" data-p13-approve="'+i+'">Aprovar cálculo</button>':'')+
+  (r.status==='APPROVED'&&r.phase==='FIRST'?
+   '<button type="button" class="btn secondary sm" data-p13-integrate="'+i+'">Integrar financeiro / contábil</button>':'')+
   '</td></tr>').join('');
  openModal('Histórico de cálculos do 13º — '+esc(year),
-  'Revisões próprias do 13º. Aprovação não gera financeiro nem contabilidade.',
+  'Revisões próprias do 13º. A integração da 1ª parcela é uma ação posterior à aprovação.',
   '<div class="table-wrap"><table class="table"><thead><tr><th>Ano</th><th>Parcela</th><th>Revisão</th>'+
   '<th>Situação</th><th>Funcionários</th><th>Bruto</th><th>Líquido</th><th>Ações</th></tr></thead>'+
   '<tbody>'+rows+'</tbody></table></div>'+
-  '<p class="help">'+(rows?'Somente o cálculo é armazenado; pagamentos e lançamentos exigem integração posterior.':
+  '<p class="help">'+(rows?'Cálculos armazenados; financeiro da 1ª parcela disponível após aprovação e configuração das naturezas.':
    'Ainda não há processamentos calculados.')+'</p>'+
   '<div class="form-actions"><button class="btn secondary" type="button" id="p13HBack">Voltar à prévia</button></div>',true);
  document.getElementById('p13HBack').onclick=()=>payrollThirteenth70Open(year,phase).catch(e=>toast(e.message,'error'));
@@ -25,7 +27,11 @@ async function payrollThirteenth71History(year,phase){
   const r=data.runs[Number(button.dataset.p13Detail)];
   if(r)await payrollThirteenth71Detail(r.id,year,phase);
  });
- $$('[data-p13-approve]').forEach(button=>button.onclick=()=>{
+ $('[data-p13-integrate]').forEach(button=>button.onclick=()=>{
+  const r=data.runs[Number(button.dataset.p13Integrate)];
+  if(r)payrollThirteenth111Preview(r.id,year).catch(e=>toast(e.message,'error'));
+ });
+ $('[data-p13-approve]').forEach(button=>button.onclick=()=>{
   const r=data.runs[Number(button.dataset.p13Approve)];
   if(r)payrollThirteenth71Approve(r.id,year,phase);
  });
