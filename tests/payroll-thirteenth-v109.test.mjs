@@ -9,6 +9,7 @@ const row={
 };
 function setup({advances=[],specials=[],variables=[],dependentCount=0,financial=[],linked=null,employee=row}={}){
  const taxCalls=[],queries=[],written=[];
+ financial=financial.map(row=>({...row,approved_advance_cents:row.approved_advance_cents??150000}));
  const DB={prepare(sql){
   return {bind(...params){
    queries.push({sql,params});
@@ -173,4 +174,17 @@ test('nao permite comprovante externo quando existe adiantamento no financeiro',
   source_fingerprint:preview.source_fingerprint
  };
  await assert.rejects(()=>payrollThirteenth70('declare',x.c),e=>e.code==='ADVANCE_ALREADY_FINANCED');
+});
+
+test('titulo de primeira parcela adulterado nao compoe segunda parcela',async()=>{
+ const {c}=setup({financial:[{
+  employee_id:'emp1',amount_cents:160000,approved_advance_cents:150000,
+  payment_date:'2026-10-20',status:'PAID',payable_id:'p1',
+  document_number:'13-ADV-2026',payment_journal_entry_id:'j2',
+  origin_status:'POSTED',payment_journal_status:'POSTED'
+ }]});
+ c.phase='SECOND';
+ const preview=await payrollThirteenth70('preview',c);
+ assert.equal(preview.items[0].ready,false);
+ assert.ok(preview.items[0].blockers.some(x=>x.includes('adiantamento aprovado')));
 });
