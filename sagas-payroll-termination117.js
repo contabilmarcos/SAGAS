@@ -117,6 +117,10 @@ export function assessTaxes117(base,context){
   issues.push({code:'PAYMENT_DATE_UNSUPPORTED',message:'A data prevista de pagamento deve ser igual ou posterior à rescisão e permanecer em 2026 para utilizar a tabela do IRRF deste módulo.'});
   return result;
  }
+ if(c.payment_date.slice(0,7)!==base.termination_date.slice(0,7)){
+  issues.push({code:'PAYMENT_DIFFERENT_MONTH',message:'O pagamento cai em outro mês; bases de INSS por competência e IRRF por caixa precisam ser conciliadas separadamente antes do cálculo.'});
+  return result;
+ }
  const monthBase=add117(a.salary_balance_cents,c.other_monthly_cents);
  const thirteenINSS=add117(a.thirteenth_cents,c.other_thirteenth_cents);
  const thirteenIRRF=add117(thirteenINSS,a.thirteenth_notice_projection_cents);
