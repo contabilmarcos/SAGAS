@@ -482,6 +482,7 @@ async function renderPayrollMovements(){
         <button type="button" id="pmvProvisions42" class="sagas-payroll-process-item" role="menuitem">Prévia de provisões (férias e 13º)</button>
         <button type="button" id="pmvThirteenth70" class="sagas-payroll-process-item" role="menuitem">13º salário — 1ª e 2ª parcelas</button>
         <button type="button" id="pmvTermination114" class="sagas-payroll-process-item" role="menuitem">Rescisão — prévia e conferência</button>
+        <button type="button" id="pmvAudit124" class="sagas-payroll-process-item" role="menuitem">Auditar D1 — folha, férias e rescisões</button>
         <button type="button" id="pmvLedger43" class="sagas-payroll-process-item" role="menuitem">Controle de provisões (saldos e baixas)</button>
         <button type="button" id="pmvValidate26" class="sagas-payroll-process-item" role="menuitem">Validar pré-fechamento</button>
         <button type="button" id="pmvControl27" class="sagas-payroll-process-item" role="menuitem">Controle da competência</button>
@@ -567,6 +568,7 @@ async function renderPayrollMovements(){
   if($('#pmvProvisions42'))$('#pmvProvisions42').onclick=()=>payrollProvisions42Open().catch(err=>toast(err.message,'error'));
   if($('#pmvThirteenth70'))$('#pmvThirteenth70').onclick=()=>payrollThirteenth70Open().catch(err=>toast(err.message,'error'));
   if($('#pmvTermination114'))$('#pmvTermination114').onclick=()=>payrollTermination114Open().catch(err=>toast(err.message,'error'));
+  if($('#pmvAudit124'))$('#pmvAudit124').onclick=()=>payrollLiveAudit124Open().catch(err=>toast(err.message,'error'));
 
   if($('#pmvLedger43'))$('#pmvLedger43').onclick=()=>payrollProvision43Ledger().catch(err=>toast(err.message,'error'));
   $$('[data-pmv-delete]').forEach(b=>b.onclick=()=>payrollMovementDelete(b.dataset.pmvDelete));
