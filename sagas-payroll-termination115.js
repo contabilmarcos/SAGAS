@@ -106,6 +106,7 @@ async function preview115(c){
  const base=await payrollTermination114('preview',c);
  const proof=await evidence115(c.env,c.companyId,base);
  const result=reconcile115(base,proof);
+ result.base_source_fingerprint=base.source_fingerprint;
  result.source_fingerprint=await c.d.hash({version:115,base:base.source_fingerprint,
   evidence:proof,documentary_results:result.amounts,problems:result.documentary_issues});
  return result;
@@ -130,6 +131,8 @@ export async function payrollTermination115(action,c){
   if(body.confirmation!=='CONFIRMAR DOCUMENTOS RESCISAO')
    fail115(d,'CONFIRMATION_REQUIRED','Digite CONFIRMAR DOCUMENTOS RESCISAO.',400);
   const base=await payrollTermination114('preview',c);
+  if(body.base_source_fingerprint!==base.source_fingerprint)
+   fail115(d,'PREVIEW_CHANGED','Funcionário, data, salário ou cálculo foram alterados; atualize a prévia antes de atestar os documentos.');
   const av=count115(body.vacation_acquired_periods,d,'férias adquiridas',8);
   const double=count115(body.vacation_double_periods,d,'férias em dobro',8);
   if(double>av)fail115(d,'VACATION_DOUBLE_INVALID','Férias em dobro não podem superar os períodos adquiridos.',400);
