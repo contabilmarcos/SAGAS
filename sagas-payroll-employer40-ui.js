@@ -62,8 +62,9 @@
    '<div class="table-wrap"><table class="table"><thead><tr><th>Funcionário</th><th>Base INSS</th><th>INSS patronal</th><th>RAT/FAP</th><th>Terceiros</th><th>PIS folha</th></tr></thead><tbody>'+
    rows+'<tr><th>Total</th><th>'+brl(t.inss_base_cents)+'</th><th>'+brl(t.cpp_cents)+'</th><th>'+brl(t.rat_cents)+'</th><th>'+brl(t.thirds_cents)+'</th><th>'+brl(t.pis_cents)+'</th></tr></tbody></table></div>'+
    '<p><b>Total de encargos: '+brl(t.total_cents)+'</b></p><p class="help">'+r.warnings.map(e).join(' ')+'</p>'+
-   '<div class="form-actions"><button type="button" class="btn secondary" id="e40back">Voltar</button></div>',true);
+   '<div class="form-actions"><button type="button" class="btn secondary" id="e40accounting">Contabilizar encargos / gerar financeiro</button><button type="button" class="btn secondary" id="e40back">Voltar</button></div>',true);
   document.getElementById('e40back').onclick=()=>open(month).catch(x=>toast(x.message,'error'));
+  document.getElementById('e40accounting').onclick=()=>SAGAS_EMPLOYER120.preview(run.id,month).catch(x=>toast(x.message,'error'));
  }
  window.SAGAS_EMPLOYER40={attach,open,preview};
 })();
