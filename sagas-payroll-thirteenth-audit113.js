@@ -145,7 +145,8 @@ export async function payrollThirteenthAudit113(c){
   checks.push(summary);
  }
  return {kind:'THIRTEENTH_AUDIT_V113',year,read_only:true,
-  ready:findings.length===0&&checks.every(x=>!x.integrated||!x.issues.length),
+  ready:findings.length===0&&!missing.length&&checks.every(x=>x.integrated&&!x.issues.length),
+  integrity_ok:findings.length===0&&!missing.length,
   missing_tables:missing,checks,findings,
   note:'Leitura de histórico, diários e títulos existentes; não comprova publicação do Worker, execução de CI ou pagamento bancário.'};
 }
