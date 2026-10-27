@@ -425,11 +425,13 @@ async function payrollVacation67Open(month,occ,runId){
   '<p class="section-title">Pendências</p>'+
   (problems?'<ul class="help">'+problems+'</ul>':'<p class="help">Sem divergências detectadas nos registros consultados.</p>')+
   '<p class="section-title">Observações</p><ul class="help">'+warnings+'</ul>'+
-  '<p class="help"><b>A contabilização definitiva permanece bloqueada.</b> É necessário conciliar o passivo no balancete e verificar a natureza contábil de cada verba.</p>'+
+  '<p class="help"><b>Integração definitiva:</b> exige adiantamento pago comprovado, baixas de provisões vinculadas, contas conferidas e fechamento mensal aprovado.</p>'+
   '<div class="form-actions"><button type="button" id="vac105Back" class="btn secondary">Voltar</button>'+
+  '<button type="button" id="vac121Open" class="btn primary">Conferir integração definitiva</button>'+
   '<button type="button" id="vac105Reload" class="btn secondary">Atualizar</button></div>',true);
  $('#vac105Back').onclick=()=>payrollVacation65Open(month,occ,runId).catch(e=>toast(e.message,'error'));
  $('#vac105Reload').onclick=()=>payrollVacation67Open(month,occ,runId).catch(e=>toast(e.message,'error'));
+ $('#vac121Open').onclick=()=>payrollVacation121Open(month,occ,runId).catch(e=>toast(e.message,'error'));
  document.querySelectorAll('.vac105UseLink').forEach(el=>{
   el.onclick=()=>payrollVacation68Open(month,occ,runId,el.dataset.occ,el.dataset.component).catch(e=>toast(e.message,'error'));
  });
