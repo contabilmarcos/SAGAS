@@ -176,7 +176,7 @@ async function preview119(c){
   "SELECT id FROM journal_entries WHERE company_id=? AND source_module='PAYROLL' AND source_reference IN (?,?) LIMIT 1"
  ).bind(companyId,'TERMINATION_USE:'+review.employee.id+':'+review.termination_date,
   'TERMINATION_SETTLE:'+review.employee.id+':'+review.termination_date).first();
- const result=compose119(review,{...diag,tax_source_fingerprint:review.source_fingerprint},natures,provisions,batch,existing);
+ const result=compose119(review,diag,natures,provisions,batch,existing);
  result.source_fingerprint=await c.d.hash({version:119,tax_source:review.source_fingerprint,
   preclose_source:diag.source_fingerprint,batch,existing,natures,provisions,
   provision_lines:result.provision_journal_lines,settlement_lines:result.settlement_journal_lines,problems:result.blocks});
