@@ -81,6 +81,8 @@ async function preview114(c){
  if(!['WORKED','INDEMNIFIED','WAIVED'].includes(notice))fail114(d,'NOTICE_TYPE','Tipo de aviso prévio não suportado.',400);
  if(mode==='RESIGNATION'&&notice==='INDEMNIFIED')
   fail114(d,'NOTICE_TYPE','Aviso indenizado pelo empregador não se aplica a pedido de demissão nesta prévia.',400);
+ if(mode==='WITHOUT_CAUSE'&&notice==='WAIVED')
+  fail114(d,'NOTICE_TYPE','Dispensa sem justa causa não dispensa a obrigação de aviso prévio. Selecione trabalhado ou indenizado.',400);
  const employee=await env.DB.prepare(
   "SELECT e.id,e.name,e.admission_date,e.active,e.cost_center_id,cc.code AS cost_center_code,cc.active AS center_active,n.number AS employee_number,(SELECT h.salary_cents FROM payroll_salary_history h WHERE h.company_id=e.company_id AND h.employee_id=e.id AND h.effective_from<=? ORDER BY h.effective_from DESC LIMIT 1) AS salary_cents,(SELECT h.situation FROM payroll_employee_functional_history h WHERE h.company_id=e.company_id AND h.employee_id=e.id AND h.effective_from<=? ORDER BY h.effective_from DESC LIMIT 1) AS situation FROM payroll_employees e LEFT JOIN cost_centers cc ON cc.id=e.cost_center_id AND cc.company_id=e.company_id LEFT JOIN payroll_employee_numbers n ON n.employee_id=e.id AND n.company_id=e.company_id WHERE e.company_id=? AND e.id=?"
  ).bind(at,at,companyId,id).first();
@@ -123,6 +125,8 @@ async function preview114(c){
  const terminationType=mode==='RESIGNATION'?'Pedido de demissão':'Dispensa sem justa causa';
  const noticeDays=mode==='WITHOUT_CAUSE'?noticeDays114(employee.admission_date,at):30;
  const projection=mode==='WITHOUT_CAUSE'&&notice==='INDEMNIFIED'?addDays114(at,noticeDays):at;
+ if(projection.slice(0,4)!==at.slice(0,4))
+  block('NOTICE_CROSS_YEAR','Projeção do aviso atravessa o ano civil: 13º proporcional exige cálculo separado por competência.');
  if(mode==='WITHOUT_CAUSE')block('FGTS_STATEMENT','Multa de 40% exige extrato FGTS e base rescisória conciliados; valor não é presumido.');
  if(mode==='WITHOUT_CAUSE')warnings.push('Aviso indenizado projeta tempo de serviço; os efeitos tributários e de férias devem ser revisados pelo DP.');
  if(mode==='RESIGNATION'&&notice==='WAIVED')warnings.push('Dispensa do aviso no pedido de demissão exige confirmação documental da opção do empregador.');
