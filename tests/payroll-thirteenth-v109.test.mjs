@@ -7,7 +7,7 @@ const row={
  cost_center_id:'cc1',cost_center_code:'001',employee_number:1,
  salary_cents:300000,situation:'ATIVO'
 };
-function setup({advances=[],specials=[],variables=[],dependentCount=0,employee=row}={}){
+function setup({advances=[],specials=[],variables=[],dependentCount=0,financial=[],linked=null,employee=row}={}){
  const taxCalls=[],queries=[],written=[];
  const DB={prepare(sql){
   return {bind(...params){
@@ -18,7 +18,11 @@ function setup({advances=[],specials=[],variables=[],dependentCount=0,employee=r
     if(sql.includes('FROM payroll_movements m JOIN'))return {results:variables.map(()=>({employee_id:'emp1',total:1}))};
     if(sql.includes('FROM payroll_employee_dependents'))return {results:dependentCount?[{employee_id:'emp1',total:dependentCount}]:[]};
     if(sql.includes('FROM payroll_thirteenth_advances70 WHERE'))return {results:advances};
+    if(sql.includes('FROM payroll_thirteenth_payables111 l JOIN'))return {results:financial};
     throw Error('SQL desconhecido: '+sql);
+   },first:async()=>{
+    if(sql.includes('SELECT l.payable_id FROM payroll_thirteenth_payables111'))return linked;
+    throw Error('Consulta first desconhecida: '+sql);
    },run:async()=>{written.push({sql,params});return {meta:{changes:1}}}};
   }};
  }};
@@ -122,4 +126,51 @@ test('rejeita versao desatualizada e valor divergente',async()=>{
  x.c.body.source_fingerprint=p.source_fingerprint;
  x.c.body.amount_cents=80000;
  await assert.rejects(()=>payrollThirteenth70('declare',x.c),e=>e.code==='ADVANCE_DIFFERS');
+});
+
+test('adiantamento quitado no financeiro SAGAS integra a segunda parcela',async()=>{
+ const {c}=setup({financial:[{
+  employee_id:'emp1',amount_cents:150000,payment_date:'2026-10-25',
+  status:'PAID',payable_id:'cp1',document_number:'13-ADV-2026',
+  payment_journal_entry_id:'j2',origin_status:'POSTED',payment_journal_status:'POSTED'
+ }]});
+ c.phase='SECOND';
+ const result=await payrollThirteenth70('preview',c);
+ assert.equal(result.items[0].ready,true);
+ assert.equal(result.items[0].advance.from_sagas_finance,true);
+ assert.equal(result.items[0].calculation.net_cents,119000);
+});
+test('titulo ainda aberto ou sem diario de baixa impede segunda parcela',async()=>{
+ const {c}=setup({financial:[{
+  employee_id:'emp1',amount_cents:150000,status:'OPEN',
+  payable_id:'cp1',origin_status:'POSTED',payment_journal_status:null
+ }]});
+ c.phase='SECOND';
+ const result=await payrollThirteenth70('preview',c);
+ assert.equal(result.items[0].ready,false);
+ assert.ok(result.items[0].blockers.some(x=>x.includes('Título da 1ª parcela')));
+});
+test('adiantamento externo e titulo interno duplicados bloqueiam segunda parcela',async()=>{
+ const {c}=setup({advances:[{
+  id:'external1',employee_id:'emp1',amount_cents:150000,payment_date:'2026-10-19',document_ref:'DOC-EXT'
+ }],financial:[{
+  employee_id:'emp1',amount_cents:150000,payment_date:'2026-10-25',
+  status:'PAID',payable_id:'cp1',payment_journal_entry_id:'j2',
+  origin_status:'POSTED',payment_journal_status:'POSTED'
+ }]});
+ c.phase='SECOND';
+ const result=await payrollThirteenth70('preview',c);
+ assert.equal(result.items[0].ready,false);
+ assert.ok(result.items[0].blockers.some(x=>x.includes('duplicados')));
+});
+test('nao permite comprovante externo quando existe adiantamento no financeiro',async()=>{
+ const x=setup({linked:{payable_id:'cp1'}});
+ const preview=await payrollThirteenth70('preview',x.c);
+ x.c.body={
+  confirmation:'REGISTRAR ADIANTAMENTO 13',year:'2026',employee_id:'emp1',
+  amount_cents:150000,payment_date:'2026-10-20',
+  document_ref:'DOC-EXTERNO-2026',notes:'Conferencia de pagamento externo registrado.',
+  source_fingerprint:preview.source_fingerprint
+ };
+ await assert.rejects(()=>payrollThirteenth70('declare',x.c),e=>e.code==='ADVANCE_ALREADY_FINANCED');
 });
