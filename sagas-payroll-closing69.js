@@ -128,7 +128,7 @@ export async function payrollMonthlyEndToEnd69(c){
  if(errors.DIARIO_PROVISOES)accountingProblems.push(errors.DIARIO_PROVISOES);
  const postingDone=!!verifiedAccrual?.valid;
  if(postedProvision&&!postingDone&&!accountingProblems.length)
-  accountingProblems.push({code:'JOURNAL_INVALID','O diário da provisão não conciliou com os movimentos e os centros de custo.'});
+  accountingProblems.push({code:'JOURNAL_INVALID',message:'O diário da provisão não conciliou com os movimentos e os centros de custo.'});
  sections.push(step69('CONTABILIZACAO_PROVISOES','Contabilização das provisões',
   postingDone?'CONCLUIDO':postedProvision?'PENDENTE':accrual?.ready?'PRONTO':'PENDENTE',
   accountingProblems,
