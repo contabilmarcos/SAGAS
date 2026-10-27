@@ -40,6 +40,7 @@ import { payrollTermination117 } from './sagas-payroll-termination117.js';
 import { payrollTermination118 } from './sagas-payroll-termination118.js';
 import { payrollTermination119 } from './sagas-payroll-termination119.js';
 import { payrollTermination122 } from './sagas-payroll-termination122.js';
+import { payrollTermination123 } from './sagas-payroll-termination123.js';
 import { payrollProvisionAccounting44 } from './sagas-payroll-provisions44.js';
 // SAGAS Worker v96 - Registro auditável do envelope próprio VACATION de férias | cumulativo desde v49
 // ===== utils.js =====
@@ -10991,6 +10992,46 @@ async function route(request, env) {
       competence:url.searchParams.get('competence'),
       body:method==='POST'?await readJson(request):{},
       d:{HttpError,requirePermission,ensureSchemaRevision,audit,uuid}
+    }));
+  }
+  // v123: dispensa sem justa causa e multa FGTS Digital comprovada.
+  // Libera apenas após TRCT homologado, guia/base conferida, naturezas
+  // por centro de custo e vinculação documental das provisões.
+  if(path==='/api/payroll/termination/dismissal123'&&(method==='GET'||method==='POST')||
+     path==='/api/payroll/termination/dismissal123/settings'&&(method==='GET'||method==='POST')||
+     path==='/api/payroll/termination/dismissal123/history'&&method==='GET'){
+    await ensureSchemaRevision(env,'payroll-employee-history',1,()=>ensurePayrollEmployeeRecordsSchema(env));
+    await ensureSchemaRevision(env,'payroll-employee-cost-center39',1,()=>ensurePayrollCostCenter39(env));
+    await ensureSchemaRevision(env,'payroll-employee-numbers',1,()=>ensurePayrollEmployeeNumbersSchema(env));
+    await ensureSchemaRevision(env,'payroll-calculation-foundation',1,()=>ensurePayrollCalculationFoundation34(env));
+    await ensureSchemaRevision(env,'payroll-provision-ledger43',1,()=>ensureProvisionLedger43(env));
+    await ensureSchemaRevision(env,'purchasing',1,async()=>{
+      await ensurePurchasingSchema(env);await ensurePurchaseIntegrationSchema(env);await ensureRmPurchasingSchema(env);
+    });
+    await ensureSchemaRevision(env,'financial',1,async()=>{
+      await ensureFinancialAccountingEventSchema(env);await ensureFinancialCashAccountSchema(env);
+    });
+    await payrollFinance39('settings',{
+      env,companyId,auth,request,d:{HttpError,requirePermission,ensureSchemaRevision,audit,uuid}
+    });
+    await payrollProvisionAccounting45('use-settings',{
+      env,companyId,auth,request,d:{HttpError,requirePermission,ensureSchemaRevision,audit,uuid}
+    });
+    const input=method==='POST'?await readJson(request):{};
+    const year=/^20\d\d-\d\d-\d\d$/.test(String(input.termination_date||''))?
+      input.termination_date.slice(0,4):String(new Date().getUTCFullYear());
+    await payrollThirteenth70('advances',{env,companyId,auth,request,year,
+      d:{HttpError,requirePermission,ensureSchemaRevision,audit,uuid}});
+    await payrollThirteenth71('history',{env,companyId,auth,request,year,
+      d:{HttpError,requirePermission,ensureSchemaRevision,audit,uuid}});
+    const action=path.endsWith('/settings')?method==='GET'?'settings':'save-setting':
+      path.endsWith('/history')?'history':String(input.action||'preview');
+    return ok(await payrollTermination123(action,{
+      env,companyId,auth,request,body:input,
+      employeeId:url.searchParams.get('employee_id'),
+      d:{HttpError,requirePermission,ensureSchemaRevision,audit,uuid,
+        hash:payrollProcessingSnapshotHash28,
+        centsToMoney,nextPayableNumber,buildEntry:buildInternalPostedEntry}
     }));
   }
   // v122: encerramento excepcional do pedido de demissão conferido por TRCT.
