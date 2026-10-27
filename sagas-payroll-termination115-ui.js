@@ -59,6 +59,7 @@ async function payrollTermination115Open(base){
     ...(fgts?{fgts_base_cents:pterm115Number(values.fgts_base),
       fgts_reference:values.fgts_reference}:{}),
     proof_reference:values.proof_reference,notes:values.notes,
+    base_source_fingerprint:p.base_source_fingerprint,
     confirmation:values.confirmation};
    await api('/api/payroll/termination/evidence',{method:'POST',body:payload});
    const next=await api('/api/payroll/termination/reconciliation',{method:'POST',body:pterm115Req(base)});
