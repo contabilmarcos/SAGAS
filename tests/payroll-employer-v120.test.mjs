@@ -88,3 +88,17 @@ test('somente componentes positivos geram títulos',()=>{
  const b=copy(base);b.items.forEach(x=>x.pis_cents=0);b.totals.pis_cents=0;b.totals.total_cents=40200;
  const x=go(b);assert.equal(x.payable_count,3);assert.equal(x.total_cents,40200);
 });
+
+test('folha com férias homologada v121 permite os encargos patronais',()=>{
+ const r={...run,source_fingerprint:'VACATION100:snapshot'};
+ const m={source_fingerprint:r.source_fingerprint,journal_status:'POSTED',journal_entry_id:'J121'};
+ const h={journal_entry_id:'J121',journal_status:'POSTED'};
+ const p=compose120(base,r,mappings,[...accounts,...centers],batch,m,null,h);
+ assert.equal(p.ready,true);
+});
+test('folha com férias v121 e diário trocado é bloqueada',()=>{
+ const r={...run,source_fingerprint:'VACATION100:snapshot'};
+ const m={source_fingerprint:r.source_fingerprint,journal_status:'POSTED',journal_entry_id:'J121'};
+ const h={journal_entry_id:'JOTHER',journal_status:'POSTED'};
+ assert.ok(compose120(base,r,mappings,[...accounts,...centers],batch,m,null,h).problems.some(x=>x.code==='VACATION_NOT_HOMOLOGATED'));
+});
