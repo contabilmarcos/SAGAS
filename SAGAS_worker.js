@@ -41,6 +41,7 @@ import { payrollTermination118 } from './sagas-payroll-termination118.js';
 import { payrollTermination119 } from './sagas-payroll-termination119.js';
 import { payrollTermination122 } from './sagas-payroll-termination122.js';
 import { payrollTermination123 } from './sagas-payroll-termination123.js';
+import { payrollLiveAudit124 } from './sagas-payroll-live-audit124.js';
 import { payrollProvisionAccounting44 } from './sagas-payroll-provisions44.js';
 // SAGAS Worker v96 - Registro auditável do envelope próprio VACATION de férias | cumulativo desde v49
 // ===== utils.js =====
@@ -10992,6 +10993,12 @@ async function route(request, env) {
       competence:url.searchParams.get('competence'),
       body:method==='POST'?await readJson(request):{},
       d:{HttpError,requirePermission,ensureSchemaRevision,audit,uuid}
+    }));
+  }
+  // v124: diagnostico D1 100% READ ONLY, sem inicializar tabelas nem alterar dados.
+  if(path==='/api/payroll/audit/live124'&&method==='GET'){
+    return ok(await payrollLiveAudit124({
+      env,companyId,auth,d:{requirePermission,HttpError}
     }));
   }
   // v123: dispensa sem justa causa e multa FGTS Digital comprovada.
