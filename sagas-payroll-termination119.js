@@ -86,6 +86,10 @@ export function compose119(review,diag,natures,provisions,batch,existing){
    if(!['FERIAS','TERCO_FERIAS','DECIMO_TERCEIRO'].includes(component))continue;
    if(!valid119(use)){warn119(problems,'USE_INVALID','Uso de provisão inválido para '+component+'.');continue}
    if(use<=0)continue;
+   if(Number(p.opening_cents||0)>0)
+    warn119(problems,'OPENING_UNVERIFIED','Existe saldo de abertura de '+component+' sem vínculo automático ao diário. Concilie o passivo contábil antes da baixa.');
+   if(!p.accounting_verified)
+    warn119(problems,'POSTING_UNVERIFIED','A provisão '+component+' não possui contabilização válida e conferida para liberação.');
    const source=(provisions||[]).find(x=>x.component===component);
    if(!source||Number(source.active)!==1||source.synthetic_analytic!=='ANALYTIC'){
     warn119(problems,'USE_NATURE_MISSING','Configure natureza de baixa para '+component+'.');continue;
@@ -159,10 +163,13 @@ async function mappings119(env,companyId,source){
 }
 async function preview119(c){
  const {env,companyId}=c;
+ const readBatch=async()=>{
+  try{return await env.DB.prepare("SELECT batch_id FROM payroll_finance_batches38 WHERE company_id=?").bind(companyId).first()}
+  catch(e){if(/no such table/i.test(String(e)))return null;throw e}
+ };
  const [review,diag,natures,provisions,batchSetting]=await Promise.all([
   payrollTermination117('preview',c),payrollTermination118('preview',c),
-  mappings119(env,companyId,'settlement'),mappings119(env,companyId,'provisions'),
-  env.DB.prepare("SELECT batch_id FROM payroll_finance_batches38 WHERE company_id=?").bind(companyId).first()
+  mappings119(env,companyId,'settlement'),mappings119(env,companyId,'provisions'),readBatch()
  ]);
  const batch=batchSetting?.batch_id?await env.DB.prepare("SELECT id,status FROM journal_batches WHERE company_id=? AND id=?").bind(companyId,batchSetting.batch_id).first():null;
  const existing=await env.DB.prepare(
