@@ -10988,10 +10988,11 @@ async function route(request, env) {
     }
     const settings=path.endsWith('/settings');
     const action=settings?(method==='GET'?'settings':'save'):(method==='GET'?'preview':'integrate');
+    const payload=method==='POST'?await readJson(request):{};
     return ok(await payrollThirteenth111(action,{
       env,companyId,auth,request,
-      runId:url.searchParams.get('run_id'),
-      body:method==='POST'?await readJson(request):{},
+      runId:payload.run_id||url.searchParams.get('run_id'),
+      body:payload,
       d:{HttpError,requirePermission,ensureSchemaRevision,audit,uuid,
        hash:payrollProcessingSnapshotHash28,centsToMoney,nextPayableNumber,
        buildEntry:buildInternalPostedEntry,
