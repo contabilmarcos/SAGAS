@@ -13,9 +13,11 @@ async function payrollThirteenth71History(year,phase){
    '<button type="button" class="btn primary sm" data-p13-approve="'+i+'">Aprovar cálculo</button>':'')+
   (r.status==='APPROVED'&&r.phase==='FIRST'?
    '<button type="button" class="btn secondary sm" data-p13-integrate="'+i+'">Integrar financeiro / contábil</button>':'')+
+  (r.status==='APPROVED'&&r.phase==='SECOND'?
+   '<button type="button" class="btn secondary sm" data-p13-settle="'+i+'">Baixar provisão e integrar quitação</button>':'')+
   '</td></tr>').join('');
  openModal('Histórico de cálculos do 13º — '+esc(year),
-  'Revisões próprias do 13º. A integração da 1ª parcela é uma ação posterior à aprovação.',
+  'A 1ª parcela e a quitação têm integrações próprias após a aprovação do cálculo.',
   '<div class="table-wrap"><table class="table"><thead><tr><th>Ano</th><th>Parcela</th><th>Revisão</th>'+
   '<th>Situação</th><th>Funcionários</th><th>Bruto</th><th>Líquido</th><th>Ações</th></tr></thead>'+
   '<tbody>'+rows+'</tbody></table></div>'+
@@ -26,6 +28,10 @@ async function payrollThirteenth71History(year,phase){
  $$('[data-p13-detail]').forEach(button=>button.onclick=async()=>{
   const r=data.runs[Number(button.dataset.p13Detail)];
   if(r)await payrollThirteenth71Detail(r.id,year,phase);
+ });
+ $('[data-p13-settle]').forEach(button=>button.onclick=()=>{
+  const r=data.runs[Number(button.dataset.p13Settle)];
+  if(r)payrollThirteenth112Preview(r.id,year).catch(e=>toast(e.message,'error'));
  });
  $('[data-p13-integrate]').forEach(button=>button.onclick=()=>{
   const r=data.runs[Number(button.dataset.p13Integrate)];
