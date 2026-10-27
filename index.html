@@ -388,11 +388,43 @@ function payrollSafeSelect(items, selected=''){
 }
 async function renderPayrollCompetences(){
   const data=(await api('/api/payroll/competences')).items||[],manage=can('payroll.manage');
-  const rows=data.map(p=>`<tr><td><b>${esc(p.competence.slice(5,7)+'/'+p.competence.slice(0,4))}</b></td><td>${p.status==='OPEN'?'<span class="badge green">Aberta</span>':'<span class="badge gray">Bloqueada</span>'}</td><td><button class="btn secondary sm" data-payroll-go="${esc(p.id)}">Lançamentos</button></td></tr>`).join('');
+  const rows=data.map(p=>`<tr><td><b>${esc(p.competence.slice(5,7)+'/'+p.competence.slice(0,4))}</b></td><td>${p.status==='OPEN'?'<span class="badge green">Aberta</span>':'<span class="badge gray">Bloqueada</span>'}</td><td><button class="btn secondary sm" data-payroll-go="${esc(p.id)}">Lançamentos</button> ${manage&&p.status==='LOCKED'?`<button class="btn secondary sm" data-payroll-reopen="${esc(p.id)}">Reabrir competência</button>`:''}</td></tr>`).join('');
   tablePage({newLabel:manage?'Abrir competência':null,onNew:manage?payrollCompetenceForm:null,
     cols:['Competência','Situação','Ações'],rows,emptyTitle:'Nenhuma competência aberta',
     emptyText:'Abra uma competência para registrar os lançamentos de eventos.',placeholder:'Pesquisar competência...'});
-  $$('[data-payroll-go]').forEach(b=>b.onclick=()=>{window.sagasPayrollCompetence=b.dataset.payrollGo;nav('payroll-movements')});
+  $('[data-payroll-go]').forEach(b=>b.onclick=()=>{window.sagasPayrollCompetence=b.dataset.payrollGo;nav('payroll-movements')});
+  $('[data-payroll-reopen]').forEach(b=>b.onclick=()=>payrollCompetenceReopen125Open(b.dataset.payrollReopen).catch(e=>toast(e.message,'error')));
+}
+async function payrollCompetenceReopen125Open(competenceId){
+  const d=await api('/api/payroll/competences/'+encodeURIComponent(competenceId)+'/reopen');
+  const blocked=(d.problems||[]).map(p=>'<li>'+esc(p.message)+'</li>').join('');
+  const canReopen=d.ready===true;
+  openModal('Reabrir competência — '+esc(d.competence||''),
+    'A reabertura cancela a aprovação anterior, mantém o histórico e exige novo cálculo e fechamento.',
+    '<p class="help"><b>Revisão atual:</b> '+esc(d.previous_revision||'—')+
+    ' · <b>Situação:</b> '+(canReopen?'Sem integrações impeditivas':'Reabertura bloqueada')+'</p>'+
+    (blocked?'<p class="help">Pendências:</p><ul class="help">'+blocked+'</ul>':'')+
+    (canReopen?'<p class="help">A folha fechada anterior ficará registrada como cancelada (VOID). Antes de fechar novamente, corrija os lançamentos, use Calcular folha mensal para gerar nova revisão e confira os envelopes.</p>'+
+      '<form id="payrollReopen125Form">'+
+      '<label class="field"><span>Justificativa (mínimo de 10 caracteres)</span><textarea name="justification" minlength="10" maxlength="500" rows="3" required></textarea></label>'+
+      '<label class="field"><span>Digite REABRIR para confirmar</span><input name="confirmation" autocomplete="off" required></label>'+
+      '<div class="form-actions"><button type="button" class="btn secondary" id="payrollReopen125Cancel">Cancelar</button>'+
+      '<button type="submit" class="btn primary">Reabrir competência</button></div></form>':
+      '<p class="help">Não é permitido reabrir diretamente uma competência com títulos, diários ou provisões vinculados. Regularize os registros antes de solicitar nova conferência.</p>'+
+      '<div class="form-actions"><button type="button" class="btn secondary" id="payrollReopen125Cancel">Fechar</button></div>'),true);
+  $('#payrollReopen125Cancel').onclick=closeModal;
+  const form=$('#payrollReopen125Form');
+  if(form)form.onsubmit=async ev=>{
+    ev.preventDefault();
+    const body=Object.fromEntries(new FormData(form));
+    if(body.confirmation!=='REABRIR'){toast('Digite REABRIR exatamente.','error');return;}
+    const button=form.querySelector('[type="submit"]');button.disabled=true;
+    try{
+      await api('/api/payroll/competences/'+encodeURIComponent(competenceId)+'/reopen',{method:'POST',body});
+      closeModal();toast('Competência reaberta. Registre correções e gere nova revisão da folha.');
+      await renderPayrollCompetences();
+    }catch(e){toast(e.message,'error');button.disabled=false;}
+  };
 }
 function payrollCompetenceForm(){
   const now=new Date(),period=`${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}`;
