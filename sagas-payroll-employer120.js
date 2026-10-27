@@ -58,11 +58,13 @@ export function split120(defaults,side,center,amount,component,problems){
  }
  return lines;
 }
-export function compose120(base,run,mappings,rules,batch,monthly,existing){
+export function compose120(base,run,mappings,rules,batch,monthly,existing,vacationHistory=null){
  const problems=[],entries=[],expected={};
  if(!run||run.status!=='APPROVED')problem120(problems,'RUN_NOT_CLOSED','Folha mensal ainda não fechada.');
- if(String(run?.source_fingerprint||'').startsWith('VACATION100:'))
-  problem120(problems,'VACATION_NOT_HOMOLOGATED','Folha com férias integradas exige fechamento específico antes dos encargos.');
+ if(String(run?.source_fingerprint||'').startsWith('VACATION100:')&&
+    (!vacationHistory||vacationHistory.journal_entry_id!==monthly?.journal_entry_id||
+     vacationHistory.journal_status!=='POSTED'))
+  problem120(problems,'VACATION_NOT_HOMOLOGATED','Folha com férias exige contabilização definitiva v121 vinculada a diário POSTED antes dos encargos.');
  if(!monthly||monthly.source_fingerprint!==run?.source_fingerprint||monthly.journal_status!=='POSTED')
   problem120(problems,'MONTHLY_NOT_ACCOUNTED','Integre a folha mensal com diário POSTED antes dos encargos patronais.');
  if(!batch||batch.status!=='OPEN')problem120(problems,'BATCH_CLOSED','Configure lote contábil aberto.');
@@ -148,14 +150,21 @@ async function preview120(c){
   const cc=await env.DB.prepare("SELECT id,code,active FROM cost_centers WHERE company_id=? AND id=?").bind(companyId,id).first();
   rules.push({cost_center_id:id,active:cc?.active||0,code:cc?.code||null});
  }
- const result=compose120(base,detail.run,mappings,rules,batch,monthly,existing);
+ const vacationHistory=String(detail.run.source_fingerprint||'').startsWith('VACATION100:')?
+   await (async()=>{
+    try{return await env.DB.prepare(
+      "SELECT v.journal_entry_id,j.status AS journal_status FROM payroll_vacation_integrations121 v JOIN journal_entries j ON j.id=v.journal_entry_id AND j.company_id=v.company_id WHERE v.company_id=? AND v.run_id=?"
+    ).bind(companyId,runId).first();}
+    catch(e){if(/no such table/i.test(String(e)))return null;throw e}
+   })():null;
+ const result=compose120(base,detail.run,mappings,rules,batch,monthly,existing,vacationHistory);
  if(existing&&existing.journal_status!=='POSTED')
   problem120(result.problems,'POSTED_JOURNAL_CHANGED','Diário anterior alterado/anulado; concilie antes de nova integração.');
  result.ready=!result.problems.length;
  result.source_fingerprint=await d.hash({
   version:120,company_id:companyId,run_id:runId,run_fingerprint:detail.run.source_fingerprint,
   employer:base.totals,employees:base.items,settings:base.settings,
-  mappings,rules,batch,monthly,existing,lines:result.lines,problems:result.problems
+  mappings,rules,batch,monthly,existing,vacationHistory,lines:result.lines,problems:result.problems
  });
  return result;
 }
