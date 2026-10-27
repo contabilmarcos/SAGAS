@@ -90,7 +90,8 @@ async function preview114(c){
  if(at<employee.admission_date)fail114(d,'DATE_BEFORE_ADMISSION','Desligamento anterior à admissão.',400);
  const problems=[],warnings=[];
  const block=(code,message)=>{if(!problems.some(x=>x.code===code))problems.push({code,message})};
- if(!employee.active||employee.situation!=='ATIVO')block('INACTIVE_EMPLOYEE','Funcionário não está ativo na vigência consultada.');
+ if(!employee.active||employee.situation==='DESLIGADO')block('INACTIVE_EMPLOYEE','Funcionário está inativo ou desligado na vigência consultada.');
+ if(employee.situation==null)block('FUNCTIONAL_HISTORY_MISSING','Situação funcional na data não tem registro histórico validado.');
  if(!employee.cost_center_id||!employee.cost_center_code||Number(employee.center_active)!==1)
   block('COST_CENTER','Centro de custo inexistente ou inativo.');
  const salary=Number(employee.salary_cents);
@@ -99,17 +100,17 @@ async function preview114(c){
  const [occ,variables,adv,history,vacation,provisions,payroll] = await Promise.all([
   env.DB.prepare("SELECT kind,start_date,end_date FROM payroll_employee_occurrences WHERE company_id=? AND employee_id=? AND start_date<=? AND end_date>=? LIMIT 201")
    .bind(companyId,id,at,employee.admission_date).all(),
-  env.DB.prepare("SELECT m.id FROM payroll_movements m JOIN payroll_events e ON e.id=m.event_id AND e.company_id=m.company_id JOIN payroll_competences co ON co.id=m.competence_id AND co.company_id=m.company_id WHERE m.company_id=? AND m.employee_id=? AND co.competence>=? AND co.competence<=? AND e.event_type='PROVENTO' LIMIT 101")
+  env.DB.prepare("SELECT m.id FROM payroll_movements m JOIN payroll_events e ON e.id=m.event_id AND e.company_id=m.company_id JOIN payroll_competences co ON co.id=m.competence_id AND co.company_id=m.company_id WHERE m.company_id=? AND m.employee_id=? AND co.competence>=? AND co.competence<=? AND e.event_type='PROVENTO' AND e.code<>'SALARIO_BASE' LIMIT 101")
    .bind(companyId,id,String(years)+'-01',month).all(),
   env.DB.prepare("SELECT id,amount_cents FROM payroll_thirteenth_advances70 WHERE company_id=? AND employee_id=? AND calendar_year=? AND status='ACTIVE' LIMIT 20")
    .bind(companyId,id,String(years)).all(),
-  env.DB.prepare("SELECT id FROM payroll_thirteenth_runs71 WHERE company_id=? AND calendar_year=? AND status='APPROVED' LIMIT 5")
-   .bind(companyId,String(years)).all(),
+  env.DB.prepare("SELECT DISTINCT r.id FROM payroll_thirteenth_runs71 r JOIN payroll_thirteenth_envelopes71 e ON e.run_id=r.id AND e.company_id=r.company_id WHERE r.company_id=? AND r.calendar_year=? AND r.status='APPROVED' AND e.employee_id=? LIMIT 5")
+   .bind(companyId,String(years),id).all(),
   env.DB.prepare("SELECT id FROM payroll_employee_occurrences WHERE company_id=? AND employee_id=? AND kind='FERIAS' AND start_date<=? LIMIT 101")
    .bind(companyId,id,at).all(),
   env.DB.prepare("SELECT component,SUM(amount_cents) AS balance_cents FROM payroll_provision_movements43 WHERE company_id=? AND employee_id=? AND competence<=? GROUP BY component")
    .bind(companyId,id,month).all(),
-  env.DB.prepare("SELECT e.run_id FROM payroll_calc_envelopes e JOIN payroll_calc_runs r ON r.id=e.run_id AND r.company_id=e.company_id WHERE e.company_id=? AND e.employee_id=? AND r.competence=? AND r.status='APPROVED' LIMIT 10")
+  env.DB.prepare("SELECT e.run_id FROM payroll_calc_envelopes e JOIN payroll_calc_runs r ON r.id=e.run_id AND r.company_id=e.company_id JOIN payroll_competences p ON p.id=r.competence_id AND p.company_id=r.company_id WHERE e.company_id=? AND e.employee_id=? AND p.competence=? AND r.process_kind='MONTHLY' AND r.status='APPROVED' LIMIT 10")
    .bind(companyId,id,month).all()
  ]);
  if((occ.results||[]).length){block('OCCURRENCES','Ocorrências de faltas, férias, licenças ou afastamentos requerem análise dos avos e incidências.')}
