@@ -17,9 +17,9 @@ const diag={tax_source_fingerprint:'tax',source_fingerprint:'diag',blocks:[],
  financial:{gross_reference_cents:200000,deductions_reference_cents:40000,
   net_reference_cents:160000,fgts_fine_reference_cents:8000},
  provision_items:[
-  {component:'FERIAS',proposed_use_cents:10000,balance_cents:10000},
-  {component:'TERCO_FERIAS',proposed_use_cents:0,balance_cents:0},
-  {component:'DECIMO_TERCEIRO',proposed_use_cents:10000,balance_cents:10000}
+  {component:'FERIAS',proposed_use_cents:10000,balance_cents:10000,accounting_verified:true},
+  {component:'TERCO_FERIAS',proposed_use_cents:0,balance_cents:0,accounting_verified:true},
+  {component:'DECIMO_TERCEIRO',proposed_use_cents:10000,balance_cents:10000,accounting_verified:true}
  ]};
 const rule=(side,account,extra={})=>({side,account_id:account,
  account_active:1,account_analytic:1,percentage:100,...extra});
@@ -124,4 +124,13 @@ test('FGTS fica fora do titulo líquido',()=>{
  assert.equal(p.financial.net_payable_preview_cents,160000);
  assert.equal(p.financial.fgts_fine_separate_cents,8000);
  assert.equal(p.financial.payable_created,false);
+});
+
+test('saldo de abertura exige comprovante contábil vinculado',()=>{
+ const d=clone(diag);d.provision_items[0].opening_cents=5000;
+ assert.ok(go(review,d).blocks.some(x=>x.code==='OPENING_UNVERIFIED'));
+});
+test('provisão ainda não contabilizada bloqueia mesmo com saldo operacional',()=>{
+ const d=clone(diag);d.provision_items[0].accounting_verified=false;
+ assert.ok(go(review,d).blocks.some(x=>x.code==='POSTING_UNVERIFIED'));
 });
