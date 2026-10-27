@@ -55,6 +55,7 @@ function setup(opts={}){
     queries.push({sql,params});
     if(sql.includes('FROM payroll_thirteenth_runs71 WHERE company_id=? AND id=?'))return run;
     if(sql.includes('FROM payroll_thirteenth_runs71 WHERE company_id=? AND calendar_year'))return {id:'run1'};
+    if(sql.includes('FROM journal_batches'))return {id:'batch1',status:'OPEN'};
     if(sql.includes('FROM payroll_finance_batches38'))return {batch_id:'batch1'};
     if(sql.includes('FROM payroll_provision_use_natures45'))return {nature_id:'use',code:'USE13',active:1,synthetic_analytic:'ANALYTIC'};
     if(sql.includes('FROM payroll_thirteenth_postings112 p LEFT JOIN'))
