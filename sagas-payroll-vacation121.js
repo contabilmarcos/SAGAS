@@ -71,10 +71,10 @@ export function plan121(pkg,ledger,detail,postingLinks,batch,existing,review){
    if(posted.occurrence_id!==s.occurrence_id||posted.component!==component||
       posted.employee_id!==s.employee_id||posted.cost_center_id!==envelope.cost_center_id||
       posted.amount_cents!==expected||posted.journal_status!=='POSTED'||
-      posted.movement_count!==1||posted.posting_kind!=='USE'||
-      posted.journal_credit_cents!==expected||posted.journal_debit_cents!==expected||
-      posted.gl_credit_cents!==expected||!posted.gl_credit_account_id){
-    report121(issues,'PROVISION_JOURNAL_SHARED','Baixa '+component+' sem diário exclusivo, POSTED e de valor idêntico ao direito para '+s.employee_id);
+      posted.posting_kind!=='USE'||!posted.posting_gl_verified||
+      !cents121(posted.gl_credit_cents)||posted.gl_credit_cents<expected||
+      !posted.gl_credit_account_id){
+    report121(issues,'PROVISION_JOURNAL_UNALLOCATED','Baixa '+component+' sem diário conciliado por centro de custo e conta transitória única para '+s.employee_id);
     continue;
    }
    const debits=lines.filter(x=>x.employee_id===s.employee_id&&x.event_code===eventCode&&x.side==='D');
@@ -162,7 +162,7 @@ export function plan121(pkg,ledger,detail,postingLinks,batch,existing,review){
   notes:[
    'Somente o líquido RESIDUAL do envelope gera novo título mensal. O adiantamento de férias já pago não é novamente emitido.',
    'Débitos de férias e terço integralmente cobertos por provisões são reclassificados para a conta creditada na baixa já contabilizada.',
-   'Exige baixa anterior por diário exclusivo para cada funcionário, componente e ocorrência. Lançamentos compartilhados precisam de rateio histórico explícito antes da integração.',
+   'Diários com vários funcionários são aceitos somente quando todos os movimentos conferem por centro de custo e cada centro credita uma única conta transitória.',
    'FGTS, impostos e encargos são contabilizados via eventos da competência; guias e seus pagamentos são rotinas separadas.',
    'Sem confirmação por extrato bancário externo, o responsável deve reconciliar e atestar os adiantamentos antes de integrar.'
   ]};
@@ -173,25 +173,56 @@ async function schema121(env){
  ]);
 }
 async function postedLinks121(env,companyId,pkg){
- const rows=[];
- for(const s of pkg.sources||[]){
-  for(const comp of s.components||[]){
+ const rows=[],cache=new Map();
+ for(const source of pkg.sources||[]){
+  for(const comp of source.components||[]){
    if(!['FERIAS','TERCO_FERIAS'].includes(comp.component))continue;
    const links=(await env.DB.prepare(
     "SELECT l.movement_id,l.employee_id,l.occurrence_id,l.component,l.amount_cents,m.cost_center_id,pm.posting_id,p.kind AS posting_kind,p.journal_entry_id,j.status AS journal_status,j.total_debit_cents AS journal_debit_cents,j.total_credit_cents AS journal_credit_cents FROM payroll_vacation_provision_use_links68 l JOIN payroll_provision_movements43 m ON m.company_id=l.company_id AND m.id=l.movement_id JOIN payroll_provision_posted_movements45 pm ON pm.company_id=l.company_id AND pm.movement_id=l.movement_id JOIN payroll_provision_postings45 p ON p.id=pm.posting_id AND p.company_id=pm.company_id JOIN journal_entries j ON j.company_id=p.company_id AND j.id=p.journal_entry_id WHERE l.company_id=? AND l.employee_id=? AND l.occurrence_id=? AND l.component=? AND l.competence=? AND l.status='ACTIVE' ORDER BY l.id LIMIT 3"
-   ).bind(companyId,s.employee_id,s.occurrence_id,comp.component,pkg.run.competence).all()).results||[];
-   if(links.length!==1){rows.push({employee_id:s.employee_id,component:comp.component,multiple:true});continue}
-   const l=links[0];
-   const [count,credits]=await Promise.all([
-    env.DB.prepare("SELECT COUNT(*) AS qty FROM payroll_provision_posted_movements45 WHERE company_id=? AND posting_id=?").bind(companyId,l.posting_id).first(),
-    env.DB.prepare("SELECT account_id,side,cost_center_id,branch_id,amount_cents FROM journal_lines WHERE company_id=? AND entry_id=? ORDER BY line_no LIMIT 200").bind(companyId,l.journal_entry_id).all()
-   ]);
-   const lines=credits.results||[],credit=lines.filter(x=>x.side==='C'&&x.cost_center_id===l.cost_center_id);
-   const creditTotal=credit.reduce((a,x)=>a+Number(x.amount_cents),0);
-   rows.push({...l,movement_count:Number(count?.qty),gl_credit_cents:creditTotal,
-    gl_credit_account_id:credit.length===1?credit[0].account_id:null,
-    gl_credit_branch_id:credit.length===1?credit[0].branch_id:null,
-    gl_credit_account_code:null});
+   ).bind(companyId,source.employee_id,source.occurrence_id,comp.component,pkg.run.competence).all()).results||[];
+   if(links.length!==1){
+    rows.push({employee_id:source.employee_id,component:comp.component,posting_gl_verified:false});continue;
+   }
+   const l=links[0],posting=l.posting_id;
+   if(!cache.has(posting)){
+    const [moves,entryLines]=await Promise.all([
+     env.DB.prepare("SELECT m.id,m.employee_id,m.component,m.movement_kind,m.amount_cents,m.cost_center_id FROM payroll_provision_posted_movements45 x JOIN payroll_provision_movements43 m ON m.id=x.movement_id AND m.company_id=x.company_id WHERE x.company_id=? AND x.posting_id=? ORDER BY m.id LIMIT 501").bind(companyId,posting).all(),
+     env.DB.prepare("SELECT side,account_id,cost_center_id,branch_id,amount_cents FROM journal_lines WHERE company_id=? AND entry_id=? ORDER BY line_no LIMIT 501").bind(companyId,l.journal_entry_id).all()
+    ]);
+    const movements=moves.results||[],gl=entryLines.results||[],centers=new Map();
+    let valid=movements.length>0&&movements.length<=500&&gl.length>=2&&gl.length<=500;
+    let total=0;
+    for(const m of movements){
+     const n=Number(m.amount_cents);
+     if(m.movement_kind!=='USE'||!Number.isSafeInteger(n)||n>=0||!m.cost_center_id){
+      valid=false;continue;
+     }
+     total-=n;
+     const c=centers.get(m.cost_center_id)||{movement:0,D:0,C:0,credits:[]};
+     c.movement-=n;centers.set(m.cost_center_id,c);
+    }
+    for(const x of gl){
+     const v=Number(x.amount_cents),c=centers.get(x.cost_center_id);
+     if(!c||!Number.isSafeInteger(v)||v<=0||!['D','C'].includes(x.side)){valid=false;continue;}
+     c[x.side]+=v;if(x.side==='C')c.credits.push(x);
+    }
+    for(const c of centers.values()){
+     const unique=new Set(c.credits.map(x=>x.account_id+'|'+(x.branch_id||'')));
+     if(c.movement<=0||c.D!==c.movement||c.C!==c.movement||unique.size!==1)valid=false;
+     c.account_id=unique.size===1?c.credits[0].account_id:null;
+     c.branch_id=unique.size===1?c.credits[0].branch_id:null;
+    }
+    if(!Number.isSafeInteger(total)||total<=0||total!==Number(l.journal_credit_cents)||
+       total!==Number(l.journal_debit_cents))valid=false;
+    cache.set(posting,{valid,movements,centers});
+   }
+   const record=cache.get(posting),c=record.centers.get(l.cost_center_id);
+   const m=record.movements.find(x=>x.id===l.movement_id);
+   const same=!!m&&m.employee_id===l.employee_id&&m.component===l.component&&
+    m.cost_center_id===l.cost_center_id&&Number(m.amount_cents)===-Number(l.amount_cents);
+   rows.push({...l,posting_gl_verified:record.valid&&same&&!!c,
+    gl_credit_cents:c?.C??null,gl_credit_account_id:c?.account_id||null,
+    gl_credit_branch_id:c?.branch_id||null,gl_credit_account_code:null});
   }
  }
  return rows;
