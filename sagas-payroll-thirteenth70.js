@@ -84,6 +84,21 @@ async function preview70(c){
    .bind(companyId,year+'-12-20',year+'-12-20').all(),
   advances70(env,companyId,year)
  ]);
+ let financialAdvances=[];
+ if(phase==='SECOND'){
+  try{
+   financialAdvances=(await env.DB.prepare(
+    "SELECT l.employee_id,p.amount_cents,p.payment_date,p.status,p.id AS payable_id,p.document_number,p.payment_journal_entry_id,j.status AS origin_status,pj.status AS payment_journal_status FROM payroll_thirteenth_payables111 l JOIN payroll_thirteenth_runs71 r ON r.id=l.run_id AND r.company_id=l.company_id AND r.phase='FIRST' AND r.status='APPROVED' JOIN payroll_thirteenth_postings111 z ON z.run_id=r.id AND z.company_id=l.company_id JOIN financial_payables p ON p.id=l.payable_id AND p.company_id=l.company_id AND p.source_type='PAYROLL_THIRTEENTH' AND p.source_id=l.run_id||':'||l.employee_id LEFT JOIN journal_entries j ON j.id=z.journal_entry_id AND j.company_id=l.company_id LEFT JOIN journal_entries pj ON pj.id=p.payment_journal_entry_id AND pj.company_id=l.company_id WHERE l.company_id=? AND r.calendar_year=?"
+   ).bind(companyId,year).all()).results||[];
+  }catch(e){
+   if(!/no such table: payroll_thirteenth_(payables111|postings111)/i.test(String(e)))throw e;
+  }
+ }
+ const financialByEmployee=new Map();
+ for(const a of financialAdvances){
+  const list=financialByEmployee.get(a.employee_id)||[];
+  list.push(a);financialByEmployee.set(a.employee_id,list);
+ }
  const specials=new Map(),variableSet=new Set((variable.results||[]).map(x=>x.employee_id));
  const dependents=new Map((dependentRows.results||[]).map(x=>[x.employee_id,Number(x.total)]));
  for(const o of occurrences.results||[]){
@@ -107,7 +122,19 @@ async function preview70(c){
   if(phase==='FIRST')warnings.push('Referencia do adiantamento: conferir remuneracao anterior, convenção e ferias antes de declarar o pagamento.');
   else warnings.push('INSS e IRRF do 13o sao exclusivos; confirmar parametrizacao tributaria e pagamento.');
   let tax=null;
-  const advance=advanceByEmployee.get(employee.id)||null;
+  const external=advanceByEmployee.get(employee.id)||null;
+  const financial=financialByEmployee.get(employee.id)||[];
+  if(financial.length>1)blockers.push('Mais de uma primeira parcela integrada para o mesmo funcionário.');
+  if(external&&financial.length)blockers.push('Adiantamento externo e título do SAGAS duplicados; conciliar.');
+  if(financial.length){
+   const a=financial[0];
+   if(a.status!=='PAID'||a.origin_status!=='POSTED'||
+      !a.payment_journal_entry_id||a.payment_journal_status!=='POSTED')
+    blockers.push('Título da 1ª parcela pendente de pagamento ou contabilização da baixa.');
+  }
+  const paidInternal=financial.length===1&&financial[0].status==='PAID'&&financial[0].origin_status==='POSTED'&&
+   !!financial[0].payment_journal_entry_id&&financial[0].payment_journal_status==='POSTED'?financial[0]:null;
+  const advance=external||paidInternal;
   const full=Number.isSafeInteger(salary)&&salary>0&&avos!==null?
    Number((BigInt(salary)*BigInt(avos)+6n)/12n):0;
   if(phase==='SECOND'){
@@ -128,9 +155,9 @@ async function preview70(c){
    employee_name:employee.name,admission_date:employee.admission_date,
    cost_center_id:employee.cost_center_id,cost_center_code:employee.cost_center_code,
    reference_salary_cents:Number.isSafeInteger(salary)?salary:null,
-   avos,irrf_dependents:dependents.get(employee.id)||0,advance:advance?{id:advance.id,amount_cents:Number(advance.amount_cents),
-    payment_date:advance.payment_date,document_ref:advance.document_ref,
-    declared_external:true,bank_verified:false}:null,
+   avos,irrf_dependents:dependents.get(employee.id)||0,advance:advance?{id:advance.id||advance.payable_id,amount_cents:Number(advance.amount_cents),
+    payment_date:advance.payment_date,document_ref:advance.document_ref||advance.document_number,
+    declared_external:!!external,from_sagas_finance:!!paidInternal,bank_verified:false}:null,
    calculation,blockers,warnings,ready:blockers.length===0,
    tax_reference:tax?{inss_table_from:tax.inss_table_from,irrf_table_from:tax.irrf_table_from}:null};
   items.push(item);
@@ -153,7 +180,8 @@ async function preview70(c){
    'O calculo considera salario contratual de referencia e nao apura automaticamente medias ou afastamentos.',
    'Primeira parcela: sem descontos de INSS e IRRF; FGTS sobre o valor do adiantamento.',
    'Segunda parcela: INSS e IRRF sobre o total do 13o; FGTS apenas sobre o saldo da parcela.',
-   'Os valores declarados como adiantamento sao documentos externos; nao comprovam conciliacao bancaria.',
+   'Adiantamento do financeiro SAGAS exige título PAID e diário de baixa POSTED antes de compor a segunda parcela.',
+   'Adiantamento externo documentado não comprova conciliação bancária.',
    'Nenhum titulo financeiro, diario contabil, guia ou deposito e criado por esta previa.'
   ]};
 }
