@@ -221,14 +221,27 @@ export async function payrollMonthlyEndToEnd69(c){
    posted_total_cents:verifiedUseAmount,
    note:'Baixas postadas foram conciliadas com seus diários. As ainda pendentes exigem conferência e contabilização sem repetição.'}));
  const hasVacations=String(run.source_fingerprint||'').startsWith('VACATION100:');
- if(hasVacations)sections.push(step69('FERIAS','Conciliação de férias com o fechamento',
-  'PENDENTE',[{code:'FERIAS_INTEGRACAO_PROTEGIDA',message:'O fluxo de férias v100 ainda exige homologação integrada antes da liberação financeira/contábil.'}],
-  {note:'Não repetir pagamento antecipado nem a despesa já provisionada.'}));
+ const vacationLink=hasVacations?await call('FERIAS_CONTABILIZADA',async()=>{
+  try{return await env.DB.prepare(
+   "SELECT v.run_id,v.journal_entry_id,j.status AS journal_status,j.source_module,j.source_reference,v.source_fingerprint FROM payroll_vacation_integrations121 v LEFT JOIN journal_entries j ON j.id=v.journal_entry_id AND j.company_id=v.company_id WHERE v.company_id=? AND v.run_id=?"
+  ).bind(companyId,runId).first();}
+  catch(e){if(/no such table/i.test(String(e)))return null;throw e}
+ }):null;
+ const vacationComplete=!!vacationLink&&financialComplete&&
+  vacationLink.journal_entry_id===financialRecord?.journal_entry_id&&
+  vacationLink.journal_status==='POSTED'&&vacationLink.source_module==='PAYROLL'&&
+  vacationLink.source_reference==='MONTHLY:'+runId;
+ if(hasVacations)sections.push(step69('FERIAS','Integração definitiva das férias e líquido residual',
+  vacationComplete?'CONCLUIDO':'PENDENTE',vacationComplete?[]:[
+   errors.FERIAS_CONTABILIZADA||{code:'FERIAS_INTEGRACAO_PENDENTE',
+    message:'Integre a folha de férias v121 após vincular o pagamento do adiantamento e as baixas de provisões.'}
+  ],{integrated:vacationComplete,journal_entry_id:vacationLink?.journal_entry_id||null,
+   note:'Diário v121 deve coincidir com origem mensal, contas por centro de custo e títulos do líquido residual; não repete adiantamento.'}));
  const critical=sections.filter(x=>x.status==='PENDENTE'||(x.status==='CONFERIR'&&x.problems.length)).map(x=>x.id);
  const finished=sections.filter(x=>x.status==='CONCLUIDO').map(x=>x.id);
  return {kind:'SAGAS_MONTHLY_CLOSING_V107',read_only:true,run_id:runId,competence:run.competence,
   employee_count:detail.envelopes.length,sections,finished,blocked:critical,
-  monthly_operational_ready:payrollOk&&financialComplete&&employerComplete&&provisionConfirmed&&!pProblems.length&&postingDone&&['CONCLUIDO','SEM_MOVIMENTOS'].includes(useStatus)&&!hasVacations,
+  monthly_operational_ready:payrollOk&&financialComplete&&employerComplete&&provisionConfirmed&&!pProblems.length&&postingDone&&['CONCLUIDO','SEM_MOVIMENTOS'].includes(useStatus)&&(!hasVacations||vacationComplete),
   total_process_homologated:false,
   next_actions:sections.filter(s=>['PENDENTE','PRONTO'].includes(s.status)||(s.status==='CONFERIR'&&s.problems.length)).map(s=>({
    stage:s.id,status:s.status,first_problem:s.problems[0]?.message||null
