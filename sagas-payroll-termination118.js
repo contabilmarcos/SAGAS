@@ -93,8 +93,24 @@ export function diagnose118(review,rows=[],postings=null,mapping=null,existing=n
  for(const item of provisionItems){
   if(item.proposed_use_cents===null||item.proposed_use_cents<=0)continue;
   const m=mapBy.get(item.component);
-  if(!m||Number(m.active)!==1||m.synthetic_analytic!=='ANALYTIC')
+  if(!m||Number(m.active)!==1||m.synthetic_analytic!=='ANALYTIC'){
    block118(blocks,'USE_NATURE_MISSING','Natureza orçamentária de baixa não configurada/ativa para '+item.component+'.','CONTABILIDADE');
+   continue;
+  }
+  if(!Array.isArray(m.account_rules)){
+   block118(blocks,'USE_ACCOUNTS_UNAVAILABLE','Contas da natureza não foram consultadas para '+item.component+'.','CONTABILIDADE');
+   continue;
+  }
+  for(const side of ['D','C']){
+   const available=m.account_rules.filter(x=>x.side===side);
+   const specific=available.filter(x=>x.cost_center_id===review.employee?.cost_center_id);
+   const chosen=specific.length?specific:available.filter(x=>!x.cost_center_id);
+   const percentages=chosen.map(x=>Number(x.percentage));
+   if(!chosen.length||percentages.some(x=>!Number.isFinite(x)||x<=0||x>100)||
+      Math.abs(percentages.reduce((a,b)=>a+b,0)-100)>0.0001||
+      chosen.some(x=>Number(x.account_active)!==1||Number(x.account_analytic)!==1))
+    block118(blocks,'USE_ACCOUNT_MAPPING_INVALID','Natureza '+item.component+' sem mapeamento '+side+' válido (100%, conta analítica ativa) para o centro de custo.','CONTABILIDADE');
+  }
  }
  if(mapping===null)block118(blocks,'MAPPINGS_UNAVAILABLE','Mapeamentos contábeis não disponíveis para conferência.','CONTABILIDADE');
  if(!existing||existing.source_fingerprint!==review.source_fingerprint)
@@ -155,6 +171,11 @@ async function snapshot118(c){
   mapping=(await env.DB.prepare(
    "SELECT u.component,u.nature_id,n.active,n.synthetic_analytic FROM payroll_provision_use_natures45 u LEFT JOIN budget_natures n ON n.id=u.nature_id AND n.company_id=u.company_id WHERE u.company_id=?"
   ).bind(companyId).all()).results||[];
+  for(const m of mapping){
+   m.account_rules=(await env.DB.prepare(
+    "SELECT b.side,b.account_id,b.percentage,b.cost_center_id,a.active AS account_active,a.analytic AS account_analytic FROM budget_nature_accounts b LEFT JOIN accounts a ON a.id=b.account_id AND a.company_id=b.company_id WHERE b.company_id=? AND b.nature_id=? ORDER BY b.side,b.id"
+   ).bind(companyId,m.nature_id).all()).results||[];
+  }
  }catch(e){if(!/no such table/i.test(String(e)))throw e;}
  const existing=await env.DB.prepare(
   "SELECT id,source_fingerprint FROM payroll_termination_tax_workpapers117 WHERE company_id=? AND employee_id=? AND termination_date=? AND kind=? AND notice_kind=? ORDER BY revision DESC LIMIT 1"
