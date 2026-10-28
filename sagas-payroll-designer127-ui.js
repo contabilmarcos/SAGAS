@@ -75,13 +75,22 @@
    api('/api/payroll/designer/groups'),api('/api/payroll/accounting-natures')
   ]);
   const old=a.config||{};
+  const autoCodes=new Set(['SALARIO_BASE','INSS_EMP','IRRF_EMP','FGTS_PATRONAL']);
+  const defaultMethod=event?.code==='SALARIO_BASE'?'SALARIO_DIAS':
+   event?.code==='INSS_EMP'?'TABELA_PROGRESSIVA':
+   event?.code==='IRRF_EMP'?'TABELA_FAIXA_DEDUCAO':
+   event?.code==='FGTS_PATRONAL'?'PERCENTUAL_BASE':
+   event?.code==='FALTA_INJUSTIFICADA'?'FALTA_DIAS':'VALOR_INFORMADO';
+  const defaultBase=event?.code==='INSS_EMP'?'BASE_INSS':event?.code==='IRRF_EMP'?'BASE_IRRF':
+   event?.code==='FGTS_PATRONAL'?'BASE_FGTS':'SALARIO_CONTRATUAL';
   const cfg={
    code:event?.code||'',name:event?.name||'',
    category:event?.event_type==='INFORMATIVO'&&event.code==='FGTS_PATRONAL'?'ENCARGO':event?.event_type||'PROVENTO',
-   system:event?.code==='FGTS_PATRONAL'?'ENCARGO_PATRONAL':event?.event_type==='DESCONTO'?'RETENCAO':'REMUNERACAO',
+   system:event?.code==='FGTS_PATRONAL'?'ENCARGO_PATRONAL':
+    ['INSS_EMP','IRRF_EMP'].includes(event?.code)?'RETENCAO':'REMUNERACAO',
    active:event?Boolean(event.active):true,
-   calculation:event?.code==='SALARIO_BASE'?'SALARIO_DIAS':'VALOR_INFORMADO',
-   base:'SALARIO_CONTRATUAL',trigger:'MANUAL',effective_from:period||month(),
+   calculation:defaultMethod,
+   base:defaultBase,trigger:autoCodes.has(event?.code)?'AUTOMATICO':'MANUAL',effective_from:period||month(),
    rate:0,fixed_cents:0,days_basis:30,incidences:{inss:'NAO',irrf:'NAO',fgts:'NAO'},
    ...old
   };
