@@ -12020,6 +12020,10 @@ async function route(request, env) {
     await payrollDesigner127('sql-variables',{env,companyId,auth,request,
       d:{HttpError,requirePermission,ensureSchemaRevision,audit,uuid}});
     const deps={HttpError,requirePermission,ensureSchemaRevision,audit,uuid};
+    if(path==='/api/payroll/formulas/preview'&&method==='POST')
+      return ok(await payrollFormulas129('preview',{
+        env,companyId,auth,request,d:deps,body:await readJson(request)
+      }));
     if(path==='/api/payroll/formulas'&&(method==='GET'||method==='POST'))
       return ok(await payrollFormulas129(method==='GET'?'list':'save',{
         env,companyId,auth,request,d:deps,body:method==='POST'?await readJson(request):{}
