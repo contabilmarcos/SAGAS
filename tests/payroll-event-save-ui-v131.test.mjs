@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {runInNewContext} from 'node:vm';
+import {payrollDesigner127} from '../sagas-payroll-designer127.js';
 
 // Regression for IRRF_EMP: default TABELA_FAIXA_DEDUCAO inserts blank,
 // required band controls. Switching to a linked formula used to leave these
@@ -73,4 +74,62 @@ test('ao voltar ao IRRF progressivo, parcela a deduzir permanece desativada',()=
  assert.equal(t.band[0].disabled,false);
  assert.equal(t.band[1].disabled,false);
  assert.equal(t.band[2].disabled,true);
+});
+
+test('IRRF_EMP com F_IRRF_2020 e faixa antiga oculta salva uma nova revisao no Worker',async()=>{
+ const batches=[],audit=[];
+ class HttpError extends Error{constructor(status,message,code){super(message);this.status=status;this.code=code;}}
+ const event={id:'EV_IRRF',code:'IRRF_EMP',name:'IRRF do empregado',event_type:'DESCONTO',active:1};
+ const DB={
+  prepare(sql){
+   return {
+    sql,values:[],
+    bind(...args){this.values=args;return this;},
+    async first(){
+     if(sql.includes('FROM payroll_designer_groups127'))return {id:'GR_001'};
+     if(sql.includes('FROM budget_natures'))return {id:'NAT_IRRF'};
+     if(sql.includes('FROM payroll_events'))return event;
+     if(sql.includes('MAX(revision)'))return {rev:0};
+     throw Error('SQL inesperado '+sql);
+    }
+   };
+  },
+  async batch(statements){batches.push(statements);return statements.map(()=>({meta:{changes:1}}));}
+ };
+ const d={
+  HttpError,uuid:()=> 'NEW_REVISION',
+  requirePermission:async(_env,_id,_company,permission)=>assert.equal(permission,'payroll.manage'),
+  ensureSchemaRevision:async()=>{},
+  audit:async(_env,a)=>audit.push(a),
+  resolveFormula:async(id,date)=>{
+   assert.equal(id,'FORMULA_IRRF_2020');
+   assert.equal(date,'2020-01');
+   return {formula:{id,active:1},version:{id:'V2',revision:2,effective_from:'2020-01'}};
+  }
+ };
+ const body={
+  code:'IRRF_EMP',name:'IRRF do empregado',active:true,
+  category:'DESCONTO',system:'RETENCAO',trigger:'AUTOMATICO',
+  calculation:'FORMULA_CADASTRADA',base:'BASE_IRRF',
+  effective_from:'2020-01',group_id:'GR_001',nature_id:'NAT_IRRF',
+  formula_id:'FORMULA_IRRF_2020',
+  incidences:{inss:'NAO',irrf:'NAO',fgts:'NAO'},
+  // Os dados desativados no formulario podem permanecer em memoria.
+  bands:[{to:'',rate:'',deduction:0}],days_basis:'30'
+ };
+ const result=await payrollDesigner127('event-save',{
+  env:{DB},companyId:'COMPANY_1',auth:{user:{id:'USER_1'}},
+  request:{},d,body,eventId:'EV_IRRF'
+ });
+ assert.equal(result.saved,true);
+ assert.equal(result.revision,1);
+ assert.equal(result.configuration_only,true);
+ assert.equal(batches.length,1);
+ assert.equal(batches[0].length,1);
+ assert.match(batches[0][0].sql,/INSERT INTO payroll_designer_config127/);
+ const cfg=JSON.parse(batches[0][0].values[5]);
+ assert.equal(cfg.formula_id,'FORMULA_IRRF_2020');
+ assert.equal(cfg.calculation,'FORMULA_CADASTRADA');
+ assert.equal(cfg.effective_from,'2020-01');
+ assert.equal(audit.length,1);
 });
