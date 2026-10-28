@@ -44,7 +44,7 @@ import { payrollTermination123 } from './sagas-payroll-termination123.js';
 import { payrollLiveAudit124 } from './sagas-payroll-live-audit124.js';
 import { payrollCompetenceReopen125 } from './sagas-payroll-reopen125.js';
 import { payrollDesigner127 } from './sagas-payroll-designer127.js';
-import { payrollFormulas129,formulaSnapshot129 } from './sagas-payroll-formulas129.js';
+import { payrollFormulas129,formulaSnapshot129,ensureFormulaSchema129 } from './sagas-payroll-formulas129.js';
 import { payrollProvisionAccounting44 } from './sagas-payroll-provisions44.js';
 // SAGAS Worker v96 - Registro auditável do envelope próprio VACATION de férias | cumulativo desde v49
 // ===== utils.js =====
@@ -12024,6 +12024,10 @@ async function route(request, env) {
       return ok(await payrollFormulas129(method==='GET'?'list':'save',{
         env,companyId,auth,request,d:deps,body:method==='POST'?await readJson(request):{}
       }));
+    p=routeMatch(path,'/api/payroll/formulas/:id/simulate');
+    if(p&&method==='POST')return ok(await payrollFormulas129('simulate',{
+      env,companyId,auth,request,d:deps,formulaId:p.id,body:await readJson(request)
+    }));
     p=routeMatch(path,'/api/payroll/formulas/:id');
     if(p){
       if(method==='GET')return ok(await payrollFormulas129('detail',{
@@ -12065,10 +12069,7 @@ async function route(request, env) {
       env,companyId,auth,request,eventId:p.id==='new'?null:p.id,
       d:{HttpError,requirePermission,ensureSchemaRevision,audit,uuid,
         resolveFormula:async(formulaId,competence)=>{
-          await ensureSchemaRevision(env,'payroll-formulas129',1,async()=>{
-            const {ensureFormulaSchema129}=await import('./sagas-payroll-formulas129.js');
-            await ensureFormulaSchema129(env);
-          });
+          await ensureSchemaRevision(env,'payroll-formulas129',1,()=>ensureFormulaSchema129(env));
           return formulaSnapshot129(env,companyId,formulaId,competence);
         }
       },
