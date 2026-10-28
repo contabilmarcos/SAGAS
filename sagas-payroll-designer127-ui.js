@@ -39,6 +39,9 @@
   ['BASE_FGTS_13','Base FGTS do 13º'],
   ['PROVENTOS_TRIBUTAVEIS','Total de proventos tributaveis'],
   ['TOTAL_PROVENTOS','Total de proventos'],
+  ['TOTAL_DESCONTOS','Total de descontos'],
+  ['TOTAL_PROVENTOS_RESCISAO','Proventos da rescisao'],
+  ['TOTAL_DESCONTOS_RESCISAO','Descontos da rescisao'],
   ['VALOR_INFORMADO','Valor informado']
  ];
  const month=()=>new Date().toISOString().slice(0,7);
