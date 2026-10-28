@@ -84,9 +84,9 @@ async function open(formulaId=null){
  const b=oldSource.base||baseChoice(c);
  const versions=detail?.versions||[];
  const selection=versions.map(v=>'<option value="'+E(v.id)+'">'+E(v.effective_from)+' · revisão '+E(v.revision)+'</option>').join('');
- const bandRow=v=>'<tr><td><input type="number" class="f129-to" step="0.01" min="0.01" value="'+E(v?.to??'')+'"></td>'+
+ const bandRow=v=>'<tr><td><input type="number" class="f129-to" step="0.01" min="0.01" value="'+E(v?.to??(v?.to_cents!==undefined?v.to_cents/100:''))+'"></td>'+
   '<td><input type="number" class="f129-rate" step="0.0001" min="0" max="100" value="'+E(v?.rate??0)+'"></td>'+
-  '<td><input type="number" class="f129-discount" step="0.01" min="0" value="'+E(v?.deduction??0)+'"></td>'+
+  '<td><input type="number" class="f129-discount" step="0.01" min="0" value="'+E(v?.deduction??(v?.deduction_cents!==undefined?v.deduction_cents/100:0))+'"></td>'+
   '<td><button type="button" class="btn secondary sm f129-remove">Remover</button></td></tr>';
  const body='<form id="formula129Form">'+
   (editing?'<div class="help"><b>Historico de versoes:</b> '+versions.length+' revisão(ões). As versões anteriores nunca são sobrescritas.</div>'+
@@ -101,7 +101,7 @@ async function open(formulaId=null){
    '<label class="field"><span>Tipo de formula</span><select name="calculation">'+option(methods,c)+'</select></label>'+
    '<label class="field" id="f129-base-wrap"><span>Base de calculo</span><select name="base">'+option(bases,b)+'</select></label>'+
    '<div id="f129-rate-wrap">'+fields('rate','Aliquota (%)',oldSource.rate??0,'number','min="0" max="100" step="0.0001"')+'</div>'+
-   '<div id="f129-fixed-wrap">'+fields('fixed_amount','Valor fixo',oldSource.fixed_amount??0,'number','min="0" step="0.01"')+'</div>'+
+   '<div id="f129-fixed-wrap">'+fields('fixed_amount','Valor fixo',oldSource.fixed_amount??((oldSource.fixed_cents||0)/100),'number','min="0" step="0.01"')+'</div>'+
    '<div id="f129-div-wrap">'+fields('days_basis','Divisor',oldSource.days_basis??30,'number','min="1" max="300" step="0.001"')+'</div>'+
    '</div>'+
    '<div id="f129-sql-wrap"><label class="field full"><span>Consulta SQL (SELECT ... AS VALOR)</span>'+
@@ -170,7 +170,7 @@ async function open(formulaId=null){
  const assign=v=>{
   method.value=v.calculation||'SQL_PERSONALIZADO';base.value=v.base||'SALARIO_CONTRATUAL';
   form.elements.rate.value=v.rate??0;form.elements.days_basis.value=v.days_basis??30;
-  form.elements.fixed_amount.value=v.fixed_amount??0;query.value=v.sql_query||'';
+  form.elements.fixed_amount.value=v.fixed_amount??((v.fixed_cents||0)/100);query.value=v.sql_query||'';
   $('#f129-bands').innerHTML='';
   for(const b of v.bands||[])addBand(b);
   appearance();
