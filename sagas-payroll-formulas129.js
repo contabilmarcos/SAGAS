@@ -3,6 +3,26 @@
 import {normalizeEvent127,simulateEvent127} from './sagas-payroll-designer127.js';
 import {evaluatePayrollSql128} from './sagas-payroll-sql128.js';
 
+
+// Modelos didaticos sem aliquotas legais ou tabelas tributarias embutidas.
+// A importacao e opcional e grava configuracoes editaveis no D1 da empresa.
+export const FORMULA_MODELS130=Object.freeze([
+ {code:'SALARIO_BASE',name:'Salario-base por 30 dias',base:'SALARIO_CONTRATUAL',
+  sql_query:'SELECT ROUND(:SALARIO_CONTRATUAL / 30 * :QUANTIDADE, 2) AS VALOR'},
+ {code:'SALARIO_LIQUIDO',name:'Salario liquido',base:'TOTAL_PROVENTOS',
+  sql_query:'SELECT ROUND(:TOTAL_PROVENTOS - :TOTAL_DESCONTOS, 2) AS VALOR'},
+ {code:'DECIMO_TERCEIRO',name:'13o salario por avos',base:'SALARIO_REFERENCIA_13',
+  sql_query:'SELECT ROUND(:SALARIO_REFERENCIA_13 * :AVOS_13 / 12, 2) AS VALOR'},
+ {code:'FERIAS_GOZO',name:'Ferias por dias',base:'REMUNERACAO_FERIAS',
+  sql_query:'SELECT ROUND(:REMUNERACAO_FERIAS / 30 * :DIAS_FERIAS, 2) AS VALOR'},
+ {code:'TERCO_FERIAS',name:'Um terco constitucional de ferias',base:'VALOR_FERIAS',
+  sql_query:'SELECT ROUND(:VALOR_FERIAS / 3, 2) AS VALOR'},
+ {code:'DESCONTO_FALTAS',name:'Desconto por faltas (dias)',base:'SALARIO_CONTRATUAL',
+  sql_query:'SELECT ROUND(:SALARIO_CONTRATUAL / 30 * :DIAS_FALTA, 2) AS VALOR'},
+ {code:'LIQUIDO_RESCISAO',name:'Liquido da rescisao',base:'TOTAL_PROVENTOS_RESCISAO',
+  sql_query:'SELECT ROUND(:TOTAL_PROVENTOS_RESCISAO - :TOTAL_DESCONTOS_RESCISAO, 2) AS VALOR'}
+]);
+
 const CODE129=/^[A-Z][A-Z0-9_]{1,29}$/;
 const METHODS129=new Set([
  'SALARIO_DIAS','VALOR_INFORMADO','VALOR_FIXO','PERCENTUAL_BASE',
@@ -80,8 +100,32 @@ async function simulate129(env,source,values,d){
 }
 export async function payrollFormulas129(action,{env,companyId,auth,request,d,body={},formulaId,competence}){
  await d.requirePermission(env,auth.user.id,companyId,
-  action==='save'?'payroll.manage':'payroll.read');
+  ['save','import-models'].includes(action)?'payroll.manage':'payroll.read');
  await d.ensureSchemaRevision(env,'payroll-formulas129',1,()=>ensureFormulaSchema129(env));
+ if(action==='import-models'){
+  const effective_from=period129(body.effective_from,d);
+  const found=await env.DB.prepare("SELECT code FROM payroll_formulas129 WHERE company_id=?").bind(companyId).all();
+  const known=new Set((found.results||[]).map(x=>String(x.code)));
+  const missing=FORMULA_MODELS130.filter(x=>!known.has(x.code));
+  if(!missing.length)return {imported:0,skipped:FORMULA_MODELS130.length,formulas:FORMULA_MODELS130.length,configuration_only:true};
+  const stmts=[];
+  for(const model of missing){
+   const norm=normalize129({...model,calculation:'SQL_PERSONALIZADO',effective_from},d);
+   const id=d.uuid();
+   stmts.push(env.DB.prepare("INSERT INTO payroll_formulas129(id,company_id,code,name,active) VALUES(?,?,?,?,1)").bind(id,companyId,norm.code,norm.name));
+   stmts.push(env.DB.prepare("INSERT INTO payroll_formula_versions129(id,company_id,formula_id,effective_from,revision,source_json,created_by) VALUES(?,?,?,?,1,?,?)")
+    .bind(d.uuid(),companyId,id,effective_from,JSON.stringify(norm.source),auth.user.id));
+  }
+  try{await env.DB.batch(stmts);}catch(e){
+   if(/UNIQUE constraint failed|FOREIGN KEY constraint failed/i.test(String(e)))
+    invalid129(d,'Outra importacao alterou o catalogo. Atualize e tente novamente.',409,'CONFLICT');
+   throw e;
+  }
+  await d.audit(env,{companyId,userId:auth.user.id,request,action:'IMPORT',entity:'payroll_formulas129',
+    entityId:companyId,after:{imported:missing.map(x=>x.code),effective_from}});
+  return {imported:missing.length,skipped:FORMULA_MODELS130.length-missing.length,
+   formulas:FORMULA_MODELS130.length,configuration_only:true};
+ }
  if(action==='list'){
   const res=await env.DB.prepare("SELECT f.id,f.code,f.name,f.active,(SELECT COUNT(*) FROM payroll_formula_versions129 v WHERE v.company_id=f.company_id AND v.formula_id=f.id) AS revisions,(SELECT COUNT(DISTINCT c.event_id) FROM payroll_designer_config127 c WHERE c.company_id=f.company_id AND json_extract(c.config_json,'$.formula_id')=f.id) AS event_versions,(SELECT v.source_json FROM payroll_formula_versions129 v WHERE v.company_id=f.company_id AND v.formula_id=f.id ORDER BY v.effective_from DESC,v.revision DESC LIMIT 1) AS latest_rule FROM payroll_formulas129 f WHERE f.company_id=? ORDER BY f.code LIMIT 501").bind(companyId).all();
   return {formulas:(res.results||[]).map(f=>{
