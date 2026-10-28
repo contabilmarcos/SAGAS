@@ -1,4 +1,5 @@
-// SAGAS Folha v76: cada rubrica referencia natureza; defaults escolhidos pelo CC do funcionário.
+import { planNatureDefaults126 } from './sagas-payroll-ledger126.js';
+// SAGAS Folha v126: eventos com D/C unilaterais e liquido credor por centro de custo.
 // Mantém integrações existentes, não reaproveita mapeamentos antigos de contas fixas.
 const AUTO_EVENTS38 = [
   ['SALARIO_BASE','Salário mensal','PROVENTO'],
@@ -13,6 +14,9 @@ const AUTO_EVENTS38 = [
   ['DOENCA_EMPRESA_15','Doença — primeiros 15 dias','INFORMATIVO']
 ];
 const codes38 = new Set(AUTO_EVENTS38.map(e=>e[0]));
+async function schema126(env){
+ await env.DB.prepare("CREATE TABLE IF NOT EXISTS payroll_finance_net_natures126(company_id TEXT PRIMARY KEY,nature_id TEXT NOT NULL REFERENCES budget_natures(id) ON DELETE RESTRICT,updated_by TEXT NOT NULL,updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)").run();
+}
 const fail38=(d,message,code='PAYROLL_EVENT_ACCOUNTING_BLOCKED',status=409)=>{
   throw new d.HttpError(status,message,code);
 };
@@ -48,6 +52,7 @@ export async function payrollFinance39(action,c) {
   // v38 foi aplicado em produção antes da tabela de naturezas existir.
   // Usar escopo novo garante a migração aditiva em D1 já atualizado.
   await d.ensureSchemaRevision(env,'payroll-event-natures39',1,()=>schema38(env));
+  await d.ensureSchemaRevision(env,'payroll-finance-net-natures126',1,()=>schema126(env));
   if(action==='catalog'){
     await d.requirePermission(env,auth.user.id,companyId,'payroll.read');
     return {items:await catalog38(env,companyId,d)};
@@ -72,25 +77,40 @@ export async function payrollFinance39(action,c) {
   if(action==='settings'||action==='save'){
     await d.requirePermission(env,auth.user.id,companyId,action==='save'?'payroll.manage':'payroll.read');
     if(action==='save')await d.requirePermission(env,auth.user.id,companyId,'accounting.entry.create');
-    const read=()=>env.DB.prepare("SELECT batch_id,updated_at FROM payroll_finance_batches38 WHERE company_id=?").bind(companyId).first();
+    const read=async()=>{
+      const [batch,net]=await Promise.all([
+        env.DB.prepare("SELECT batch_id,updated_at FROM payroll_finance_batches38 WHERE company_id=?").bind(companyId).first(),
+        env.DB.prepare("SELECT nature_id,updated_at FROM payroll_finance_net_natures126 WHERE company_id=?").bind(companyId).first()
+      ]);
+      return {...(batch||{}),net_nature_id:net?.nature_id||null};
+    };
     if(action==='settings')return {settings:await read()};
     const batchId=String(body.batch_id||'').trim();
     if(!batchId||batchId.length>100)fail38(d,'Selecione o lote contábil.','INVALID_BATCH',400);
     const batch=await env.DB.prepare("SELECT id,status FROM journal_batches WHERE id=? AND company_id=?").bind(batchId,companyId).first();
     if(!batch||batch.status!=='OPEN')fail38(d,'O lote contábil precisa estar aberto nesta empresa.','INVALID_BATCH');
+    const netNatureId=String(body.net_nature_id||'').trim();
+    if(netNatureId){
+      const valid=await env.DB.prepare("SELECT id FROM budget_natures WHERE company_id=? AND id=? AND synthetic_analytic='ANALYTIC' AND active=1").bind(companyId,netNatureId).first();
+      if(!valid)fail38(d,'Selecione natureza analitica ativa para o credito do salario liquido.','INVALID_NET_NATURE',400);
+    }
     const before=await read();
     await env.DB.prepare("INSERT INTO payroll_finance_batches38(company_id,batch_id,updated_by) VALUES (?,?,?) ON CONFLICT(company_id) DO UPDATE SET batch_id=excluded.batch_id,updated_by=excluded.updated_by,updated_at=CURRENT_TIMESTAMP").bind(companyId,batchId,auth.user.id).run();
-    await d.audit(env,{companyId,userId:auth.user.id,action:'UPDATE',entity:'payroll_finance_batches38',entityId:companyId,before,after:{batch_id:batchId},request});
+    if(netNatureId){
+      await env.DB.prepare("INSERT INTO payroll_finance_net_natures126(company_id,nature_id,updated_by) VALUES (?,?,?) ON CONFLICT(company_id) DO UPDATE SET nature_id=excluded.nature_id,updated_by=excluded.updated_by,updated_at=CURRENT_TIMESTAMP").bind(companyId,netNatureId,auth.user.id).run();
+    }
+    await d.audit(env,{companyId,userId:auth.user.id,action:'UPDATE',entity:'payroll_finance_batches38',entityId:companyId,before,after:{batch_id:batchId,net_nature_id:netNatureId||before.net_nature_id},request});
     return {settings:await read()};
   }
   await d.requirePermission(env,auth.user.id,companyId,'payroll.read');
   const events=await catalog38(env,companyId,d);
-  const [detail,conference,batchSetting,existing,mappings]=await Promise.all([
+  const [detail,conference,batchSetting,existing,mappings,netNatureSetting]=await Promise.all([
     d.payrollMonthlyRunDetail35(env,companyId,runId),
     d.payrollMonthlyConference36(env,companyId,runId),
     env.DB.prepare("SELECT batch_id FROM payroll_finance_batches38 WHERE company_id=?").bind(companyId).first(),
     env.DB.prepare("SELECT * FROM payroll_finance_postings37 WHERE company_id=? AND run_id=?").bind(companyId,runId).first(),
-    env.DB.prepare("SELECT m.event_id,m.nature_id,n.code AS nature_code,n.description AS nature_description,n.active,n.synthetic_analytic FROM payroll_event_natures39 m JOIN budget_natures n ON n.id=m.nature_id AND n.company_id=m.company_id WHERE m.company_id=?").bind(companyId).all()
+    env.DB.prepare("SELECT m.event_id,m.nature_id,n.code AS nature_code,n.description AS nature_description,n.active,n.synthetic_analytic FROM payroll_event_natures39 m JOIN budget_natures n ON n.id=m.nature_id AND n.company_id=m.company_id WHERE m.company_id=?").bind(companyId).all(),
+    env.DB.prepare("SELECT n.id,n.code,n.active,n.synthetic_analytic FROM payroll_finance_net_natures126 m JOIN budget_natures n ON n.company_id=m.company_id AND n.id=m.nature_id WHERE m.company_id=?").bind(companyId).first()
   ]);
   const {run,envelopes,totals}=detail,problems=[];
   const block=(code,message)=>{if(!problems.some(p=>p.code===code&&p.message===message))problems.push({code,message});};
@@ -104,8 +124,33 @@ export async function payrollFinance39(action,c) {
   const mapById=new Map((mappings.results||[]).map(x=>[x.event_id,x]));
   const catalogByCode=new Map(events.map(e=>[e.code,e]));
   const centers=new Map(),natureDefaults=new Map(),accountValidity=new Map();
-  const accountingLines=[],eventTotalsMap=new Map();
+  const accountingLines=[],eventTotalsMap=new Map(),netByCenter=new Map();
   let sumNet=0,sumGross=0,sumDeductions=0,sumInss=0,sumIrrf=0,sumFgts=0;
+  // Resolve as linhas presentes: nao exigir D e C dentro de cada evento.
+  // Cada lado configurado precisa somar 100%; a partida integral fecha no final.
+  const appendNatureLines126=async(defaults,cc,amount,natureCode,label,options={})=>{
+    const plan=planNatureDefaults126(defaults,cc.id,amount,options);
+    for(const issue of plan.problems)
+      block(issue.code,'Natureza '+natureCode+' / '+label+': '+issue.message);
+    if(plan.problems.length)return false;
+    const staged=[];
+    let valid=true;
+    for(const line of plan.lines){
+      if(!accountValidity.has(line.account_id)){
+        const account=await env.DB.prepare("SELECT id FROM accounts WHERE id=? AND company_id=? AND analytic=1 AND active=1").bind(line.account_id,companyId).first();
+        accountValidity.set(line.account_id,!!account);
+      }
+      if(!accountValidity.get(line.account_id)){
+        block('CONTA_INVALIDA','Default '+line.side+' da natureza '+natureCode+' aponta conta invalida para '+label+'.');
+        valid=false;continue;
+      }
+      staged.push({side:line.side,account_id:line.account_id,amount:d.centsToMoney(line.amount_cents),
+        cost_center_id:cc.id,branch_id:line.branch_id||null,history_template_id:line.history_template_id||null,
+        history_complement:line.history_complement||('Folha '+run.competence+' - '+label+' - '+cc.code)});
+    }
+    if(valid)accountingLines.push(...staged);
+    return valid;
+  };
   // Fotografia do centro de custo gravada no processamento. Não inferir o passado
   // do cadastro atual: folhas antigas sem essa fotografia ficam bloqueadas.
   for(const envp of envelopes){
@@ -125,6 +170,11 @@ export async function payrollFinance39(action,c) {
     }
     if(!ccId||!cc||!cc.active)
       block('CENTRO_CUSTO_AUSENTE','O funcionário '+(envp.employee_code||envp.employee_name)+' não possui centro de custo válido na fotografia da folha. Requer regularização controlada, sem atribuição retroativa.');
+    if(cc?.id&&cc.active&&Number.isSafeInteger(Number(envp.net_cents))&&Number(envp.net_cents)>0){
+      const group=netByCenter.get(cc.id)||{center:cc,amount_cents:0};
+      group.amount_cents+=Number(envp.net_cents);
+      netByCenter.set(cc.id,group);
+    }
     const centerCode=cc?.code||'SEM_CC';
     for(const line of envp.lines||[]){
       const amount=Number(line.amount_cents);
@@ -153,41 +203,8 @@ export async function payrollFinance39(action,c) {
         natureDefaults.set(natureId,defaults);
       }
       const label=event.code+' / CC '+centerCode;
-      let complete=true;
-      const staging=[];
-      for(const side of ['D','C']){
-        const sideRows=defaults.filter(x=>x.side===side);
-        const specific=sideRows.filter(x=>x.cost_center_id===cc.id);
-        // Prioridade: CC específico. Somente se inexistente, default sem CC.
-        const selected=specific.length?specific:sideRows.filter(x=>!x.cost_center_id);
-        if(!selected.length){
-          block('DEFAULT_NATUREZA_AUSENTE','Natureza '+cfg.nature_code+' sem default '+side+' para '+label+'.');complete=false;continue;
-        }
-        const percentages=selected.map(x=>Number(x.percentage));
-        const totalPct=percentages.reduce((a,b)=>a+b,0);
-        if(percentages.some(x=>!Number.isFinite(x)||x<=0||x>100)||Math.abs(totalPct-100)>0.0001){
-          block('PERCENTUAIS_NATUREZA','Defaults de '+side+' da natureza '+cfg.nature_code+' não totalizam 100% para '+label+'.');complete=false;continue;
-        }
-        let applied=0;
-        for(let n=0;n<selected.length;n++){
-          const x=selected[n];
-          const value=n===selected.length-1?amount-applied:Math.round(amount*Number(x.percentage)/100);
-          applied+=value;
-          if(value<=0)continue;
-          if(!accountValidity.has(x.account_id)){
-            const valid=await env.DB.prepare("SELECT id FROM accounts WHERE id=? AND company_id=? AND analytic=1 AND active=1").bind(x.account_id,companyId).first();
-            accountValidity.set(x.account_id,!!valid);
-          }
-          if(!accountValidity.get(x.account_id)){
-            block('CONTA_INVALIDA','Default '+side+' da natureza '+cfg.nature_code+' aponta conta inválida para '+label+'.');complete=false;continue;
-          }
-          staging.push({side,account_id:x.account_id,amount:d.centsToMoney(value),
-            cost_center_id:cc.id,branch_id:x.branch_id||null,history_template_id:x.history_template_id||null,
-            history_complement:(x.history_complement||('Folha '+run.competence+' - '+event.code+' - '+envp.employee_code+' - '+cc.code))});
-        }
-      }
+      const complete=await appendNatureLines126(defaults,cc,amount,cfg.nature_code,label);
       if(!complete)continue;
-      accountingLines.push(...staging);
       const key=event.id+'|'+cc.id;
       const existingEvent=eventTotalsMap.get(key);
       if(existingEvent)existingEvent.amount_cents+=amount;
@@ -195,6 +212,37 @@ export async function payrollFinance39(action,c) {
         nature_id:natureId,nature_code:cfg.nature_code,cost_center_id:cc.id,cost_center_code:cc.code,amount_cents:amount});
     }
   }
+  // Credito automatico do salario liquido, por centro de custo, sem duplicar
+  // as obrigacoes tributarias que ja foram creditadas nos eventos de desconto.
+  if(sumNet>0&&(!netNatureSetting||!netNatureSetting.active||netNatureSetting.synthetic_analytic!=='ANALYTIC'))
+    block('LIQUIDO_SEM_NATUREZA','Configure a natureza do salario liquido a pagar no lote da integracao.');
+  if(netNatureSetting&&netNatureSetting.active&&netNatureSetting.synthetic_analytic==='ANALYTIC'){
+    let netDefaults=natureDefaults.get(netNatureSetting.id);
+    if(!netDefaults){
+      const r=await env.DB.prepare("SELECT d.id,d.side,d.account_id,d.percentage,d.branch_id,d.cost_center_id,d.history_template_id,d.history_complement FROM budget_nature_accounts d WHERE d.company_id=? AND d.nature_id=? ORDER BY d.created_at,d.id").bind(companyId,netNatureSetting.id).all();
+      netDefaults=r.results||[];
+      natureDefaults.set(netNatureSetting.id,netDefaults);
+    }
+    for(const group of netByCenter.values()){
+      const cc=group.center,amount=group.amount_cents;
+      if(!Number.isSafeInteger(amount)||amount<=0){
+        block('LIQUIDO_INVALIDO','Liquido por centro de custo inconsistente.');continue;
+      }
+      const complete=await appendNatureLines126(netDefaults,cc,amount,netNatureSetting.code,
+        'LIQUIDO_FOLHA / CC '+cc.code,{requireCreditOnly:true});
+      if(complete){
+        eventTotalsMap.set('LIQUIDO_FOLHA|'+cc.id,{
+          event_id:null,code:'LIQUIDO_FOLHA',name:'Salarios liquidos a pagar',
+          type:'LIQUIDO',nature_id:netNatureSetting.id,nature_code:netNatureSetting.code,
+          cost_center_id:cc.id,cost_center_code:cc.code,amount_cents:amount
+        });
+      }
+    }
+  }
+  const journalDebits=accountingLines.filter(x=>x.side==='D').reduce((a,x)=>a+Math.round(Number(x.amount)*100),0);
+  const journalCredits=accountingLines.filter(x=>x.side==='C').reduce((a,x)=>a+Math.round(Number(x.amount)*100),0);
+  if(!Number.isSafeInteger(journalDebits)||!Number.isSafeInteger(journalCredits)||journalDebits!==journalCredits)
+    block('DIARIO_DESBALANCEADO','Diario da folha nao fecha: debitos '+(journalDebits/100).toFixed(2)+' / creditos '+(journalCredits/100).toFixed(2)+'. Confira lados dos eventos e do liquido.');
   if(![sumGross,sumNet,sumDeductions,sumInss,sumIrrf,sumFgts].every(Number.isSafeInteger)
     ||sumGross!==sumNet+sumDeductions
     ||sumGross!==Number(totals.earnings_cents)||sumNet!==Number(totals.net_cents)
@@ -207,7 +255,7 @@ export async function payrollFinance39(action,c) {
   if(latest?.id!==runId)block('REVISAO_ANTERIOR','Somente a revisão mais recente pode ser integrada.');
   const preview={kind:'INTEGRACAO_NATUREZA_CC_ETAPA_37_AJUSTE',run,totals,settings:batchSetting,
     existing,employee_count:envelopes.length,payable_total_cents:sumNet,
-    event_totals:eventTotals,problems,integrated:!!existing,ready:!existing&&!problems.length,
+    event_totals:eventTotals,journal_debit_cents:journalDebits,journal_credit_cents:journalCredits,problems,integrated:!!existing,ready:!existing&&!problems.length,
     notes:['Cada evento aponta para uma natureza, que fornece as contas por centro de custo.',
       'O salário líquido é gerado por funcionário em Contas a Pagar.',
       'INSS retido, IRRF e FGTS são contabilizados sem gerar guias automaticamente.',
