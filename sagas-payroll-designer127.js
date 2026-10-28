@@ -1,6 +1,7 @@
+import {compilePayrollSql128,evaluatePayrollSql128,PAYROLL_SQL_VARIABLES128} from './sagas-payroll-sql128.js';
 // SAGAS: cadastro parametrizavel de eventos e grupos, versionado por competencia.
 // Nao altera folhas fechadas nem a rotina antiga de calculo. Interpretacao segura.
-const KINDS127=['SALARIO_DIAS','VALOR_INFORMADO','VALOR_FIXO','PERCENTUAL_BASE','TABELA_PROGRESSIVA','TABELA_FAIXA_DEDUCAO','FALTA_DIAS','HORAS_BASE','DECIMO_TERCEIRO_AVOS','FERIAS_DIAS','TERCO_FERIAS','LIQUIDO_RESCISAO'];
+const KINDS127=['SALARIO_DIAS','VALOR_INFORMADO','VALOR_FIXO','PERCENTUAL_BASE','TABELA_PROGRESSIVA','TABELA_FAIXA_DEDUCAO','FALTA_DIAS','HORAS_BASE','DECIMO_TERCEIRO_AVOS','FERIAS_DIAS','TERCO_FERIAS','LIQUIDO_RESCISAO','SQL_PERSONALIZADO'];
 const BASES127=[
  'SALARIO_CONTRATUAL','SALARIO_REFERENCIA_13','REMUNERACAO_FERIAS','VALOR_FERIAS',
  'BASE_INSS','BASE_IRRF','BASE_FGTS',
@@ -65,7 +66,7 @@ export function normalizeEvent127(raw,d){
  if(name.length<3)bad127(d,'Descricao precisa de pelo menos 3 caracteres.');
  const options={code,name,active:raw.active!==false,category:eventType,system,calculation,base,
   trigger,effective_from,nature_id,group_id,incidences,
-  days_basis:30,rate:0,fixed_cents:0,bands:[]};
+  days_basis:30,rate:0,fixed_cents:0,bands:[],sql_query:null};
  if(['SALARIO_DIAS','FALTA_DIAS','HORAS_BASE','FERIAS_DIAS'].includes(calculation)){
   // Para mensalistas a base comercial padrao e 30 dias; horas exigem divisor informado.
   options.days_basis=calculation==='HORAS_BASE'
@@ -85,6 +86,13 @@ export function normalizeEvent127(raw,d){
    bad127(d,'Liquido rescisorio deve ser informativo, sem acrescentar provento ou desconto.');
   if(incidences.inss==='SIM'||incidences.irrf==='SIM'||incidences.fgts==='SIM')
    bad127(d,'Liquido rescisorio nao pode incidir novamente em tributos.');
+ }
+ if(calculation==='SQL_PERSONALIZADO'){
+  try{
+   const compiled=compilePayrollSql128(raw.sql_query);
+   options.sql_query=String(raw.sql_query||'').trim();
+   options.sql_variables=compiled.variables;
+  }catch(e){bad127(d,'Consulta SQL invalida: '+e.message,'SQL_FORMULA_INVALID',400);}
  }
  if(calculation==='PERCENTUAL_BASE')options.rate=percent127(raw.rate,d,'aliquota percentual');
  if(calculation==='VALOR_FIXO')options.fixed_cents=cents127(raw.fixed_amount,d,'valor fixo');
@@ -118,6 +126,7 @@ export function simulateEvent127(cfg,values={}){
  const basis=asCents(base);
  let cents=0;
  switch(cfg.calculation){
+  case 'SQL_PERSONALIZADO':throw Error('SQL personalizado deve ser simulado no servidor com parametros autorizados.');
   case 'SALARIO_DIAS':cents=Math.round(basis*quant/cfg.days_basis);break;
   case 'FALTA_DIAS':cents=Math.round(basis*quant/cfg.days_basis);break;
   case 'HORAS_BASE':cents=Math.round(basis*quant/cfg.days_basis);break;
@@ -258,6 +267,7 @@ export async function payrollDesigner127(action,c){
     after:{event_code:normalized.code,effective_from:normalized.effective_from,revision,group_id:normalized.group_id,nature_id:normalized.nature_id},request});
   return {saved:true,event_id:id,revision,configuration_only:true,affects_closed_payroll:false};
  }
+ if(action==='sql-variables')return {variables:PAYROLL_SQL_VARIABLES128,mode:'SAFE_SELECT_EXPRESSION',read_only:true};
  if(action==='simulate'){
   const normalized=normalizeEvent127(body.config,d);
   const values=body.values||{};
@@ -273,6 +283,22 @@ export async function payrollDesigner127(action,c){
    bad127(d,'Informe total de proventos e descontos da rescisao.');
   safe.quantidade=number127(values.quantidade??30,d,'quantidade',0,300,3);
   safe.valor_informado=number127(values.valor_informado??0,d,'valor informado',0,99999999999,2);
+  if(normalized.calculation==='SQL_PERSONALIZADO'){
+   // Parametros devem ser informados explicitamente, nenhum dado de outra empresa
+   // e buscado e nenhuma tabela e acessivel pela formula.
+   const args={};
+   for(const name of normalized.sql_variables){
+    if(!Object.prototype.hasOwnProperty.call(values,name))
+     bad127(d,'Informe a variavel '+name+' para simular a formula.','SQL_VARIABLE_REQUIRED',400);
+    args[name]=number127(values[name],d,'variavel '+name,0,999999999.99,2);
+   }
+   try{
+    const result=await evaluatePayrollSql128(env.DB,normalized.sql_query,args);
+    return {result:{...result,employee_discount:normalized.category==='DESCONTO',
+      employer_charge:normalized.category==='ENCARGO'},
+      configuration_only:true,sql_mode:'SAFE_SELECT_EXPRESSION'};
+   }catch(e){bad127(d,'Erro na formula SQL: '+e.message,'SQL_EVALUATION_FAILED',400);}
+  }
   return {result:simulateEvent127(normalized,safe),configuration_only:true};
  }
  bad127(d,'Acao nao encontrada.','NOT_FOUND',404);
