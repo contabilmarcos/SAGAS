@@ -34,11 +34,12 @@ async function payrollEventAccounting38(event,returnRunId=''){
 async function payrollFinanceModal38(runId=''){
   const comp=window.sagasPayrollCompetence;
   if(!comp){toast('Selecione uma competência.','error');return;}
-  const [runsAnswer,batchAnswer,batchesAnswer,eventsAnswer]=await Promise.all([
+  const [runsAnswer,batchAnswer,batchesAnswer,eventsAnswer,naturesAnswer]=await Promise.all([
     api('/api/payroll/monthly-runs?competence_id='+encodeURIComponent(comp)),
     api('/api/payroll/monthly-finance/settings'),
     api('/api/journal-batches'),
-    api('/api/payroll/events')
+    api('/api/payroll/events'),
+    api('/api/payroll/accounting-natures')
   ]);
   const runs=runsAnswer.runs||[];
   const selected=runId||runs[0]?.id;
@@ -46,6 +47,10 @@ async function payrollFinanceModal38(runId=''){
   const data=await api('/api/payroll/monthly-runs/'+encodeURIComponent(selected)+'/finance-preview');
   const batches=(batchesAnswer.batches||[]).filter(x=>x.status==='OPEN');
   const current=batchAnswer.settings||{};
+  const natures=(naturesAnswer.natures||[]).filter(x=>x.active&&x.synthetic_analytic==='ANALYTIC');
+  const netNatureOptions='<option value="">Selecione a natureza do liquido</option>'+natures.map(n=>
+    '<option value="'+esc(n.id)+'" '+(current.net_nature_id===n.id?'selected':'')+'>'+
+    esc(n.code+' — '+n.description)+'</option>').join('');
   const fmt=value=>(Number(value||0)/100).toLocaleString('pt-BR',{style:'currency',currency:'BRL'});
   const options='<option value="">Selecione um lote aberto</option>'+batches.map(x=>
     '<option value="'+esc(x.id)+'" '+(current.batch_id===x.id?'selected':'')+'>'+
@@ -58,16 +63,18 @@ async function payrollFinanceModal38(runId=''){
   const events=eventsAnswer.items||[];
   openModal('Integrar folha — Financeiro / Contábil',
     'Competência '+esc(data.run.competence)+' · '+done,
-    '<p class="help">Cada evento é vinculado a uma natureza, que fornece as contas conforme o centro de custo do funcionário. Aqui selecione somente o lote e confirme.</p>'+
+    '<p class="help">Cada evento usa somente os lados (D ou C) configurados na sua natureza. Salario-base pode ter apenas debito e INSS/IRRF apenas credito. O salario liquido e creditado automaticamente por centro de custo, na natureza selecionada abaixo. O diario completo deve fechar.</p>'+
     '<div class="grid three"><div class="field"><span>Proventos</span><b>'+fmt(data.totals.earnings_cents)+'</b></div>'+
     '<div class="field"><span>Descontos</span><b>'+fmt(data.totals.deductions_cents)+'</b></div>'+
     '<div class="field"><span>Salário líquido</span><b>'+fmt(data.totals.net_cents)+'</b></div></div>'+
-    '<form id="payrollFinanceBatchForm38"><div class="grid"><label class="field"><span>Lote contábil</span><select required name="batch_id">'+options+'</select></label></div>'+
+    '<form id="payrollFinanceBatchForm38"><div class="grid"><label class="field"><span>Lote contábil</span><select required name="batch_id">'+options+'</select></label>'+
+    '<label class="field"><span>Natureza do salário líquido a pagar (apenas crédito)</span><select required name="net_nature_id">'+netNatureOptions+'</select></label></div>'+
     '<div class="form-actions"><button class="btn secondary" type="button" data-close>Fechar</button><button class="btn primary" type="submit">Salvar lote</button></div></form>'+
     (missed.length?'<h4>Eventos que precisam de natureza</h4><div class="toolbar" style="flex-wrap:wrap">'+
       events.filter(x=>missed.some(p=>p.message.includes(x.code+' — '))).map(x=>
         '<button type="button" class="btn secondary sm" data-payroll38-config="'+esc(x.id)+'">'+esc(x.code)+' — '+esc(x.name)+'</button>').join('')+'</div>':'')+
-    errors+'<h4>Eventos contabilizados nesta folha</h4>'+
+    errors+'<p class="help"><b>Diario completo previsto:</b> Debitos '+fmt(data.journal_debit_cents)+' · Creditos '+fmt(data.journal_credit_cents)+'.</p>'+
+    '<h4>Eventos contabilizados nesta folha</h4>'+
     '<div class="table-wrap"><table class="table"><thead><tr><th>Evento</th><th>Centro de custo</th><th>Natureza</th><th>Valor</th></tr></thead><tbody>'+
     (rows||'<tr><td colspan="4">Configure naturezas e seus defaults por centro de custo.</td></tr>')+'</tbody></table></div>'+
     '<p class="help">A integração cria títulos apenas dos salários líquidos. Retenções e FGTS ficam como obrigações contábeis; não são emitidas guias fiscais automaticamente.</p>'+
@@ -79,7 +86,7 @@ async function payrollFinanceModal38(runId=''){
     e.preventDefault();const btn=e.target.querySelector('[type=submit]');btn.disabled=true;
     try{
       await api('/api/payroll/monthly-finance/settings',{method:'POST',body:Object.fromEntries(new FormData(e.target))});
-      toast('Lote contábil salvo.');await payrollFinanceModal38(selected);
+      toast('Lote e natureza do salario liquido salvos.');await payrollFinanceModal38(selected);
     }catch(err){toast(err.message,'error');btn.disabled=false}
   };
   $$('[data-payroll38-config]').forEach(b=>b.onclick=()=>payrollEventAccounting38(events.find(x=>x.id===b.dataset.payroll38Config),selected).catch(e=>toast(e.message,'error')));
