@@ -43,8 +43,34 @@ async function render(){
   cols,rows:rows||null,emptyTitle:'Nenhuma formula cadastrada',emptyText:'Cadastre formulas para reutilizar em varios eventos da folha.',placeholder:'Pesquisar formulas...'});
  $$('[data-formula129]').forEach(b=>b.onclick=()=>open(b.dataset.formula129).catch(e=>toast(e.message,'error')));
  const toolbar=$('#content .toolbar');
- if(toolbar)toolbar.insertAdjacentHTML('beforeend','<button class="btn secondary" type="button" id="formula129Refresh">Atualizar</button>');
+ if(toolbar)toolbar.insertAdjacentHTML('beforeend','<button class="btn secondary" type="button" id="formula129Refresh">Atualizar</button>'+
+   (manage?'<button class="btn secondary" type="button" id="formula129Import">Importar 7 modelos iniciais</button>':''));
  $('#formula129Refresh').onclick=()=>render().catch(e=>toast(e.message,'error'));
+ if(manage&&$('#formula129Import'))$('#formula129Import').onclick=()=>importModels().catch(e=>toast(e.message,'error'));
+}
+async function importModels(){
+ openModal('Importar modelos de formulas',
+  'Os modelos serao gravados no D1 da empresa selecionada. Formulas existentes nao serao alteradas.',
+  '<form id="f130-import-form">'+
+  '<p class="help">Serão incluídos: salário-base, salário líquido, 13º por avos, férias por dias, 1/3 de férias, desconto de faltas e líquido de rescisão. São modelos matemáticos editáveis, não tabelas oficiais de INSS ou IRRF.</p>'+
+  '<label class="field"><span>Vigente a partir da competência</span>'+
+  '<input name="effective_from" type="month" value="'+E(month())+'" required></label>'+
+  '<div class="form-actions"><button type="button" class="btn secondary" id="f130-import-cancel">Cancelar</button>'+
+  '<button type="submit" class="btn primary">Cadastrar modelos</button></div></form>',true);
+ const form=$('#f130-import-form');
+ $('#f130-import-cancel').onclick=closeModal;
+ form.onsubmit=async ev=>{
+  ev.preventDefault();
+  const button=form.querySelector('[type=submit]');
+  button.disabled=true;
+  try{
+   const effective_from=form.elements.effective_from.value;
+   const result=await api('/api/payroll/formulas/import-models',{method:'POST',body:{effective_from}});
+   closeModal();
+   toast(result.imported+' modelo(s) cadastrado(s), '+result.skipped+' existente(s) preservado(s).');
+   await render();
+  }catch(err){button.disabled=false;toast(err.message,'error')}
+ };
 }
 async function open(formulaId=null){
  const detail=formulaId?await api('/api/payroll/formulas/'+encodeURIComponent(formulaId)):null;
@@ -110,7 +136,7 @@ async function open(formulaId=null){
   return [base.value];
  };
  const renderParams=()=>{
-  const existing=new Map($$('#f129-params [data-f129-var]').map(x=>[x.dataset.f129Var,x.value]));
+  const existing=new Map([...$$('#f129-params [data-f129-var]')].map(x=>[x.dataset.f129Var,x.value]));
   const defaults={quantidade:12,AVOS_13:12,DIAS_FERIAS:30,DIAS_FALTA:2,TOTAL_DESCONTOS_RESCISAO:144,
    valor_informado:1800,FAP:1,RAT:2};
   $('#f129-params').innerHTML=paramList().map(key=>fields('value_'+key,key,existing.get(key)??defaults[key]??1800,'number',
@@ -131,7 +157,7 @@ async function open(formulaId=null){
   renderParams();
  };
  const sourceValues=()=>{
-  const bands=$$('#f129-bands tr').map(tr=>({
+  const bands=[...$$('#f129-bands tr')].map(tr=>({
    to:tr.querySelector('.f129-to').value,rate:tr.querySelector('.f129-rate').value,
    deduction:tr.querySelector('.f129-discount').value
   }));
