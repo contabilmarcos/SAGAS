@@ -133,3 +133,66 @@ test('IRRF_EMP com F_IRRF_2020 e faixa antiga oculta salva uma nova revisao no W
  assert.equal(cfg.effective_from,'2020-01');
  assert.equal(audit.length,1);
 });
+
+test('INSS_PATRONAL legado INFORMATIVO com formulario antigo salva como ENCARGO patronal sem trocar tipo historico',async()=>{
+ const statements=[],auditEvents=[];
+ class HttpError extends Error{constructor(status,message,code){super(message);this.status=status;this.code=code;}}
+ const legacy={id:'EV_CPP',code:'INSS_PATRONAL',name:'INSS Patronal',event_type:'INFORMATIVO',active:1};
+ const DB={
+  prepare(sql){return {sql,values:[],bind(...args){this.values=args;return this;},async first(){
+   if(sql.includes('FROM payroll_events'))return legacy;
+   if(sql.includes('FROM payroll_designer_groups127'))return {id:'GR'};
+   if(sql.includes('FROM budget_natures'))return {id:'NAT'};
+   if(sql.includes('MAX(revision)'))return {rev:0};
+   throw Error('SQL inesperado '+sql);
+  }};},
+  async batch(items){statements.push(...items);return items.map(()=>({meta:{changes:1}}));}
+ };
+ const body={
+  code:'INSS_PATRONAL',name:'INSS Patronal',active:true,
+  category:'INFORMATIVO',system:'ENCARGO_PATRONAL',trigger:'AUTOMATICO',
+  calculation:'FORMULA_CADASTRADA',base:'SALARIO_CONTRATUAL',
+  effective_from:'2020-01',group_id:'GR',nature_id:'NAT',
+  formula_id:'F_CPP_2020',
+  incidences:{inss:'NAO',irrf:'NAO',fgts:'NAO'}
+ };
+ const d={HttpError,uuid:()=> 'REV_CPP',
+  requirePermission:async()=>{},ensureSchemaRevision:async()=>{},
+  audit:async(_env,item)=>auditEvents.push(item),
+  resolveFormula:async(id,competence)=>{
+   assert.equal(id,'F_CPP_2020');
+   assert.equal(competence,'2020-01');
+   return {formula:{id,active:1},version:{id:'VER',revision:1}};
+  }};
+ const out=await payrollDesigner127('event-save',{
+  env:{DB},companyId:'COMPANY',auth:{user:{id:'USER'}},request:{},
+  eventId:legacy.id,body,d
+ });
+ assert.equal(out.saved,true);
+ assert.equal(statements.length,1);
+ assert.match(statements[0].sql,/INSERT INTO payroll_designer_config127/);
+ assert.doesNotMatch(statements[0].sql,/UPDATE payroll_events/);
+ const saved=JSON.parse(statements[0].values[5]);
+ assert.equal(saved.category,'ENCARGO');
+ assert.equal(saved.system,'ENCARGO_PATRONAL');
+ assert.equal(saved.formula_id,'F_CPP_2020');
+ assert.equal(saved.nature_id,'NAT');
+ assert.equal(auditEvents.length,1);
+});
+test('nao reclassifica evento historico PROVENTO como encargo patronal',async()=>{
+ class HttpError extends Error{constructor(status,message,code){super(message);this.status=status;this.code=code;}}
+ const DB={prepare(sql){return {bind(){return{first:async()=>({
+   id:'E1',code:'INSS_PATRONAL',name:'INSS Patronal',event_type:'PROVENTO',active:1})}}}}},
+  batch:async()=>{throw Error('Nao pode escrever');}
+ };
+ const body={
+  code:'INSS_PATRONAL',name:'INSS Patronal',category:'PROVENTO',
+  system:'ENCARGO_PATRONAL',calculation:'FORMULA_CADASTRADA',
+  base:'BASE_INSS',trigger:'AUTOMATICO',effective_from:'2020-01',
+  formula_id:'F_CPP_2020',incidences:{inss:'NAO',irrf:'NAO',fgts:'NAO'}
+ };
+ await assert.rejects(()=>payrollDesigner127('event-save',{
+  env:{DB},companyId:'C1',auth:{user:{id:'U1'}},request:{},eventId:'E1',body,
+  d:{HttpError,requirePermission:async()=>{},ensureSchemaRevision:async()=>{}}
+ }),err=>err instanceof HttpError&&err.status===409&&err.code==='LEGACY_TYPE_LOCKED');
+});
