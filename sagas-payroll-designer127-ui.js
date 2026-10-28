@@ -20,7 +20,8 @@
   ['FERIAS_DIAS','Ferias: remuneracao / 30 x dias'],
   ['TERCO_FERIAS','1/3 de ferias: valor das ferias / 3'],
   ['LIQUIDO_RESCISAO','Liquido da rescisao: proventos - descontos'],
-  ['SQL_PERSONALIZADO','Consulta SQL personalizada (SELECT ... AS VALOR)']
+  ['SQL_PERSONALIZADO','Consulta SQL personalizada (SELECT ... AS VALOR)'],
+  ['FORMULA_CADASTRADA','Usar formula cadastrada no catalogo']
  ];
  const bases=[
   ['SALARIO_CONTRATUAL','Salario contratual do funcionario'],
@@ -56,6 +57,7 @@
   return {code:v.code,name:v.name,category:form.elements.category.value,system:v.system,active:form.elements.active.checked,
    calculation:v.calculation,base:form.elements.base.value,trigger:v.trigger,effective_from:v.effective_from,
    group_id:v.group_id||null,nature_id:v.nature_id||null,
+   formula_id:v.formula_id||null,
    days_basis:v.days_basis||'30',rate:v.rate||0,fixed_amount:v.fixed_amount||0,
    sql_query:v.sql_query||'',
    incidences:{inss:v.inss,irrf:v.irrf,fgts:v.fgts},
@@ -85,6 +87,7 @@
   box('ed127-pct').classList.toggle('hidden',!pct);
   box('ed127-fixed').classList.toggle('hidden',!fixed);
   box('ed128-sql').classList.toggle('hidden',method!=='SQL_PERSONALIZADO');
+  box('ed129-linked').classList.toggle('hidden',method!=='FORMULA_CADASTRADA');
   box('ed127-divisor').classList.toggle('hidden',!divisor);
   box('ed127-test-quantity').classList.toggle('hidden',!['SALARIO_DIAS','FALTA_DIAS','HORAS_BASE','FERIAS_DIAS','DECIMO_TERCEIRO_AVOS'].includes(method));
   box('ed127-test-manual').classList.toggle('hidden',method!=='VALOR_INFORMADO');
@@ -106,13 +109,14 @@
    form.elements.system.value='OUTRO';
  }
  async function open(event=null,period=''){
-  const [a,g,n,sqlCatalog]=await Promise.all([
+  const [a,g,n,sqlCatalog,formulaCatalog]=await Promise.all([
    event?api('/api/payroll/designer/events/'+encodeURIComponent(event.id)+'?competence='+encodeURIComponent(period||month())):Promise.resolve({}),
    api('/api/payroll/designer/groups'),api('/api/payroll/accounting-natures'),
-   api('/api/payroll/designer/sql-variables')
+   api('/api/payroll/designer/sql-variables'),api('/api/payroll/formulas')
   ]);
   const old=a.config||{};
   const allowedSqlVars=sqlCatalog.variables||[];
+  const savedFormulas=(formulaCatalog.formulas||[]).filter(x=>x.active||x.id===old.formula_id);
   const autoCodes=new Set(['SALARIO_BASE','INSS_EMP','IRRF_EMP','FGTS_PATRONAL']);
   const defaultMethod=event?.code==='SALARIO_BASE'?'SALARIO_DIAS':
    event?.code==='INSS_EMP'?'TABELA_PROGRESSIVA':
@@ -143,6 +147,8 @@
   const natures=(n.natures||[]).filter(x=>x.active&&x.synthetic_analytic==='ANALYTIC');
   const groupOptions='<option value="">Sem grupo</option>'+gr.map(x=>'<option value="'+e(x.id)+'"'+(cfg.group_id===x.id?' selected':'')+'>'+e(x.code+' — '+x.name)+'</option>').join('');
   const natureOptions='<option value="">Sem natureza contábil</option>'+natures.map(x=>'<option value="'+e(x.id)+'"'+(cfg.nature_id===x.id?' selected':'')+'>'+e(x.code+' — '+x.description)+'</option>').join('');
+  const formulaOptions='<option value="">Selecione uma formula</option>'+savedFormulas.map(x=>
+   '<option value="'+e(x.id)+'"'+(cfg.formula_id===x.id?' selected':'')+'>'+e(x.code+' — '+x.name)+'</option>').join('');
   const field=(name,label,element)=>'<label class="field"><span>'+label+'</span>'+element+'</label>';
   const sel=(name,label,items,v)=>field(name,label,'<select name="'+name+'" required>'+opt(items,v)+'</select>');
   const input=(name,label,value,type='text',attr='')=>field(name,label,'<input name="'+name+'" type="'+type+'" value="'+e(value??'')+'" '+attr+'>');
@@ -164,6 +170,11 @@
    '<div id="ed127-pct">'+input('rate','Aliquota (%)',cfg.rate,'number','min="0" max="100" step="0.0001"')+'</div>'+
    '<div id="ed127-fixed">'+input('fixed_amount','Valor fixo (R$)',Number(cfg.fixed_cents||0)/100,'number','min="0" step="0.01"')+'</div>'+
    '<div id="ed127-divisor">'+input('days_basis','Divisor',cfg.days_basis,'number','min="1" max="300" step="0.001"')+'</div></div>'+
+   '<div id="ed129-linked"><div class="section-title">Formula compartilhada</div>'+
+   '<label class="field full"><span>Formula cadastrada</span><select name="formula_id" id="ed129-formula">'+formulaOptions+'</select></label>'+
+   '<p class="help" id="ed129-link-info">Uma formula pode ser usada por varios eventos. A versao e selecionada conforme a competencia.</p>'+
+   '<div class="grid" id="ed129-link-params"></div>'+
+   '<button class="btn secondary sm" id="ed129-open-catalog" type="button">Abrir Fórmulas de Cálculo</button></div>'+
    '<div id="ed128-sql"><div class="section-title">Consulta SQL personalizada</div>'+
    '<p class="help">Use SELECT &lt;expressao&gt; AS VALOR com variaveis :NOME. Funcoes: ROUND, ABS, COALESCE, IFNULL, NULLIF, MIN, MAX e CASE WHEN. Consultas a tabelas (FROM, JOIN), subconsultas e comandos de alteracao sao bloqueados.</p>'+
    '<label class="field full"><span>Formula SQL</span><textarea name="sql_query" id="ed128-sql-text" rows="5" spellcheck="false" style="font-family:monospace;min-height:105px" maxlength="1200" placeholder="SELECT ROUND(:SALARIO_REFERENCIA_13 * :AVOS_13 / 12, 2) AS VALOR">'+e(cfg.sql_query||'')+'</textarea></label>'+
@@ -195,6 +206,30 @@
   const form=document.getElementById('ed127-form');
   const method=form.elements.calculation;
   const sqlTextarea=document.getElementById('ed128-sql-text');
+  const linkedSelect=document.getElementById('ed129-formula');
+  let linkedCurrent=null;
+  const loadLinked=async()=>{
+   const id=linkedSelect.value;
+   linkedCurrent=null;$('#ed129-link-params').innerHTML='';
+   if(!id){$('#ed129-link-info').textContent='Selecione uma formula salva no catalogo.';return;}
+   const competence=form.elements.effective_from.value||month();
+   const data=await api('/api/payroll/formulas/'+encodeURIComponent(id)+'?competence='+encodeURIComponent(competence));
+   linkedCurrent=data.applicable;
+   if(!linkedCurrent){
+    $('#ed129-link-info').textContent='Formula sem revisao vigente para '+competence+'.';return;
+   }
+   const rule=linkedCurrent.source;
+   $('#ed129-link-info').textContent='Versao '+linkedCurrent.revision+' vigente desde '+linkedCurrent.effective_from+' · '+rule.calculation;
+   const vars=rule.calculation==='SQL_PERSONALIZADO'
+     ?[...new Set([...String(rule.sql_query||'').matchAll(/:([A-Z][A-Z0-9_]*)/gi)].map(x=>x[1].toUpperCase()))]
+     :rule.calculation==='LIQUIDO_RESCISAO'?['TOTAL_PROVENTOS_RESCISAO','TOTAL_DESCONTOS_RESCISAO']
+     :rule.calculation==='VALOR_FIXO'?[]
+     :rule.calculation==='VALOR_INFORMADO'?['valor_informado']
+     :['DECIMO_TERCEIRO_AVOS','FERIAS_DIAS','SALARIO_DIAS','FALTA_DIAS','HORAS_BASE'].includes(rule.calculation)
+      ?[rule.base,'quantidade']:[rule.base];
+   $('#ed129-link-params').innerHTML=vars.map(v=>
+    '<label class="field"><span>'+e(v)+'</span><input type="number" step="0.01" min="0" max="999999999.99" data-ed129-var="'+e(v)+'" value="'+e(v==='quantidade'||v==='AVOS_13'?12:v.includes('DESCONTOS')?144:1800)+'"></label>').join('');
+  };
   const sampleSql=()=>{
    const code=String(form.elements.code.value||'').toUpperCase();
    if(/13|DECIMO|TERCEIRO/.test(code))return 'SELECT ROUND(:SALARIO_REFERENCIA_13 * :AVOS_13 / 12, 2) AS VALOR';
@@ -227,7 +262,11 @@
   };
   if(old.bands?.length)for(const band of old.bands)
    addBand({to:band.to_cents/100,rate:band.rate,deduction:band.deduction_cents/100});
-  method.onchange=setup;form.elements.category.onchange=()=>appearance(form);
+  method.onchange=()=>{setup();if(method.value==='FORMULA_CADASTRADA')loadLinked().catch(e=>toast(e.message,'error'))};
+  linkedSelect.onchange=()=>loadLinked().catch(e=>toast(e.message,'error'));
+  form.elements.effective_from.onchange=()=>{if(method.value==='FORMULA_CADASTRADA')loadLinked().catch(e=>toast(e.message,'error'))};
+  $('#ed129-open-catalog').onclick=()=>{closeModal();nav('payroll-formulas')};
+  form.elements.category.onchange=()=>appearance(form);
   form.elements.days_basis.dataset.hours=cfg.calculation==='HORAS_BASE'?String(cfg.days_basis):'220';
   if(codeLocked){
    // Campos estruturais legados so poderao mudar apos a troca do motor antigo.
@@ -235,6 +274,7 @@
   }
   setup();
   refreshSqlParams();
+  if(cfg.formula_id)loadLinked().catch(e=>toast(e.message,'error'));
   document.getElementById('ed127-add-band').onclick=()=>addBand();
   document.getElementById('ed127-cancel').onclick=closeModal;
   document.getElementById('ed127-simulate').onclick=async()=>{
@@ -248,6 +288,10 @@
     if(form.elements.calculation.value==='SQL_PERSONALIZADO'){
       for(const input of document.querySelectorAll('#ed128-sql-params [data-sql-var]'))
         values[input.dataset.sqlVar]=Number(input.value);
+    }
+    if(form.elements.calculation.value==='FORMULA_CADASTRADA'){
+      for(const input of document.querySelectorAll('#ed129-link-params [data-ed129-var]'))
+        values[input.dataset.ed129Var]=Number(input.value);
     }
     const result=await api('/api/payroll/designer/simulate',{method:'POST',body:{config,values}});
     document.getElementById('ed127-simulation-result').textContent=
