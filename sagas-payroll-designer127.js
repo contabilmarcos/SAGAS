@@ -211,11 +211,9 @@ export async function payrollDesigner127(action,c){
   const config=JSON.stringify(normalized);
   statements.push(env.DB.prepare("INSERT INTO payroll_designer_config127(id,company_id,event_id,effective_from,revision,config_json,created_by) VALUES (?,?,?,?,?,?,?)")
     .bind(d.uuid(),companyId,id,normalized.effective_from,revision,config,auth.user.id));
-  // Salvar mapeamento contabil e versao na mesma transacao.
-  if(normalized.nature_id){
-   statements.push(env.DB.prepare("INSERT INTO payroll_event_natures39(company_id,event_id,nature_id,updated_by) VALUES(?,?,?,?) ON CONFLICT(company_id,event_id) DO UPDATE SET nature_id=excluded.nature_id,updated_by=excluded.updated_by,updated_at=CURRENT_TIMESTAMP")
-    .bind(companyId,id,normalized.nature_id,auth.user.id));
-  }
+  // A natureza do novo desenho fica versionada e nao altera o mapeamento
+  // da folha legada. Isso protege integracoes ainda pendentes de competencias
+  // fechadas. A ativacao no novo calculador sera feita como mudanca separada.
   try{await env.DB.batch(statements);}
   catch(e){if(/UNIQUE constraint failed|FOREIGN KEY constraint failed/.test(String(e)))
     bad127(d,'Conflito de cadastro/revisao; atualize os eventos e tente novamente.','CONFLICT',409);throw e;}
