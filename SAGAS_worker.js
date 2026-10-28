@@ -44,6 +44,7 @@ import { payrollTermination123 } from './sagas-payroll-termination123.js';
 import { payrollLiveAudit124 } from './sagas-payroll-live-audit124.js';
 import { payrollCompetenceReopen125 } from './sagas-payroll-reopen125.js';
 import { payrollDesigner127 } from './sagas-payroll-designer127.js';
+import { payrollFormulas129,formulaSnapshot129 } from './sagas-payroll-formulas129.js';
 import { payrollProvisionAccounting44 } from './sagas-payroll-provisions44.js';
 // SAGAS Worker v96 - Registro auditável do envelope próprio VACATION de férias | cumulativo desde v49
 // ===== utils.js =====
@@ -12012,6 +12013,28 @@ async function route(request, env) {
   }
   // Folha redesenhada: cadastros parametrizaveis e versionados de eventos/grupos.
   // Nao muda o calculador mensal antigo sem uma homologacao especifica.
+  // v129 catalogo de formulas versionadas, compartilhadas entre eventos.
+  // O registro das tabelas do designer e feito antes do catalogo (FK/relatorio).
+  if((path==='/api/payroll/formulas'||path==='/api/payroll/formulas/simulate'||
+     routeMatch(path,'/api/payroll/formulas/:id'))){
+    await payrollDesigner127('sql-variables',{env,companyId,auth,request,
+      d:{HttpError,requirePermission,ensureSchemaRevision,audit,uuid}});
+    const deps={HttpError,requirePermission,ensureSchemaRevision,audit,uuid};
+    if(path==='/api/payroll/formulas'&&(method==='GET'||method==='POST'))
+      return ok(await payrollFormulas129(method==='GET'?'list':'save',{
+        env,companyId,auth,request,d:deps,body:method==='POST'?await readJson(request):{}
+      }));
+    p=routeMatch(path,'/api/payroll/formulas/:id');
+    if(p){
+      if(method==='GET')return ok(await payrollFormulas129('detail',{
+        env,companyId,auth,request,d:deps,formulaId:p.id,
+        competence:url.searchParams.get('competence')
+      }));
+      if(method==='POST')return ok(await payrollFormulas129('save',{
+        env,companyId,auth,request,d:deps,formulaId:p.id,body:await readJson(request)
+      }));
+    }
+  }
   if(path==='/api/payroll/designer/groups'&&(method==='GET'||method==='POST'))
     return ok(await payrollDesigner127(method==='GET'?'groups':'group-save',{
       env,companyId,auth,request,d:{HttpError,requirePermission,ensureSchemaRevision,audit,uuid},
@@ -12023,7 +12046,12 @@ async function route(request, env) {
     }));
   if(path==='/api/payroll/designer/simulate'&&method==='POST')
     return ok(await payrollDesigner127('simulate',{
-      env,companyId,auth,request,d:{HttpError,requirePermission,ensureSchemaRevision,audit,uuid},
+      env,companyId,auth,request,
+      d:{HttpError,requirePermission,ensureSchemaRevision,audit,uuid,
+        simulateLinkedFormula:(formulaId,competence,values)=>
+          payrollFormulas129('simulate',{env,companyId,auth,request,formulaId,competence,
+            d:{HttpError,requirePermission,ensureSchemaRevision,audit,uuid},body:{values}})
+      },
       body:await readJson(request)
     }));
   p=routeMatch(path,'/api/payroll/designer/events/:id');
@@ -12035,7 +12063,15 @@ async function route(request, env) {
     }
     return ok(await payrollDesigner127(method==='GET'?'event-detail':'event-save',{
       env,companyId,auth,request,eventId:p.id==='new'?null:p.id,
-      d:{HttpError,requirePermission,ensureSchemaRevision,audit,uuid},
+      d:{HttpError,requirePermission,ensureSchemaRevision,audit,uuid,
+        resolveFormula:async(formulaId,competence)=>{
+          await ensureSchemaRevision(env,'payroll-formulas129',1,async()=>{
+            const {ensureFormulaSchema129}=await import('./sagas-payroll-formulas129.js');
+            await ensureFormulaSchema129(env);
+          });
+          return formulaSnapshot129(env,companyId,formulaId,competence);
+        }
+      },
       body:method==='GET'?{competence:url.searchParams.get('competence')} :await readJson(request)
     }));
   }
