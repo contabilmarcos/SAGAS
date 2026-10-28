@@ -1,0 +1,41 @@
+name: SAGAS - Testar configuracao da folha
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/payroll-designer-ci.yml'
+      - 'sagas-payroll-designer127.js'
+      - 'sagas-payroll-designer127-ui.js'
+      - 'tests/payroll-designer-v127.test.mjs'
+      - 'index.html'
+      - 'SAGAS_worker.js'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  designer:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Verificar sintaxe dos modulos e Worker
+        run: |
+          node --check sagas-payroll-designer127.js
+          node --check sagas-payroll-designer127-ui.js
+          node --check SAGAS_worker.js
+      - name: Testar regra de eventos parametrizados (sem consultar D1 real)
+        run: node --test tests/payroll-designer-v127.test.mjs
+      - name: Validar script inline do index
+        run: |
+          node --input-type=module <<'NODE'
+          import {readFileSync} from 'node:fs';
+          import {Script} from 'node:vm';
+          const html=readFileSync('index.html','utf8');
+          const scripts=[...html.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/g)];
+          for(const x of scripts){if(x[1].trim())new Script(x[1]);}
+          if(!html.includes('sagas-payroll-designer127-ui.js'))throw Error('Cadastro novo nao incluido.');
+          console.log('Scripts inline verificados: '+scripts.length);
+          NODE
