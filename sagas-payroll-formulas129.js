@@ -74,7 +74,7 @@ async function simulate129(env,source,values,d){
  if(['DECIMO_TERCEIRO_AVOS','FERIAS_DIAS','SALARIO_DIAS','FALTA_DIAS','HORAS_BASE'].includes(config.calculation)&&!('quantidade' in valid))
   invalid129(d,'Informe a quantidade de dias, horas ou avos.');
  if(!('valor_informado' in valid)&&config.calculation==='VALOR_INFORMADO')invalid129(d,'Informe o valor do evento.');
- if(!(''+config.base in valid)&&!['VALOR_FIXO','LIQUIDO_RESCISAO','VALOR_INFORMADO'].includes(config.calculation))
+ if(!(config.base in valid)&&!['VALOR_FIXO','LIQUIDO_RESCISAO','VALOR_INFORMADO'].includes(config.calculation))
   invalid129(d,'Informe a base '+config.base+'.');
  return simulateEvent127(config,valid);
 }
@@ -83,7 +83,7 @@ export async function payrollFormulas129(action,{env,companyId,auth,request,d,bo
   action==='save'?'payroll.manage':'payroll.read');
  await d.ensureSchemaRevision(env,'payroll-formulas129',1,()=>ensureFormulaSchema129(env));
  if(action==='list'){
-  const res=await env.DB.prepare("SELECT f.id,f.code,f.name,f.active,(SELECT COUNT(*) FROM payroll_formula_versions129 v WHERE v.company_id=f.company_id AND v.formula_id=f.id) AS revisions,(SELECT COUNT(*) FROM payroll_designer_config127 c WHERE c.company_id=f.company_id AND json_extract(c.config_json,'$.formula_id')=f.id) AS event_versions FROM payroll_formulas129 f WHERE f.company_id=? ORDER BY f.code LIMIT 501").bind(companyId).all();
+  const res=await env.DB.prepare("SELECT f.id,f.code,f.name,f.active,(SELECT COUNT(*) FROM payroll_formula_versions129 v WHERE v.company_id=f.company_id AND v.formula_id=f.id) AS revisions,(SELECT COUNT(DISTINCT c.event_id) FROM payroll_designer_config127 c WHERE c.company_id=f.company_id AND json_extract(c.config_json,'$.formula_id')=f.id) AS event_versions FROM payroll_formulas129 f WHERE f.company_id=? ORDER BY f.code LIMIT 501").bind(companyId).all();
   return {formulas:res.results||[],configuration_only:true};
  }
  if(action==='save'){
@@ -124,6 +124,13 @@ export async function payrollFormulas129(action,{env,companyId,auth,request,d,bo
   const result=await formulaSnapshot129(env,companyId,formulaId,period129(competence,d));
   if(!result||!result.version)invalid129(d,'Formula sem revisao aplicavel ou inativa.',409,'FORMULA_NOT_APPLICABLE');
   return result;
+ }
+ if(action==='preview'){
+  const normalized=normalize129(body.config,d);
+  try{
+   const result=await simulate129(env,normalized.source,body.values||{},d);
+   return {result,validated:true,configuration_only:true,unsaved_preview:true};
+  }catch(e){if(e instanceof d.HttpError)throw e;invalid129(d,'Falha na simulacao: '+e.message,400,'FORMULA_SIMULATION_FAILED');}
  }
  if(action==='simulate'){
   const result=formulaId&&formulaId!=='new'?
