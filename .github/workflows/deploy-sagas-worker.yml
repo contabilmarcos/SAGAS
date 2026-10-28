@@ -12,6 +12,9 @@ on:
       - 'sagas-payroll-termination123-audit.js'
       - 'sagas-payroll-live-audit124.js'
       - 'sagas-payroll-reopen125.js'
+      - 'sagas-payroll-designer127.js'
+      - 'sagas-payroll-designer127-ui.js'
+      - 'tests/payroll-designer-v127.test.mjs'
       - 'tests/payroll-reopen-v125.test.mjs'
       - 'sagas-payroll-thirteenth112.js'
       - 'sagas-payroll-closing69.js'
@@ -108,6 +111,8 @@ jobs:
           node --check sagas-payroll-termination123-audit.js
           node --check sagas-payroll-live-audit124.js
           node --check sagas-payroll-reopen125.js
+          node --check sagas-payroll-designer127.js
+          node --check sagas-payroll-designer127-ui.js
           node --check sagas-payroll39.js
           node --check sagas-payroll-ledger126.js
           node --check sagas-payroll38-ui.js
@@ -123,7 +128,8 @@ jobs:
             tests/payroll-termination-v123-audit.test.mjs \
             tests/payroll-live-audit-v124.test.mjs \
             tests/payroll-reopen-v125.test.mjs \
-            tests/payroll-ledger-v126.test.mjs
+            tests/payroll-ledger-v126.test.mjs \
+            tests/payroll-designer-v127.test.mjs
 
       - name: Validar configuração e gerar Wrangler temporário
         env:
