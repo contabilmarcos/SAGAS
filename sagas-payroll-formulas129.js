@@ -12,7 +12,7 @@ const METHODS129=new Set([
 ]);
 function invalid129(d,message,status=400,code='FORMULA_INVALID'){throw new d.HttpError(status,message,code);}
 function period129(p,d){const s=String(p||'');if(!/^20\d\d-(0[1-9]|1[0-2])$/.test(s))invalid129(d,'Competencia invalida: use AAAA-MM.');return s;}
-function normalize129(raw,d){
+export function normalize129(raw,d){
  const code=String(raw?.code||'').trim().toUpperCase(),name=String(raw?.name||'').trim();
  if(!CODE129.test(code))invalid129(d,'Codigo da formula deve ter letras, numeros ou underscore (2 a 30 caracteres).');
  if(name.length<3||name.length>120)invalid129(d,'Descricao da formula deve ter de 3 a 120 caracteres.');
