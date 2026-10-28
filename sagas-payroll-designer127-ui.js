@@ -4,6 +4,8 @@
  'use strict';
  const e=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;','\'':'&#39;'}[c]));
  const E=()=>crypto.randomUUID();
+ // Tipos patronais novos usam ENCARGO, enquanto o cadastro antigo usa INFORMATIVO.
+ const employerCode127=code=>/(?:^|_)(?:PATRONAL|TERCEIROS|RAT|FGTS|CPP|PIS_FOLHA)(?:_|$)/.test(String(code||'').toUpperCase());
  const opt=(items,v)=>items.map(([key,label])=>'<option value="'+e(key)+'"'+(String(key)===String(v)?' selected':'')+'>'+e(label)+'</option>').join('');
  const categories=[['PROVENTO','Provento'],['DESCONTO','Desconto do empregado'],['ENCARGO','Encargo patronal'],['INFORMATIVO','Informativo']];
  const systems=[['REMUNERACAO','Remuneracao'],['RETENCAO','Retencao do empregado'],['ENCARGO_PATRONAL','Encargo patronal'],['OUTRO','Outros']];
@@ -133,6 +135,8 @@
    api('/api/payroll/designer/sql-variables'),api('/api/payroll/formulas')
   ]);
   const old=a.config||{};
+  const isLegacyEmployer=event?.event_type==='INFORMATIVO'&&
+   (employerCode127(event?.code)||old.system==='ENCARGO_PATRONAL'||old.category==='ENCARGO');
   const allowedSqlVars=sqlCatalog.variables||[];
   const savedFormulas=(formulaCatalog.formulas||[]).filter(x=>x.active||x.id===old.formula_id);
   const autoCodes=new Set(['SALARIO_BASE','INSS_EMP','IRRF_EMP','FGTS_PATRONAL']);
@@ -152,8 +156,8 @@
    event?.code==='TERCO_FERIAS'?'VALOR_FERIAS':'SALARIO_CONTRATUAL';
   const cfg={
    code:event?.code||'',name:event?.name||'',
-   category:event?.event_type==='INFORMATIVO'&&event.code==='FGTS_PATRONAL'?'ENCARGO':event?.event_type||'PROVENTO',
-   system:event?.code==='FGTS_PATRONAL'?'ENCARGO_PATRONAL':
+   category:isLegacyEmployer?'ENCARGO':event?.event_type||'PROVENTO',
+   system:isLegacyEmployer?'ENCARGO_PATRONAL':
     ['INSS_EMP','IRRF_EMP'].includes(event?.code)?'RETENCAO':'REMUNERACAO',
    active:event?Boolean(event.active):true,
    calculation:defaultMethod,
@@ -161,6 +165,11 @@
    rate:0,fixed_cents:0,days_basis:30,sql_query:'',incidences:{inss:'NAO',irrf:'NAO',fgts:'NAO'},
    ...old
   };
+  if(event?.event_type==='INFORMATIVO'&&
+     (isLegacyEmployer||cfg.system==='ENCARGO_PATRONAL'||cfg.category==='ENCARGO')){
+   cfg.category='ENCARGO';
+   cfg.system='ENCARGO_PATRONAL';
+  }
   const gr=(g.groups||[]).filter(x=>x.active);
   const natures=(n.natures||[]).filter(x=>x.active&&x.synthetic_analytic==='ANALYTIC');
   const groupOptions='<option value="">Sem grupo</option>'+gr.map(x=>'<option value="'+e(x.id)+'"'+(cfg.group_id===x.id?' selected':'')+'>'+e(x.code+' — '+x.name)+'</option>').join('');
@@ -300,9 +309,14 @@
   form.elements.category.onchange=()=>appearance(form);
   form.elements.days_basis.dataset.hours=cfg.calculation==='HORAS_BASE'?String(cfg.days_basis):'220';
   if(codeLocked){
-   // Campos estruturais legados so poderao mudar apos a troca do motor antigo.
+   // A categoria nova e separada do event_type utilizado pelo calculador legado.
    form.elements.category.disabled=true;
   }
+  form.elements.system.onchange=()=>{
+   if(form.elements.system.value==='ENCARGO_PATRONAL'&&(!event||event.event_type==='INFORMATIVO'))
+    form.elements.category.value='ENCARGO';
+   appearance(form);
+  };
   setup();
   refreshSqlParams();
   if(cfg.formula_id)loadLinked().catch(e=>toast(e.message,'error'));
