@@ -32,8 +32,9 @@ const month=()=>{const d=new Date();return d.getFullYear()+'-'+String(d.getMonth
 const baseChoice=m=>({DECIMO_TERCEIRO_AVOS:'SALARIO_REFERENCIA_13',FERIAS_DIAS:'REMUNERACAO_FERIAS',TERCO_FERIAS:'VALOR_FERIAS'})[m]||'SALARIO_CONTRATUAL';
 async function render(){
  const d=await api('/api/payroll/formulas'),items=d.formulas||[];
- const cols=['Codigo','Formula','Situação','Versoes','Eventos vinculados','Acoes'];
+ const cols=['Codigo','Formula','Tipo / Consulta','Situação','Versoes','Eventos vinculados','Acoes'];
  const rows=items.map(f=>'<tr><td class="code">'+E(f.code)+'</td><td><b>'+E(f.name)+'</b></td>'+
+  '<td><div>'+E(f.calculation||'—')+'</div><small title="'+E(f.rule_preview||'')+'">'+E((f.rule_preview||'').slice(0,68))+'</small></td>'+
   '<td>'+(f.active?'Ativa':'Inativa')+'</td><td>'+Number(f.revisions||0)+'</td>'+
   '<td>'+Number(f.event_versions||0)+'</td>'+
   '<td><button class="btn secondary sm" type="button" data-formula129="'+E(f.id)+'">Editar / historico</button></td></tr>').join('');
