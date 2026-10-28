@@ -15,13 +15,26 @@
   ['TABELA_PROGRESSIVA','Tabela progressiva por faixa'],
   ['TABELA_FAIXA_DEDUCAO','Tabela por faixa e parcela a deduzir'],
   ['FALTA_DIAS','Faltas: salario / 30 x dias'],
-  ['HORAS_BASE','Horas: salario / divisor x horas']
+  ['HORAS_BASE','Horas: salario / divisor x horas'],
+  ['DECIMO_TERCEIRO_AVOS','13º: salario de referencia x avos / 12'],
+  ['FERIAS_DIAS','Ferias: remuneracao / 30 x dias'],
+  ['TERCO_FERIAS','1/3 de ferias: valor das ferias / 3'],
+  ['LIQUIDO_RESCISAO','Liquido da rescisao: proventos - descontos']
  ];
  const bases=[
   ['SALARIO_CONTRATUAL','Salario contratual do funcionario'],
+  ['SALARIO_REFERENCIA_13','Salario de referencia do 13º (com medias)'],
+  ['REMUNERACAO_FERIAS','Remuneracao de ferias (com medias)'],
+  ['VALOR_FERIAS','Valor das ferias gozadas'],
   ['BASE_INSS','Base do INSS'],
   ['BASE_IRRF','Base do IRRF'],
   ['BASE_FGTS','Base do FGTS'],
+  ['BASE_INSS_FERIAS','Base INSS das ferias'],
+  ['BASE_IRRF_FERIAS','Base IRRF do recibo de ferias'],
+  ['BASE_FGTS_FERIAS','Base FGTS das ferias'],
+  ['BASE_INSS_13','Base INSS exclusiva do 13º'],
+  ['BASE_IRRF_13','Base IRRF exclusiva do 13º'],
+  ['BASE_FGTS_13','Base FGTS do 13º'],
   ['PROVENTOS_TRIBUTAVEIS','Total de proventos tributaveis'],
   ['TOTAL_PROVENTOS','Total de proventos'],
   ['VALOR_INFORMADO','Valor informado']
@@ -40,7 +53,7 @@
  function formBody(form){
   const v=Object.fromEntries(new FormData(form));
   return {code:v.code,name:v.name,category:form.elements.category.value,system:v.system,active:form.elements.active.checked,
-   calculation:v.calculation,base:v.base,trigger:v.trigger,effective_from:v.effective_from,
+   calculation:v.calculation,base:form.elements.base.value,trigger:v.trigger,effective_from:v.effective_from,
    group_id:v.group_id||null,nature_id:v.nature_id||null,
    days_basis:v.days_basis||'30',rate:v.rate||0,fixed_amount:v.fixed_amount||0,
    incidences:{inss:v.inss,irrf:v.irrf,fgts:v.fgts},
@@ -54,12 +67,32 @@
   const table=method.startsWith('TABELA_');
   const pct=method==='PERCENTUAL_BASE';
   const fixed=method==='VALOR_FIXO';
-  const divisor=['SALARIO_DIAS','FALTA_DIAS','HORAS_BASE'].includes(method);
+  const divisor=['SALARIO_DIAS','FALTA_DIAS','HORAS_BASE','FERIAS_DIAS'].includes(method);
+  const special={DECIMO_TERCEIRO_AVOS:'SALARIO_REFERENCIA_13',
+    FERIAS_DIAS:'REMUNERACAO_FERIAS',TERCO_FERIAS:'VALOR_FERIAS'};
+  if(special[method]){
+    form.elements.base.value=special[method];
+    form.elements.base.disabled=true;
+  }else form.elements.base.disabled=method==='LIQUIDO_RESCISAO';
+  if(method==='LIQUIDO_RESCISAO'){
+    form.elements.category.value='INFORMATIVO';
+    form.elements.system.value='OUTRO';
+  }
   const box=id=>document.getElementById(id);
   box('ed127-tables').classList.toggle('hidden',!table);
   box('ed127-pct').classList.toggle('hidden',!pct);
   box('ed127-fixed').classList.toggle('hidden',!fixed);
   box('ed127-divisor').classList.toggle('hidden',!divisor);
+  box('ed127-test-quantity').classList.toggle('hidden',!['SALARIO_DIAS','FALTA_DIAS','HORAS_BASE','FERIAS_DIAS','DECIMO_TERCEIRO_AVOS'].includes(method));
+  box('ed127-test-manual').classList.toggle('hidden',method!=='VALOR_INFORMADO');
+  box('ed127-test-rescisao').classList.toggle('hidden',method!=='LIQUIDO_RESCISAO');
+  const qtyLabel=document.getElementById('ed127-test-quantity-label');
+  if(qtyLabel)qtyLabel.textContent=method==='DECIMO_TERCEIRO_AVOS'?'Avos do 13º (0 a 12)':
+    method==='FERIAS_DIAS'?'Dias de ferias (0 a 30)':method==='HORAS_BASE'?'Horas':'Dias (0 a 30)';
+  form.elements.test_qty.max=method==='DECIMO_TERCEIRO_AVOS'?'12':method==='HORAS_BASE'?'300':'30';
+  form.elements.test_qty.step=method==='HORAS_BASE'?'0.001':'1';
+  if(method==='DECIMO_TERCEIRO_AVOS'&&Number(form.elements.test_qty.value)>12)
+    form.elements.test_qty.value='12';
   form.elements.days_basis.value=method==='HORAS_BASE'
    ?(form.elements.days_basis.dataset.hours||'220'):'30';
   form.elements.days_basis.readOnly=method!=='HORAS_BASE';
@@ -80,9 +113,16 @@
    event?.code==='INSS_EMP'?'TABELA_PROGRESSIVA':
    event?.code==='IRRF_EMP'?'TABELA_FAIXA_DEDUCAO':
    event?.code==='FGTS_PATRONAL'?'PERCENTUAL_BASE':
+   ['DECIMO_TERCEIRO','DECIMO_TERCEIRO_SALARIO','13_SALARIO'].includes(event?.code)?'DECIMO_TERCEIRO_AVOS':
+   event?.code==='FERIAS_GOZO'?'FERIAS_DIAS':
+   event?.code==='TERCO_FERIAS'?'TERCO_FERIAS':
+   event?.code==='LIQUIDO_RESCISAO'?'LIQUIDO_RESCISAO':
    event?.code==='FALTA_INJUSTIFICADA'?'FALTA_DIAS':'VALOR_INFORMADO';
   const defaultBase=event?.code==='INSS_EMP'?'BASE_INSS':event?.code==='IRRF_EMP'?'BASE_IRRF':
-   event?.code==='FGTS_PATRONAL'?'BASE_FGTS':'SALARIO_CONTRATUAL';
+   event?.code==='FGTS_PATRONAL'?'BASE_FGTS':
+   ['DECIMO_TERCEIRO','DECIMO_TERCEIRO_SALARIO','13_SALARIO'].includes(event?.code)?'SALARIO_REFERENCIA_13':
+   event?.code==='FERIAS_GOZO'?'REMUNERACAO_FERIAS':
+   event?.code==='TERCO_FERIAS'?'VALOR_FERIAS':'SALARIO_CONTRATUAL';
   const cfg={
    code:event?.code||'',name:event?.name||'',
    category:event?.event_type==='INFORMATIVO'&&event.code==='FGTS_PATRONAL'?'ENCARGO':event?.event_type||'PROVENTO',
@@ -128,8 +168,12 @@
    '</div><p class="help">Encargos patronais (FGTS, CPP, RAT e terceiros) nao sao descontos do trabalhador. Na contabilizacao, a natureza podera ter somente debito, somente credito ou ambos, conforme o evento. Nenhum valor e enviado automaticamente para uma folha fechada.</p>'+
    '<div class="section-title">Simular regra antes de salvar</div><div class="grid">'+
    input('test_base','Base de exemplo (R$)',1800,'number','min="0" step="0.01"')+
-   input('test_qty','Dias / horas',30,'number','min="0" max="300" step="0.001"')+
-   input('test_manual','Valor informado (R$)',0,'number','min="0" step="0.01"')+
+   '<div id="ed127-test-quantity"><label class="field"><span id="ed127-test-quantity-label">Dias / horas / avos</span><input name="test_qty" type="number" value="30" min="0" max="300" step="0.001"></label></div>'+
+   '<div id="ed127-test-manual">'+input('test_manual','Valor informado (R$)',0,'number','min="0" step="0.01"')+'</div>'+
+   '<div id="ed127-test-rescisao">'+
+   input('test_gross','Proventos rescisorios (R$)',1800,'number','min="0" step="0.01"')+
+   input('test_discounts','Descontos rescisorios (R$)',144,'number','min="0" step="0.01"')+
+   '</div>'+
    '</div><div class="toolbar"><button type="button" class="btn secondary" id="ed127-simulate">Simular calculo</button>'+
    '<span id="ed127-simulation-result" class="help"></span></div>'+
    '<div class="form-actions"><button id="ed127-cancel" class="btn secondary" type="button">Cancelar</button>'+
@@ -160,6 +204,8 @@
     const values=Object.fromEntries(bases.map(([key])=>[key,Number(form.elements.test_base.value)]));
     values.quantidade=Number(form.elements.test_qty.value);
     values.valor_informado=Number(form.elements.test_manual.value);
+    values.TOTAL_PROVENTOS_RESCISAO=Number(form.elements.test_gross.value);
+    values.TOTAL_DESCONTOS_RESCISAO=Number(form.elements.test_discounts.value);
     const result=await api('/api/payroll/designer/simulate',{method:'POST',body:{config,values}});
     document.getElementById('ed127-simulation-result').textContent=
      'Resultado: '+money(result.result.amount)+' · '+(result.result.employer_charge?'Encargo patronal':result.result.employee_discount?'Desconto':'Nao desconta do salario');
