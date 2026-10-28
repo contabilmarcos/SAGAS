@@ -151,6 +151,7 @@
    field('group','Grupo de eventos','<select name="group_id">'+groupOptions+'</select>')+
    input('effective_from','Vigente a partir de',cfg.effective_from,'month','required')+
    '<label class="check"><input name="active" type="checkbox"'+(cfg.active?' checked':'')+'> Evento ativo</label></div>'+
+   '<p class="help"><b>Configurador em implantacao:</b> estas regras sao salvas e podem ser simuladas. O calculo definitivo da folha ainda nao utiliza este novo motor; o cadastro nao altera folhas fechadas ou processamentos antigos.</p>'+
    '<div class="section-title">Regra de calculo</div><div class="grid">'+
    sel('trigger','Lancamento', [['AUTOMATICO','Automatico no grupo'],['MANUAL','Incluido manualmente']],cfg.trigger)+
    sel('calculation','Forma de calculo',methods,cfg.calculation)+
