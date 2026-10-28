@@ -44,6 +44,7 @@ import { payrollTermination123 } from './sagas-payroll-termination123.js';
 import { payrollLiveAudit124 } from './sagas-payroll-live-audit124.js';
 import { payrollCompetenceReopen125 } from './sagas-payroll-reopen125.js';
 import { payrollDesigner127 } from './sagas-payroll-designer127.js';
+import { provisionCatalog132 } from './sagas-payroll-provision-catalog132.js';
 import { payrollFormulas129,formulaSnapshot129,ensureFormulaSchema129 } from './sagas-payroll-formulas129.js';
 import { payrollProvisionAccounting44 } from './sagas-payroll-provisions44.js';
 // SAGAS Worker v96 - Registro auditável do envelope próprio VACATION de férias | cumulativo desde v49
@@ -12011,6 +12012,25 @@ async function route(request, env) {
     await ensureSchemaRevision(env,'payroll-event-rules',1,()=>ensurePayrollEventRulesSchema(env));
     return ok(await payrollEventCalculationPreview(env,companyId,url.searchParams.get('competence_id')));
   }
+  // v132 cadastro proprio de provisoes: formula + natureza por centro de custo.
+  // Nao altera movimentacoes e provisoes historicas 42-45.
+  if(path==='/api/payroll/provision-definitions/preview'&&method==='POST')
+    return ok(await provisionCatalog132('preview',{
+      env,companyId,auth,request,d:{HttpError,requirePermission,ensureSchemaRevision,audit,uuid},
+      body:await readJson(request)
+    }));
+  if(path==='/api/payroll/provision-definitions'&&(method==='GET'||method==='POST'))
+    return ok(await provisionCatalog132(method==='GET'?'list':'save',{
+      env,companyId,auth,request,d:{HttpError,requirePermission,ensureSchemaRevision,audit,uuid},
+      body:method==='POST'?await readJson(request):{}
+    }));
+  p=routeMatch(path,'/api/payroll/provision-definitions/:id');
+  if(p&&(method==='GET'||method==='POST'))
+    return ok(await provisionCatalog132(method==='GET'?'detail':'save',{
+      env,companyId,auth,request,d:{HttpError,requirePermission,ensureSchemaRevision,audit,uuid},
+      id:p.id,competence:url.searchParams.get('competence'),
+      body:method==='POST'?await readJson(request):{}
+    }));
   // Folha redesenhada: cadastros parametrizaveis e versionados de eventos/grupos.
   // Nao muda o calculador mensal antigo sem uma homologacao especifica.
   // v129 catalogo de formulas versionadas, compartilhadas entre eventos.
