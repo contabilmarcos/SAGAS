@@ -43,6 +43,7 @@ import { payrollTermination122 } from './sagas-payroll-termination122.js';
 import { payrollTermination123 } from './sagas-payroll-termination123.js';
 import { payrollLiveAudit124 } from './sagas-payroll-live-audit124.js';
 import { payrollCompetenceReopen125 } from './sagas-payroll-reopen125.js';
+import { payrollDesigner127 } from './sagas-payroll-designer127.js';
 import { payrollProvisionAccounting44 } from './sagas-payroll-provisions44.js';
 // SAGAS Worker v96 - Registro auditável do envelope próprio VACATION de férias | cumulativo desde v49
 // ===== utils.js =====
@@ -12008,6 +12009,31 @@ async function route(request, env) {
     await requirePermission(env,auth.user.id,companyId,'payroll.read');
     await ensureSchemaRevision(env,'payroll-event-rules',1,()=>ensurePayrollEventRulesSchema(env));
     return ok(await payrollEventCalculationPreview(env,companyId,url.searchParams.get('competence_id')));
+  }
+  // Folha redesenhada: cadastros parametrizaveis e versionados de eventos/grupos.
+  // Nao muda o calculador mensal antigo sem uma homologacao especifica.
+  if(path==='/api/payroll/designer/groups'&&(method==='GET'||method==='POST'))
+    return ok(await payrollDesigner127(method==='GET'?'groups':'group-save',{
+      env,companyId,auth,request,d:{HttpError,requirePermission,ensureSchemaRevision,audit,uuid},
+      body:method==='POST'?await readJson(request):{}
+    }));
+  if(path==='/api/payroll/designer/simulate'&&method==='POST')
+    return ok(await payrollDesigner127('simulate',{
+      env,companyId,auth,request,d:{HttpError,requirePermission,ensureSchemaRevision,audit,uuid},
+      body:await readJson(request)
+    }));
+  p=routeMatch(path,'/api/payroll/designer/events/:id');
+  if(p&&(method==='GET'||method==='POST')){
+    if(method==='POST'){
+      await ensureSchemaRevision(env,'purchasing',1,async()=>{
+        await ensurePurchasingSchema(env);await ensurePurchaseIntegrationSchema(env);await ensureRmPurchasingSchema(env);
+      });
+    }
+    return ok(await payrollDesigner127(method==='GET'?'event-detail':'event-save',{
+      env,companyId,auth,request,eventId:p.id==='new'?null:p.id,
+      d:{HttpError,requirePermission,ensureSchemaRevision,audit,uuid},
+      body:method==='GET'?{competence:url.searchParams.get('competence')} :await readJson(request)
+    }));
   }
   // Configuração versionada; somente o avaliador aritmético restrito da simulação interpreta fórmulas.
   if(path==='/api/payroll/event-rules'){
