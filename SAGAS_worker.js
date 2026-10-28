@@ -12015,8 +12015,9 @@ async function route(request, env) {
   // Nao muda o calculador mensal antigo sem uma homologacao especifica.
   // v129 catalogo de formulas versionadas, compartilhadas entre eventos.
   // O registro das tabelas do designer e feito antes do catalogo (FK/relatorio).
-  if((path==='/api/payroll/formulas'||path==='/api/payroll/formulas/simulate'||
-     routeMatch(path,'/api/payroll/formulas/:id'))){
+  if((path==='/api/payroll/formulas'||path==='/api/payroll/formulas/preview'||
+     routeMatch(path,'/api/payroll/formulas/:id')||
+     routeMatch(path,'/api/payroll/formulas/:id/simulate'))){
     await payrollDesigner127('sql-variables',{env,companyId,auth,request,
       d:{HttpError,requirePermission,ensureSchemaRevision,audit,uuid}});
     const deps={HttpError,requirePermission,ensureSchemaRevision,audit,uuid};
