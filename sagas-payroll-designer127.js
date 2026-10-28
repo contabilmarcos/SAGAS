@@ -123,6 +123,7 @@ export function simulateEvent127(cfg,values={}){
 async function schema127(env){
  await env.DB.batch([
   env.DB.prepare("CREATE TABLE IF NOT EXISTS payroll_designer_groups127(id TEXT PRIMARY KEY,company_id TEXT NOT NULL,code TEXT NOT NULL,name TEXT NOT NULL,active INTEGER NOT NULL DEFAULT 1,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,UNIQUE(company_id,code))"),
+  env.DB.prepare("CREATE TABLE IF NOT EXISTS payroll_event_natures39(company_id TEXT NOT NULL,event_id TEXT NOT NULL REFERENCES payroll_events(id) ON DELETE RESTRICT,nature_id TEXT NOT NULL REFERENCES budget_natures(id) ON DELETE RESTRICT,updated_by TEXT NOT NULL,updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,PRIMARY KEY(company_id,event_id))"),
   env.DB.prepare("CREATE TABLE IF NOT EXISTS payroll_designer_config127(id TEXT PRIMARY KEY,company_id TEXT NOT NULL,event_id TEXT NOT NULL REFERENCES payroll_events(id) ON DELETE RESTRICT,effective_from TEXT NOT NULL,revision INTEGER NOT NULL,config_json TEXT NOT NULL,created_by TEXT NOT NULL,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,UNIQUE(company_id,event_id,effective_from,revision))"),
   env.DB.prepare("CREATE INDEX IF NOT EXISTS ix_designer_config_event127 ON payroll_designer_config127(company_id,event_id,effective_from)")
  ]);
@@ -192,6 +193,8 @@ export async function payrollDesigner127(action,c){
    bad127(d,'Tipo do evento existente difere do cadastro. Altere o tipo apenas quando a nova folha estiver ativada.','LEGACY_TYPE_LOCKED',409);
   if(exists&&exists.code!==normalized.code)
    bad127(d,'Codigo de evento existente nao pode ser renumerado nesta configuracao.','CODE_LOCKED',409);
+  if(exists&&['SALARIO_BASE','INSS_EMP','IRRF_EMP','FGTS_PATRONAL'].includes(exists.code)&&!normalized.active)
+   bad127(d,'Evento tecnico usado no calculo antigo nao pode ser inativado nesta fase.','LEGACY_ACTIVE_LOCKED',409);
   let id=eventId||d.uuid();
   const version=await env.DB.prepare("SELECT COALESCE(MAX(revision),0) AS rev FROM payroll_designer_config127 WHERE company_id=? AND event_id=? AND effective_from=?")
     .bind(companyId,id,normalized.effective_from).first();
@@ -208,16 +211,14 @@ export async function payrollDesigner127(action,c){
   const config=JSON.stringify(normalized);
   statements.push(env.DB.prepare("INSERT INTO payroll_designer_config127(id,company_id,event_id,effective_from,revision,config_json,created_by) VALUES (?,?,?,?,?,?,?)")
     .bind(d.uuid(),companyId,id,normalized.effective_from,revision,config,auth.user.id));
+  // Salvar mapeamento contabil e versao na mesma transacao.
+  if(normalized.nature_id){
+   statements.push(env.DB.prepare("INSERT INTO payroll_event_natures39(company_id,event_id,nature_id,updated_by) VALUES(?,?,?,?) ON CONFLICT(company_id,event_id) DO UPDATE SET nature_id=excluded.nature_id,updated_by=excluded.updated_by,updated_at=CURRENT_TIMESTAMP")
+    .bind(companyId,id,normalized.nature_id,auth.user.id));
+  }
   try{await env.DB.batch(statements);}
   catch(e){if(/UNIQUE constraint failed|FOREIGN KEY constraint failed/.test(String(e)))
     bad127(d,'Conflito de cadastro/revisao; atualize os eventos e tente novamente.','CONFLICT',409);throw e;}
-  // Espelha a natureza na parametrizacao contabilidade ja existente, se a
-  // natureza foi informada e a tabela do Worker antigo existe.
-  // Para evitar duplo-lancamento, esta operacao nao recalcula nenhuma folha.
-  if(normalized.nature_id){
-   await env.DB.prepare("INSERT INTO payroll_event_natures39(company_id,event_id,nature_id,updated_by) VALUES(?,?,?,?) ON CONFLICT(company_id,event_id) DO UPDATE SET nature_id=excluded.nature_id,updated_by=excluded.updated_by,updated_at=CURRENT_TIMESTAMP")
-    .bind(companyId,id,normalized.nature_id,auth.user.id).run();
-  }
   await d.audit(env,{companyId,userId:auth.user.id,action:exists?'CONFIGURE':'CREATE',entity:'payroll_designer_config127',entityId:id,
     after:{event_code:normalized.code,effective_from:normalized.effective_from,revision,group_id:normalized.group_id,nature_id:normalized.nature_id},request});
   return {saved:true,event_id:id,revision,configuration_only:true,affects_closed_payroll:false};
