@@ -237,9 +237,18 @@ export async function payrollDesigner127(action,c){
   return item;
  }
  if(action==='event-save'){
-  const normalized=normalizeEvent127(body,d);
   const exists=eventId?await event127(env,companyId,eventId):null;
   if(eventId&&!exists)bad127(d,'Evento nao encontrado.','NOT_FOUND',404);
+  // INFORMATIVO e o tipo tecnico do cadastro antigo para encargos patronais.
+  // No designer moderno, ENCARGO representa a mesma categoria sem alterar
+  // event_type ou envelopes historicos. Aceitar tambem telas antigas em cache.
+  const submitted=body?.system==='ENCARGO_PATRONAL'&&
+   body?.category==='INFORMATIVO'&&exists?.event_type==='INFORMATIVO'
+    ?{...body,category:'ENCARGO'}:body;
+  if(submitted?.system==='ENCARGO_PATRONAL'&&exists&&exists.event_type!=='INFORMATIVO')
+   bad127(d,'Este evento legado e do tipo '+exists.event_type+
+    '. Para preservar o historico, nao pode ser convertido em encargo patronal. Cadastre um evento de encargo separado.','LEGACY_TYPE_LOCKED',409);
+  const normalized=normalizeEvent127(submitted,d);
   if(normalized.group_id&&!await group127(env,companyId,normalized.group_id))
    bad127(d,'Grupo de eventos nao encontrado ou inativo.');
   if(normalized.nature_id&&!await nature127(env,companyId,normalized.nature_id))
