@@ -1,7 +1,7 @@
 import {compilePayrollSql128,evaluatePayrollSql128,PAYROLL_SQL_VARIABLES128} from './sagas-payroll-sql128.js';
 // SAGAS: cadastro parametrizavel de eventos e grupos, versionado por competencia.
 // Nao altera folhas fechadas nem a rotina antiga de calculo. Interpretacao segura.
-const KINDS127=['SALARIO_DIAS','VALOR_INFORMADO','VALOR_FIXO','PERCENTUAL_BASE','TABELA_PROGRESSIVA','TABELA_FAIXA_DEDUCAO','FALTA_DIAS','HORAS_BASE','DECIMO_TERCEIRO_AVOS','FERIAS_DIAS','TERCO_FERIAS','LIQUIDO_RESCISAO','SQL_PERSONALIZADO'];
+const KINDS127=['SALARIO_DIAS','VALOR_INFORMADO','VALOR_FIXO','PERCENTUAL_BASE','TABELA_PROGRESSIVA','TABELA_FAIXA_DEDUCAO','FALTA_DIAS','HORAS_BASE','DECIMO_TERCEIRO_AVOS','FERIAS_DIAS','TERCO_FERIAS','LIQUIDO_RESCISAO','SQL_PERSONALIZADO','FORMULA_CADASTRADA'];
 const BASES127=[
  'SALARIO_CONTRATUAL','SALARIO_REFERENCIA_13','REMUNERACAO_FERIAS','VALOR_FERIAS',
  'BASE_INSS','BASE_IRRF','BASE_FGTS',
@@ -66,7 +66,7 @@ export function normalizeEvent127(raw,d){
  if(name.length<3)bad127(d,'Descricao precisa de pelo menos 3 caracteres.');
  const options={code,name,active:raw.active!==false,category:eventType,system,calculation,base,
   trigger,effective_from,nature_id,group_id,incidences,
-  days_basis:30,rate:0,fixed_cents:0,bands:[],sql_query:null};
+  days_basis:30,rate:0,fixed_cents:0,bands:[],sql_query:null,formula_id:null};
  if(['SALARIO_DIAS','FALTA_DIAS','HORAS_BASE','FERIAS_DIAS'].includes(calculation)){
   // Para mensalistas a base comercial padrao e 30 dias; horas exigem divisor informado.
   options.days_basis=calculation==='HORAS_BASE'
@@ -86,6 +86,11 @@ export function normalizeEvent127(raw,d){
    bad127(d,'Liquido rescisorio deve ser informativo, sem acrescentar provento ou desconto.');
   if(incidences.inss==='SIM'||incidences.irrf==='SIM'||incidences.fgts==='SIM')
    bad127(d,'Liquido rescisorio nao pode incidir novamente em tributos.');
+ }
+ if(calculation==='FORMULA_CADASTRADA'){
+  const formulaId=txt127(raw.formula_id,100);
+  if(!formulaId)bad127(d,'Selecione uma formula cadastrada para o evento.');
+  options.formula_id=formulaId;
  }
  if(calculation==='SQL_PERSONALIZADO'){
   try{
@@ -127,6 +132,7 @@ export function simulateEvent127(cfg,values={}){
  let cents=0;
  switch(cfg.calculation){
   case 'SQL_PERSONALIZADO':throw Error('SQL personalizado deve ser simulado no servidor com parametros autorizados.');
+  case 'FORMULA_CADASTRADA':throw Error('Formula vinculada deve ser resolvida no servidor conforme a competencia.');
   case 'SALARIO_DIAS':cents=Math.round(basis*quant/cfg.days_basis);break;
   case 'FALTA_DIAS':cents=Math.round(basis*quant/cfg.days_basis);break;
   case 'HORAS_BASE':cents=Math.round(basis*quant/cfg.days_basis);break;
@@ -222,6 +228,12 @@ export async function payrollDesigner127(action,c){
   const period=body.competence?validPeriod127(body.competence,d):null;
   const item=await readEvent127(env,companyId,eventId,period);
   if(!item)bad127(d,'Evento nao encontrado.','NOT_FOUND',404);
+  if(item.config?.formula_id&&d.resolveFormula){
+   const snapshot=await d.resolveFormula(item.config.formula_id,period||item.config.effective_from);
+   item.linked_formula=snapshot?{formula:snapshot.formula,version:snapshot.version?{
+    id:snapshot.version.id,revision:snapshot.version.revision,effective_from:snapshot.version.effective_from,
+    calculation:snapshot.version.source.calculation}:null}:null;
+  }
   return item;
  }
  if(action==='event-save'){
@@ -232,6 +244,12 @@ export async function payrollDesigner127(action,c){
    bad127(d,'Grupo de eventos nao encontrado ou inativo.');
   if(normalized.nature_id&&!await nature127(env,companyId,normalized.nature_id))
    bad127(d,'Selecione uma natureza orcamentaria analitica ativa.');
+  if(normalized.formula_id){
+   if(!d.resolveFormula)bad127(d,'Catalogo de formulas indisponivel.',503);
+   const linked=await d.resolveFormula(normalized.formula_id,normalized.effective_from);
+   if(!linked?.formula?.active||!linked.version)
+    bad127(d,'A formula selecionada esta inativa ou nao possui versao vigente nesta competencia.',409,'FORMULA_NOT_APPLICABLE');
+  }
   const type=normalized.category==='ENCARGO'?'INFORMATIVO':normalized.category;
   // Eventos tecnicos legados permanecem com seus codigos e tipos ate substituicao
   // total do calculador. A nova configuracao ja e personalizavel e versionada.
@@ -271,6 +289,13 @@ export async function payrollDesigner127(action,c){
  if(action==='simulate'){
   const normalized=normalizeEvent127(body.config,d);
   const values=body.values||{};
+  if(normalized.calculation==='FORMULA_CADASTRADA'){
+   if(!d.simulateLinkedFormula)bad127(d,'Simulador de formulas indisponivel.',503);
+   const res=await d.simulateLinkedFormula(normalized.formula_id,normalized.effective_from,values);
+   return {result:{...res.result,employee_discount:normalized.category==='DESCONTO',
+     employer_charge:normalized.category==='ENCARGO'},
+     linked_formula:res.formula,version:res.version,configuration_only:true};
+  }
   const safe={};
   for(const key of BASES127){
    if(values[key]!==undefined)safe[key]=number127(values[key],d,'base '+key,0,999999999.99,2);
