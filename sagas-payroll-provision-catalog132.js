@@ -8,7 +8,7 @@ const months132=/^20\d{2}-(0[1-9]|1[0-2])$/;
 const fail132=(d,message,code='PROVISION_CATALOG_INVALID',status=400)=>{
  throw new d.HttpError(status,message,code);
 };
-export function normalizeProvision132(raw,d){
+export function normalizeProvision132(raw,d,{requireAccounting=true}={}){
  if(!raw||typeof raw!=='object'||Array.isArray(raw))fail132(d,'Cadastro de provisao invalido.');
  const code=String(raw.code||'').trim().toUpperCase();
  const name=String(raw.name||'').trim();
@@ -23,7 +23,7 @@ export function normalizeProvision132(raw,d){
  const acc=raw.accounting||{};
  const nature_accrual_id=String(acc.nature_accrual_id||'').trim();
  const nature_use_id=String(acc.nature_use_id||'').trim()||null;
- if(!nature_accrual_id||nature_accrual_id.length>100)
+ if((requireAccounting&&!nature_accrual_id)||nature_accrual_id.length>100)
   fail132(d,'Selecione a natureza orcamentaria da constituicao da provisao.');
  if(nature_use_id&&nature_use_id.length>100)
   fail132(d,'Natureza de baixa invalida.');
@@ -84,7 +84,8 @@ export async function provisionCatalog132(action,{env,companyId,auth,request,d,b
   return {item,versions,applicable:versions.find(v=>!period||v.effective_from<=period)||null,configuration_only:true};
  }
  if(action==='preview'){
-  const rule=normalizeProvision132(body,d);
+  // Formula pode ser testada antes de preencher a guia Contabilizacao.
+  const rule=normalizeProvision132(body,d,{requireAccounting:false});
   const values=body.values||{};
   if(!values||typeof values!=='object'||Array.isArray(values))fail132(d,'Parametros de simulacao invalidos.');
   const args={};
