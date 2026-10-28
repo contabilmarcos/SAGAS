@@ -83,8 +83,13 @@ export async function payrollFormulas129(action,{env,companyId,auth,request,d,bo
   action==='save'?'payroll.manage':'payroll.read');
  await d.ensureSchemaRevision(env,'payroll-formulas129',1,()=>ensureFormulaSchema129(env));
  if(action==='list'){
-  const res=await env.DB.prepare("SELECT f.id,f.code,f.name,f.active,(SELECT COUNT(*) FROM payroll_formula_versions129 v WHERE v.company_id=f.company_id AND v.formula_id=f.id) AS revisions,(SELECT COUNT(DISTINCT c.event_id) FROM payroll_designer_config127 c WHERE c.company_id=f.company_id AND json_extract(c.config_json,'$.formula_id')=f.id) AS event_versions FROM payroll_formulas129 f WHERE f.company_id=? ORDER BY f.code LIMIT 501").bind(companyId).all();
-  return {formulas:res.results||[],configuration_only:true};
+  const res=await env.DB.prepare("SELECT f.id,f.code,f.name,f.active,(SELECT COUNT(*) FROM payroll_formula_versions129 v WHERE v.company_id=f.company_id AND v.formula_id=f.id) AS revisions,(SELECT COUNT(DISTINCT c.event_id) FROM payroll_designer_config127 c WHERE c.company_id=f.company_id AND json_extract(c.config_json,'$.formula_id')=f.id) AS event_versions,(SELECT v.source_json FROM payroll_formula_versions129 v WHERE v.company_id=f.company_id AND v.formula_id=f.id ORDER BY v.effective_from DESC,v.revision DESC LIMIT 1) AS latest_rule FROM payroll_formulas129 f WHERE f.company_id=? ORDER BY f.code LIMIT 501").bind(companyId).all();
+  return {formulas:(res.results||[]).map(f=>{
+    const {latest_rule,...rest}=f;
+    const rule=latest_rule?JSON.parse(latest_rule):null;
+    return {...rest,calculation:rule?.calculation||null,rule_preview:rule?.calculation==='SQL_PERSONALIZADO'?
+      String(rule.sql_query||'').slice(0,160):rule?.base||null};
+  }),configuration_only:true};
  }
  if(action==='save'){
   const normalized=normalize129(body,d);
