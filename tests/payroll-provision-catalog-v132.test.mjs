@@ -97,6 +97,15 @@ test('simulacao usa SELECT seguro no D1 e nao escreve valores',async()=>{
  assert.equal(f.batched.length,0);
  assert.ok(f.queries.some(x=>x.sql.startsWith('SELECT ROUND(')&&x.args[0]===3000));
 });
+test('simulacao da formula nao exige preencher antes a guia contabil',async()=>{
+ const f=fixture();
+ const r=await provisionCatalog132('preview',{...f.args,body:{
+  ...input({accounting:{nature_accrual_id:'',nature_use_id:null}}),
+  values:{SALARIO_CONTRATUAL:2400}
+ }});
+ assert.equal(r.result.amount,200);
+ assert.equal(f.batched.length,0);
+});
 test('simulacao rejeita variaveis sem valores ou negativas',async()=>{
  const f=fixture();
  await assert.rejects(()=>provisionCatalog132('preview',{
