@@ -1,7 +1,13 @@
 // SAGAS: cadastro parametrizavel de eventos e grupos, versionado por competencia.
 // Nao altera folhas fechadas nem a rotina antiga de calculo. Interpretacao segura.
-const KINDS127=['SALARIO_DIAS','VALOR_INFORMADO','VALOR_FIXO','PERCENTUAL_BASE','TABELA_PROGRESSIVA','TABELA_FAIXA_DEDUCAO','FALTA_DIAS','HORAS_BASE'];
-const BASES127=['SALARIO_CONTRATUAL','BASE_INSS','BASE_IRRF','BASE_FGTS','PROVENTOS_TRIBUTAVEIS','TOTAL_PROVENTOS','VALOR_INFORMADO'];
+const KINDS127=['SALARIO_DIAS','VALOR_INFORMADO','VALOR_FIXO','PERCENTUAL_BASE','TABELA_PROGRESSIVA','TABELA_FAIXA_DEDUCAO','FALTA_DIAS','HORAS_BASE','DECIMO_TERCEIRO_AVOS','FERIAS_DIAS','TERCO_FERIAS','LIQUIDO_RESCISAO'];
+const BASES127=[
+ 'SALARIO_CONTRATUAL','SALARIO_REFERENCIA_13','REMUNERACAO_FERIAS','VALOR_FERIAS',
+ 'BASE_INSS','BASE_IRRF','BASE_FGTS',
+ 'BASE_INSS_FERIAS','BASE_IRRF_FERIAS','BASE_FGTS_FERIAS',
+ 'BASE_INSS_13','BASE_IRRF_13','BASE_FGTS_13',
+ 'PROVENTOS_TRIBUTAVEIS','TOTAL_PROVENTOS','VALOR_INFORMADO'
+];
 const CATEGORIES127=['PROVENTO','DESCONTO','ENCARGO','INFORMATIVO'];
 const SYSTEMS127=['REMUNERACAO','RETENCAO','ENCARGO_PATRONAL','OUTRO'];
 const NULL127=Object.freeze({});
@@ -60,11 +66,25 @@ export function normalizeEvent127(raw,d){
  const options={code,name,active:raw.active!==false,category:eventType,system,calculation,base,
   trigger,effective_from,nature_id,group_id,incidences,
   days_basis:30,rate:0,fixed_cents:0,bands:[]};
- if(['SALARIO_DIAS','FALTA_DIAS','HORAS_BASE'].includes(calculation)){
+ if(['SALARIO_DIAS','FALTA_DIAS','HORAS_BASE','FERIAS_DIAS'].includes(calculation)){
   // Para mensalistas a base comercial padrao e 30 dias; horas exigem divisor informado.
   options.days_basis=calculation==='HORAS_BASE'
    ?number127(raw.days_basis,d,'divisor de horas',1,300,3)
    :number127(raw.days_basis??30,d,'divisor de dias',30,30,0);
+ }
+ if(calculation==='DECIMO_TERCEIRO_AVOS'){
+  if(base!=='SALARIO_REFERENCIA_13')bad127(d,'13o por avos exige a base Salario de referencia do 13o.');
+  options.days_basis=12;
+ }
+ if(calculation==='FERIAS_DIAS'&&base!=='REMUNERACAO_FERIAS')
+  bad127(d,'Ferias por dias exigem a base Remuneracao de ferias.');
+ if(calculation==='TERCO_FERIAS'&&base!=='VALOR_FERIAS')
+  bad127(d,'1/3 de ferias exige a base Valor das ferias gozadas.');
+ if(calculation==='LIQUIDO_RESCISAO'){
+  if(eventType!=='INFORMATIVO'||system!=='OUTRO')
+   bad127(d,'Liquido rescisorio deve ser informativo, sem acrescentar provento ou desconto.');
+  if(incidences.inss==='SIM'||incidences.irrf==='SIM'||incidences.fgts==='SIM')
+   bad127(d,'Liquido rescisorio nao pode incidir novamente em tributos.');
  }
  if(calculation==='PERCENTUAL_BASE')options.rate=percent127(raw.rate,d,'aliquota percentual');
  if(calculation==='VALOR_FIXO')options.fixed_cents=cents127(raw.fixed_amount,d,'valor fixo');
@@ -90,6 +110,10 @@ export function simulateEvent127(cfg,values={}){
  const quant=Number(values.quantidade??30);
  if(!Number.isFinite(base)||base<0||!Number.isFinite(quant)||quant<0)
   throw Error('Base ou quantidade invalida.');
+ if(cfg.calculation==='DECIMO_TERCEIRO_AVOS'&&(!Number.isInteger(quant)||quant>12))
+  throw Error('Informe avos inteiros de 0 a 12 para o 13o.');
+ if(cfg.calculation==='FERIAS_DIAS'&&(!Number.isInteger(quant)||quant>30))
+  throw Error('Informe dias inteiros de ferias de 0 a 30.');
  const asCents=v=>Math.round(v*100);
  const basis=asCents(base);
  let cents=0;
@@ -97,6 +121,19 @@ export function simulateEvent127(cfg,values={}){
   case 'SALARIO_DIAS':cents=Math.round(basis*quant/cfg.days_basis);break;
   case 'FALTA_DIAS':cents=Math.round(basis*quant/cfg.days_basis);break;
   case 'HORAS_BASE':cents=Math.round(basis*quant/cfg.days_basis);break;
+  case 'DECIMO_TERCEIRO_AVOS':cents=Math.round(basis*quant/12);break;
+  case 'FERIAS_DIAS':cents=Math.round(basis*quant/30);break;
+  case 'TERCO_FERIAS':cents=Math.round(basis/3);break;
+  case 'LIQUIDO_RESCISAO':{
+   const gross=Number(values.TOTAL_PROVENTOS_RESCISAO);
+   const discounts=Number(values.TOTAL_DESCONTOS_RESCISAO);
+   if(!Number.isFinite(gross)||!Number.isFinite(discounts)||gross<0||discounts<0)
+    throw Error('Informe proventos e descontos validos para a rescisao.');
+   const grossCents=asCents(gross),discountCents=asCents(discounts);
+   if(discountCents>grossCents)throw Error('Descontos rescisorios excedem proventos.');
+   cents=grossCents-discountCents;
+   break;
+  }
   case 'VALOR_INFORMADO':cents=asCents(Number(values.valor_informado||0));break;
   case 'VALOR_FIXO':cents=cfg.fixed_cents;break;
   case 'PERCENTUAL_BASE':cents=Math.round(basis*cfg.rate/100);break;
@@ -226,8 +263,14 @@ export async function payrollDesigner127(action,c){
   const values=body.values||{};
   const safe={};
   for(const key of BASES127){
-   if(values[key]!==undefined)safe[key]=number127(values[key],d,'base '+key,0,99999999999,2);
+   if(values[key]!==undefined)safe[key]=number127(values[key],d,'base '+key,0,999999999.99,2);
   }
+  for(const key of ['TOTAL_PROVENTOS_RESCISAO','TOTAL_DESCONTOS_RESCISAO']){
+   if(values[key]!==undefined)safe[key]=number127(values[key],d,key,0,999999999.99,2);
+  }
+  if(normalized.calculation==='LIQUIDO_RESCISAO'&&
+    (safe.TOTAL_PROVENTOS_RESCISAO===undefined||safe.TOTAL_DESCONTOS_RESCISAO===undefined))
+   bad127(d,'Informe total de proventos e descontos da rescisao.');
   safe.quantidade=number127(values.quantidade??30,d,'quantidade',0,300,3);
   safe.valor_informado=number127(values.valor_informado??0,d,'valor informado',0,99999999999,2);
   return {result:simulateEvent127(normalized,safe),configuration_only:true};
