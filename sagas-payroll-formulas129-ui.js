@@ -25,7 +25,8 @@ const bases=[
  ['BASE_FGTS_FERIAS','Base FGTS ferias'],['BASE_INSS_13','Base INSS 13º'],
  ['BASE_IRRF_13','Base IRRF 13º'],['BASE_FGTS_13','Base FGTS 13º'],
  ['PROVENTOS_TRIBUTAVEIS','Proventos tributaveis'],['TOTAL_PROVENTOS','Total proventos'],
- ['VALOR_INFORMADO','Valor informado']
+ ['TOTAL_DESCONTOS','Total descontos'],['TOTAL_PROVENTOS_RESCISAO','Proventos rescisorios'],
+ ['TOTAL_DESCONTOS_RESCISAO','Descontos rescisorios'],['VALOR_INFORMADO','Valor informado']
 ];
 const option=(list,val)=>list.map(([v,n])=>'<option value="'+E(v)+'"'+(String(v)===String(val)?' selected':'')+'>'+E(n)+'</option>').join('');
 const month=()=>{const d=new Date();return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')};
