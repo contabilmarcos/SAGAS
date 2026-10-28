@@ -12017,6 +12017,10 @@ async function route(request, env) {
       env,companyId,auth,request,d:{HttpError,requirePermission,ensureSchemaRevision,audit,uuid},
       body:method==='POST'?await readJson(request):{}
     }));
+  if(path==='/api/payroll/designer/sql-variables'&&method==='GET')
+    return ok(await payrollDesigner127('sql-variables',{
+      env,companyId,auth,request,d:{HttpError,requirePermission,ensureSchemaRevision,audit,uuid}
+    }));
   if(path==='/api/payroll/designer/simulate'&&method==='POST')
     return ok(await payrollDesigner127('simulate',{
       env,companyId,auth,request,d:{HttpError,requirePermission,ensureSchemaRevision,audit,uuid},
