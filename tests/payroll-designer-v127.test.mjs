@@ -74,3 +74,46 @@ test('salario mensal com valor fora dos limites nao e processado',()=>{
  const c=normalizeEvent127(base(),d);
  assert.throws(()=>simulateEvent127(c,{SALARIO_CONTRATUAL:-1,quantidade:30}),/invalida/);
 });
+
+test('13o por avos de 12 usa salario de referencia e nao salario mensal fixo',()=>{
+ const c=normalizeEvent127(base({code:'DECIMO_TERCEIRO',name:'13o salario',
+  calculation:'DECIMO_TERCEIRO_AVOS',base:'SALARIO_REFERENCIA_13'}),d);
+ assert.equal(simulateEvent127(c,{SALARIO_REFERENCIA_13:1800,quantidade:12}).amount,1800);
+ assert.equal(simulateEvent127(c,{SALARIO_REFERENCIA_13:1800,quantidade:5}).amount,750);
+ assert.equal(simulateEvent127(c,{SALARIO_REFERENCIA_13:1800,quantidade:0}).amount,0);
+});
+test('13o bloqueia avos fracionados e superiores a 12',()=>{
+ const c=normalizeEvent127(base({code:'DECIMO_TERCEIRO',name:'13o salario',
+  calculation:'DECIMO_TERCEIRO_AVOS',base:'SALARIO_REFERENCIA_13'}),d);
+ assert.throws(()=>simulateEvent127(c,{SALARIO_REFERENCIA_13:1800,quantidade:12.5}),/avos inteiros/);
+ assert.throws(()=>simulateEvent127(c,{SALARIO_REFERENCIA_13:1800,quantidade:13}),/avos inteiros/);
+ assert.throws(()=>normalizeEvent127(base({calculation:'DECIMO_TERCEIRO_AVOS',base:'SALARIO_CONTRATUAL'}),d),/exige a base/);
+});
+test('ferias por dias usa base de remuneracao de ferias com divisor de 30',()=>{
+ const c=normalizeEvent127(base({code:'FERIAS_GOZO',name:'Ferias gozadas',
+  calculation:'FERIAS_DIAS',base:'REMUNERACAO_FERIAS'}),d);
+ assert.equal(simulateEvent127(c,{REMUNERACAO_FERIAS:1800,quantidade:30}).amount,1800);
+ assert.equal(simulateEvent127(c,{REMUNERACAO_FERIAS:1800,quantidade:20}).amount,1200);
+ assert.throws(()=>simulateEvent127(c,{REMUNERACAO_FERIAS:1800,quantidade:30.5}),/dias inteiros/);
+});
+test('terco de ferias divide a base exatamente por tres, arredondando centavos',()=>{
+ const c=normalizeEvent127(base({code:'TERCO_FERIAS',name:'Terco de ferias',
+  calculation:'TERCO_FERIAS',base:'VALOR_FERIAS'}),d);
+ assert.equal(simulateEvent127(c,{VALOR_FERIAS:1800}).amount,600);
+ assert.equal(simulateEvent127(c,{VALOR_FERIAS:2000}).amount,666.67);
+});
+test('liquido rescisorio e totalizador informativo, nao gera provento repetido',()=>{
+ const c=normalizeEvent127(base({code:'LIQUIDO_RESCISAO',name:'Liquido rescisorio',
+  category:'INFORMATIVO',system:'OUTRO',calculation:'LIQUIDO_RESCISAO',
+  incidences:{inss:'NAO',irrf:'NAO',fgts:'NAO'}}),d);
+ const result=simulateEvent127(c,{TOTAL_PROVENTOS_RESCISAO:4500,TOTAL_DESCONTOS_RESCISAO:720});
+ assert.equal(result.amount,3780);
+ assert.equal(result.employee_discount,false);
+ assert.equal(result.employer_charge,false);
+ assert.throws(()=>simulateEvent127(c,{TOTAL_PROVENTOS_RESCISAO:500,TOTAL_DESCONTOS_RESCISAO:600}),/excedem/);
+});
+test('impede liquido rescisorio de ser provento ou ter incidencia tributaria',()=>{
+ assert.throws(()=>normalizeEvent127(base({calculation:'LIQUIDO_RESCISAO'}),d),/informativo/);
+ assert.throws(()=>normalizeEvent127(base({calculation:'LIQUIDO_RESCISAO',
+   category:'INFORMATIVO',system:'OUTRO'}),d),/incidir novamente/);
+});
