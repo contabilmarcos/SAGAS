@@ -177,9 +177,11 @@
    }catch(e){showError('Não foi possível simular: '+e.message);}
   };
   if(readOnly){
-   [...form.querySelectorAll('input,select,textarea,button')].forEach(x=>{
-    if(x.id!=='prov132Cancel')x.disabled=true;
-   });
+   // Usuário de consulta pode alternar guias e visualizar versões,
+   // mas não alterar cadastros nem executar simulações de escrita.
+   [...form.querySelectorAll('input,select,textarea')].forEach(x=>x.disabled=true);
+   $('#prov132Simulate').disabled=true;
+   $('#prov132Sample').disabled=true;
   }
   if(history.length){
    $$('[data-prov132-revision]').forEach(button=>button.onclick=()=>{
