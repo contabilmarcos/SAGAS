@@ -19,7 +19,8 @@
   ['DECIMO_TERCEIRO_AVOS','13º: salario de referencia x avos / 12'],
   ['FERIAS_DIAS','Ferias: remuneracao / 30 x dias'],
   ['TERCO_FERIAS','1/3 de ferias: valor das ferias / 3'],
-  ['LIQUIDO_RESCISAO','Liquido da rescisao: proventos - descontos']
+  ['LIQUIDO_RESCISAO','Liquido da rescisao: proventos - descontos'],
+  ['SQL_PERSONALIZADO','Consulta SQL personalizada (SELECT ... AS VALOR)']
  ];
  const bases=[
   ['SALARIO_CONTRATUAL','Salario contratual do funcionario'],
@@ -56,6 +57,7 @@
    calculation:v.calculation,base:form.elements.base.value,trigger:v.trigger,effective_from:v.effective_from,
    group_id:v.group_id||null,nature_id:v.nature_id||null,
    days_basis:v.days_basis||'30',rate:v.rate||0,fixed_amount:v.fixed_amount||0,
+   sql_query:v.sql_query||'',
    incidences:{inss:v.inss,irrf:v.irrf,fgts:v.fgts},
    bands:[...form.querySelectorAll('#ed127-bands tr')].map(r=>({
     to:r.querySelector('.ed127-to').value,rate:r.querySelector('.ed127-rate').value,
@@ -82,6 +84,7 @@
   box('ed127-tables').classList.toggle('hidden',!table);
   box('ed127-pct').classList.toggle('hidden',!pct);
   box('ed127-fixed').classList.toggle('hidden',!fixed);
+  box('ed128-sql').classList.toggle('hidden',method!=='SQL_PERSONALIZADO');
   box('ed127-divisor').classList.toggle('hidden',!divisor);
   box('ed127-test-quantity').classList.toggle('hidden',!['SALARIO_DIAS','FALTA_DIAS','HORAS_BASE','FERIAS_DIAS','DECIMO_TERCEIRO_AVOS'].includes(method));
   box('ed127-test-manual').classList.toggle('hidden',method!=='VALOR_INFORMADO');
@@ -103,11 +106,13 @@
    form.elements.system.value='OUTRO';
  }
  async function open(event=null,period=''){
-  const [a,g,n]=await Promise.all([
+  const [a,g,n,sqlCatalog]=await Promise.all([
    event?api('/api/payroll/designer/events/'+encodeURIComponent(event.id)+'?competence='+encodeURIComponent(period||month())):Promise.resolve({}),
-   api('/api/payroll/designer/groups'),api('/api/payroll/accounting-natures')
+   api('/api/payroll/designer/groups'),api('/api/payroll/accounting-natures'),
+   api('/api/payroll/designer/sql-variables')
   ]);
   const old=a.config||{};
+  const allowedSqlVars=sqlCatalog.variables||[];
   const autoCodes=new Set(['SALARIO_BASE','INSS_EMP','IRRF_EMP','FGTS_PATRONAL']);
   const defaultMethod=event?.code==='SALARIO_BASE'?'SALARIO_DIAS':
    event?.code==='INSS_EMP'?'TABELA_PROGRESSIVA':
@@ -131,7 +136,7 @@
    active:event?Boolean(event.active):true,
    calculation:defaultMethod,
    base:defaultBase,trigger:autoCodes.has(event?.code)?'AUTOMATICO':'MANUAL',effective_from:period||month(),
-   rate:0,fixed_cents:0,days_basis:30,incidences:{inss:'NAO',irrf:'NAO',fgts:'NAO'},
+   rate:0,fixed_cents:0,days_basis:30,sql_query:'',incidences:{inss:'NAO',irrf:'NAO',fgts:'NAO'},
    ...old
   };
   const gr=(g.groups||[]).filter(x=>x.active);
@@ -159,6 +164,12 @@
    '<div id="ed127-pct">'+input('rate','Aliquota (%)',cfg.rate,'number','min="0" max="100" step="0.0001"')+'</div>'+
    '<div id="ed127-fixed">'+input('fixed_amount','Valor fixo (R$)',Number(cfg.fixed_cents||0)/100,'number','min="0" step="0.01"')+'</div>'+
    '<div id="ed127-divisor">'+input('days_basis','Divisor',cfg.days_basis,'number','min="1" max="300" step="0.001"')+'</div></div>'+
+   '<div id="ed128-sql"><div class="section-title">Consulta SQL personalizada</div>'+
+   '<p class="help">Use SELECT &lt;expressao&gt; AS VALOR com variaveis :NOME. Funcoes: ROUND, ABS, COALESCE, IFNULL, NULLIF, MIN, MAX e CASE WHEN. Consultas a tabelas (FROM, JOIN), subconsultas e comandos de alteracao sao bloqueados.</p>'+
+   '<label class="field full"><span>Formula SQL</span><textarea name="sql_query" id="ed128-sql-text" rows="5" spellcheck="false" style="font-family:monospace;min-height:105px" maxlength="1200" placeholder="SELECT ROUND(:SALARIO_REFERENCIA_13 * :AVOS_13 / 12, 2) AS VALOR">'+e(cfg.sql_query||'')+'</textarea></label>'+
+   '<p class="help"><b>Variaveis disponiveis:</b> '+allowedSqlVars.map(x=>'<code>:'+e(x)+'</code>').join(' · ')+'</p>'+
+   '<div class="section-title">Parametros para simular a formula</div>'+
+   '<div class="grid" id="ed128-sql-params"></div></div>'+
    '<div id="ed127-tables"><div class="section-title">Faixas cadastradas na tabela</div>'+
    '<div class="table-wrap"><table class="table"><thead><tr><th>Ate (R$)</th><th>Aliquota %</th><th>Parcela deduzir (R$)</th><th></th></tr></thead>'+
    '<tbody id="ed127-bands"></tbody></table></div>'+
@@ -183,7 +194,33 @@
    'Edicao centralizada · '+event.code+' · '+(a.history?.length||0)+' versao(oes)':'Cadastre o evento, a regra, as incidencias, o grupo e a contabilizacao em uma tela.',body,true);
   const form=document.getElementById('ed127-form');
   const method=form.elements.calculation;
+  const sqlTextarea=document.getElementById('ed128-sql-text');
+  const sampleSql=()=>{
+   const code=String(form.elements.code.value||'').toUpperCase();
+   if(/13|DECIMO|TERCEIRO/.test(code))return 'SELECT ROUND(:SALARIO_REFERENCIA_13 * :AVOS_13 / 12, 2) AS VALOR';
+   if(/FALTA/.test(code))return 'SELECT ROUND(:SALARIO_CONTRATUAL / 30 * :DIAS_FALTA, 2) AS VALOR';
+   if(/FERIAS|FÉRIAS/.test(code))return 'SELECT ROUND(:REMUNERACAO_FERIAS / 30 * :DIAS_FERIAS, 2) AS VALOR';
+   if(/FGTS/.test(code))return 'SELECT ROUND(:BASE_FGTS * 0.08, 2) AS VALOR';
+   if(/RESCIS/.test(code))return 'SELECT ROUND(:TOTAL_PROVENTOS_RESCISAO - :TOTAL_DESCONTOS_RESCISAO, 2) AS VALOR';
+   return 'SELECT ROUND(:SALARIO_CONTRATUAL / 30 * :QUANTIDADE, 2) AS VALOR';
+  };
+  const refreshSqlParams=()=>{
+   const root=document.getElementById('ed128-sql-params');
+   const existing=new Map([...root.querySelectorAll('[data-sql-var]')].map(el=>[el.dataset.sqlVar,el.value]));
+   const names=[...new Set([...sqlTextarea.value.matchAll(/:([A-Z][A-Z0-9_]*)/gi)]
+     .map(match=>match[1].toUpperCase()).filter(name=>allowedSqlVars.includes(name)))];
+   const defaults={AVOS_13:8,DIAS_FERIAS:30,DIAS_FALTA:2,RAT:2,FAP:1,
+     QUANTIDADE:30,HORAS:220,TOTAL_DESCONTOS_RESCISAO:144,TOTAL_DESCONTOS:144};
+   root.innerHTML=names.length?names.map(name=>
+     '<label class="field"><span>:'+e(name)+'</span><input data-sql-var="'+e(name)+'" type="number" step="0.01" min="0" max="999999999.99" value="'+e(existing.get(name)??defaults[name]??1800)+'"></label>').join(''):
+     '<p class="help">Inclua parametros como :SALARIO_REFERENCIA_13 e :AVOS_13 na formula.</p>';
+  };
+  sqlTextarea.addEventListener('input',refreshSqlParams);
   const setup=()=>{
+   if(method.value==='SQL_PERSONALIZADO'&&!sqlTextarea.value.trim()){
+    sqlTextarea.value=sampleSql();
+    refreshSqlParams();
+   }
    if(method.value==='TABELA_PROGRESSIVA'&&!(form.querySelector('#ed127-bands tr')))addBand();
    if(method.value==='TABELA_FAIXA_DEDUCAO'&&!(form.querySelector('#ed127-bands tr')))addBand();
    appearance(form);
@@ -197,6 +234,7 @@
    form.elements.category.disabled=true;
   }
   setup();
+  refreshSqlParams();
   document.getElementById('ed127-add-band').onclick=()=>addBand();
   document.getElementById('ed127-cancel').onclick=closeModal;
   document.getElementById('ed127-simulate').onclick=async()=>{
@@ -207,6 +245,10 @@
     values.valor_informado=Number(form.elements.test_manual.value);
     values.TOTAL_PROVENTOS_RESCISAO=Number(form.elements.test_gross.value);
     values.TOTAL_DESCONTOS_RESCISAO=Number(form.elements.test_discounts.value);
+    if(form.elements.calculation.value==='SQL_PERSONALIZADO'){
+      for(const input of document.querySelectorAll('#ed128-sql-params [data-sql-var]'))
+        values[input.dataset.sqlVar]=Number(input.value);
+    }
     const result=await api('/api/payroll/designer/simulate',{method:'POST',body:{config,values}});
     document.getElementById('ed127-simulation-result').textContent=
      'Resultado: '+money(result.result.amount)+' · '+(result.result.employer_charge?'Encargo patronal':result.result.employee_discount?'Desconto':'Nao desconta do salario');
