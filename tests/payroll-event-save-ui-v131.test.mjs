@@ -181,8 +181,14 @@ test('INSS_PATRONAL legado INFORMATIVO com formulario antigo salva como ENCARGO 
 });
 test('nao reclassifica evento historico PROVENTO como encargo patronal',async()=>{
  class HttpError extends Error{constructor(status,message,code){super(message);this.status=status;this.code=code;}}
- const DB={prepare(sql){return {bind(){return{first:async()=>({
-   id:'E1',code:'INSS_PATRONAL',name:'INSS Patronal',event_type:'PROVENTO',active:1})}}}}},
+ const DB={
+  prepare(sql){
+   return {bind(){
+    return {first:async()=>({
+     id:'E1',code:'INSS_PATRONAL',name:'INSS Patronal',event_type:'PROVENTO',active:1
+    })};
+   }};
+  },
   batch:async()=>{throw Error('Nao pode escrever');}
  };
  const body={
