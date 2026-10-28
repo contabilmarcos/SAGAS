@@ -3128,12 +3128,18 @@ async function renderPayroll(page){
     rows=a.map(x=>`<tr><td><b>${esc(x.name)}</b></td><td>${money(x.salary)}</td><td>${x.active?'<span class="badge green">Ativo</span>':'<span class="badge gray">Inativo</span>'}</td><td>${actions(x)}</td></tr>`).join('');
   }else if(cfg.kind==='events'){
     cols=['Código','Evento','Tipo','Referência','Situação','Ações'];
-    rows=a.map(x=>`<tr><td class="code">${esc(x.code)}</td><td><b>${esc(x.name)}</b></td><td>${esc(payrollTypeName(x.event_type))}</td><td>${esc(payrollUnitName(x.reference_unit))}</td><td>${x.active?'<span class="badge green">Ativo</span>':'<span class="badge gray">Inativo</span>'}</td><td><button class="btn secondary sm" data-payroll-event-rules="${esc(x.id)}">Parâmetros</button> <button class="btn secondary sm" data-payroll-accounting38="${esc(x.id)}">Contabilização</button> ${['SALARIO_BASE','INSS_EMP','IRRF_EMP','FGTS_PATRONAL'].includes(x.code)?'<span class="badge gray">Automático</span>':actions(x)}</td></tr>`).join('');
+    rows=a.map(x=>`<tr><td class="code">${esc(x.code)}</td><td><b>${esc(x.name)}</b></td><td>${esc(payrollTypeName(x.event_type))}</td><td>${esc(payrollUnitName(x.reference_unit))}</td><td>${x.active?'<span class="badge green">Ativo</span>':'<span class="badge gray">Inativo</span>'}</td><td><button class="btn primary sm" data-payroll-designer127="${esc(x.id)}">Configurar evento</button> ${manage&&!['SALARIO_BASE','INSS_EMP','IRRF_EMP','FGTS_PATRONAL'].includes(x.code)?`<button class="btn danger sm" data-payroll-delete="${esc(x.id)}">Excluir</button>`:''}</td></tr>`).join('');
   }else{
     cols=['Descrição','Situação','Ações'];
     rows=a.map(x=>`<tr><td><b>${esc(x.name)}</b></td><td>${x.active?'<span class="badge green">Ativo</span>':'<span class="badge gray">Inativo</span>'}</td><td>${actions(x)}</td></tr>`).join('');
   }
-  tablePage({newLabel:manage?'Novo '+cfg.title:null,onNew:manage?()=>payrollForm(page):null,cols,rows:rows||null,emptyTitle:'Nenhum cadastro encontrado',emptyText:'Cadastre os dados em '+cfg.plural+'.',placeholder:'Pesquisar '+cfg.plural.toLowerCase()+'...'});
+  tablePage({newLabel:manage?'Novo '+cfg.title:null,onNew:manage?(cfg.kind==='events'?()=>window.SAGAS_PAYROLL_DESIGNER127.open(null).catch(err=>toast(err.message,'error')):()=>payrollForm(page)):null,cols,rows:rows||null,emptyTitle:'Nenhum cadastro encontrado',emptyText:'Cadastre os dados em '+cfg.plural+'.',placeholder:'Pesquisar '+cfg.plural.toLowerCase()+'...'});
+  if(cfg.kind==='events'){
+    const toolbar=$('#content .toolbar');
+    if(toolbar)toolbar.insertAdjacentHTML('beforeend','<button id="payrollGroups127" class="btn secondary" type="button">Grupos de eventos</button>');
+    if($('#payrollGroups127'))$('#payrollGroups127').onclick=()=>window.SAGAS_PAYROLL_DESIGNER127.groups().catch(err=>toast(err.message,'error'));
+    $$('[data-payroll-designer127]').forEach(b=>b.onclick=()=>window.SAGAS_PAYROLL_DESIGNER127.open(a.find(x=>x.id===b.dataset.payrollDesigner127)).catch(err=>toast(err.message,'error')));
+  }
   if(cfg.kind==='events'&&window.SAGAS_EMPLOYER40)window.SAGAS_EMPLOYER40.attach();
   $$('[data-payroll-edit]').forEach(b=>b.onclick=()=>payrollForm(page,a.find(x=>x.id===b.dataset.payrollEdit)));
   $$('[data-payroll-delete]').forEach(b=>b.onclick=()=>payrollDeleteForm(page,a.find(x=>x.id===b.dataset.payrollDelete)));
@@ -7158,6 +7164,7 @@ setInterval(()=>checkSessionAccess(),180000);
 <script src="sagas-payroll-termination122-ui.js"></script>
 <script src="sagas-payroll-termination123-ui.js"></script>
 <script src="sagas-payroll-live-audit124-ui.js"></script>
+<script src="sagas-payroll-designer127-ui.js"></script>
 <script src="sagas-payroll-provisions43-ui.js"></script>
 <script src="sagas-payroll-provisions44-ui.js"></script>
 <script src="sagas-payroll-provisions45-ui.js"></script>
