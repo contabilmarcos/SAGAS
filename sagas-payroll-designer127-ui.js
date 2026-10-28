@@ -53,6 +53,12 @@
   const tbody=document.querySelector('#ed127-bands');
   if(!tbody)return;
   tbody.insertAdjacentHTML('beforeend',row(b));
+  // O novo campo herda a validacao do metodo atualmente selecionado.
+  const method=document.querySelector('#ed127-form [name="calculation"]')?.value;
+  const table=String(method||'').startsWith('TABELA_');
+  [...tbody.querySelectorAll('input')].forEach(x=>{
+   x.disabled=!table||(method==='TABELA_PROGRESSIVA'&&x.classList.contains('ed127-deduction'));
+  });
   [...tbody.querySelectorAll('.ed127-remove')].forEach(x=>x.onclick=()=>x.closest('tr').remove());
  }
  function formBody(form){
@@ -105,7 +111,16 @@
   form.elements.days_basis.value=method==='HORAS_BASE'
    ?(form.elements.days_basis.dataset.hours||'220'):'30';
   form.elements.days_basis.readOnly=method!=='HORAS_BASE';
-  [...form.querySelectorAll('.ed127-deduction')].forEach(x=>x.disabled=method==='TABELA_PROGRESSIVA');
+  // Campos de faixas invisiveis NAO podem participar da validacao nativa.
+  // IRRF_EMP abre inicialmente com tabela; ao mudar para formula cadastrada
+  // os inputs vazios e obrigatorios da tabela impediam o evento submit silenciosamente.
+  [...form.querySelectorAll('#ed127-bands input')].forEach(x=>{
+   x.disabled=!table||(method==='TABELA_PROGRESSIVA'&&x.classList.contains('ed127-deduction'));
+  });
+  const linked=form.elements.formula_id;
+  linked.disabled=method!=='FORMULA_CADASTRADA';
+  linked.required=method==='FORMULA_CADASTRADA';
+  form.elements.sql_query.disabled=method!=='SQL_PERSONALIZADO';
   // Encargo patronal nunca pode reduzir salario liquido do empregado.
   if(form.elements.category.value==='ENCARGO')form.elements.system.value='ENCARGO_PATRONAL';
   if(form.elements.category.value!=='ENCARGO'&&form.elements.system.value==='ENCARGO_PATRONAL')
@@ -202,11 +217,24 @@
    '</div>'+
    '</div><div class="toolbar"><button type="button" class="btn secondary" id="ed127-simulate">Simular calculo</button>'+
    '<span id="ed127-simulation-result" class="help"></span></div>'+
+   '<p id="ed127-save-error" class="help hidden" role="alert" style="color:#b42318;padding:8px 0;font-weight:600"></p>'+
    '<div class="form-actions"><button id="ed127-cancel" class="btn secondary" type="button">Cancelar</button>'+
    '<button type="submit" class="btn primary">Salvar evento e configuracao</button></div></form>';
   openModal((event?'Configurar':'Novo')+' evento da folha',event?
    'Edicao centralizada · '+event.code+' · '+(a.history?.length||0)+' versao(oes)':'Cadastre o evento, a regra, as incidencias, o grupo e a contabilizacao em uma tela.',body,true);
   const form=document.getElementById('ed127-form');
+  const saveError=document.getElementById('ed127-save-error');
+  const showSaveError=message=>{
+   saveError.textContent=message;
+   saveError.classList.remove('hidden');
+   saveError.scrollIntoView({block:'nearest',behavior:'smooth'});
+  };
+  form.addEventListener('invalid',ev=>{
+   const field=ev.target;
+   const label=field.closest('label')?.querySelector('span')?.textContent||field.name||'campo obrigatorio';
+   showSaveError('Nao foi possivel salvar: verifique '+label+'.');
+  },true);
+  form.addEventListener('change',()=>saveError.classList.add('hidden'));
   const method=form.elements.calculation;
   const sqlTextarea=document.getElementById('ed128-sql-text');
   const linkedSelect=document.getElementById('ed129-formula');
@@ -311,7 +339,10 @@
       method:'POST',body:config});
     closeModal();invalidatePayroll();toast('Configuracao salva (revisao '+result.revision+').');
     await renderPayroll('payroll-events');
-   }catch(err){toast(err.message,'error');b.disabled=false;}
+   }catch(err){
+    showSaveError('Nao foi possivel salvar: '+(err.message||'erro desconhecido')+'.');
+    toast(err.message||'Falha ao salvar configuracao','error');b.disabled=false;
+   }
   };
  }
  async function groups(){
