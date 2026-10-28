@@ -25,6 +25,9 @@ on:
       - 'sagas-payroll37.js'
       - 'sagas-payroll38.js'
       - 'sagas-payroll39.js'
+      - 'sagas-payroll-ledger126.js'
+      - 'sagas-payroll38-ui.js'
+      - 'tests/payroll-ledger-v126.test.mjs'
       - 'sagas-payroll-employer40.js'
       - 'sagas-payroll-provisions42.js'
       - 'sagas-payroll-provisions42-ui.js'
@@ -105,6 +108,9 @@ jobs:
           node --check sagas-payroll-termination123-audit.js
           node --check sagas-payroll-live-audit124.js
           node --check sagas-payroll-reopen125.js
+          node --check sagas-payroll39.js
+          node --check sagas-payroll-ledger126.js
+          node --check sagas-payroll38-ui.js
 
       - name: Testar v115 e as integrações de folha v120 a v124 antes do deploy
         run: |
@@ -116,7 +122,8 @@ jobs:
             tests/payroll-termination-v123.test.mjs \
             tests/payroll-termination-v123-audit.test.mjs \
             tests/payroll-live-audit-v124.test.mjs \
-            tests/payroll-reopen-v125.test.mjs
+            tests/payroll-reopen-v125.test.mjs \
+            tests/payroll-ledger-v126.test.mjs
 
       - name: Validar configuração e gerar Wrangler temporário
         env:
