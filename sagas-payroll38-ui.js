@@ -17,7 +17,7 @@ async function payrollEventAccounting38(event,returnRunId=''){
     kind+' · Configure a natureza que fornecerá os defaults contábeis para cada centro de custo.',
     '<form id="payrollEventAccountingForm38"><div class="grid">'+
       '<label class="field full"><span>Natureza Orçamentária / Financeira</span>'+sel('nature_id',settings.nature_id)+'</label></div>'+
-      '<p class="help">Débito, crédito, percentual, filial, histórico e complemento vêm dos defaults da natureza. O centro de custo é o do funcionário, registrado no envelope da folha. Configure os lados D e C na natureza. As antigas contas fixas não serão utilizadas.</p>'+
+      '<p class="help">Débito, crédito, percentual, filial, histórico e complemento vêm dos defaults da natureza. O centro de custo é o do funcionário, registrado no envelope da folha. Configure somente os lados aplicáveis ao evento (D, C ou ambos). O lançamento completo, incluindo o crédito do salário líquido, deverá fechar. As antigas contas fixas não serão utilizadas.</p>'+
       '<div class="form-actions"><button class="btn secondary" type="button" data-close>Cancelar</button><button class="btn primary" type="submit">Salvar contabilização</button></div></form>',true);
   $('[data-close]').onclick=()=>returnRunId?payrollFinanceModal38(returnRunId).catch(e=>toast(e.message,'error')):closeModal();
   $('#payrollEventAccountingForm38').onsubmit=async e=>{
