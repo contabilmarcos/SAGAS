@@ -1,6 +1,6 @@
 // SAGAS v129: catalogo compartilhado de formulas, historico imutavel por vigencia.
 // O cadastro apenas configura/simula: nao recalcula folhas legadas ou fechadas.
-import {normalizeEvent127} from './sagas-payroll-designer127.js';
+import {normalizeEvent127,simulateEvent127} from './sagas-payroll-designer127.js';
 import {evaluatePayrollSql128} from './sagas-payroll-sql128.js';
 
 const CODE129=/^[A-Z][A-Z0-9_]{1,29}$/;
@@ -69,7 +69,6 @@ async function simulate129(env,source,values,d){
   }
   return evaluatePayrollSql128(env.DB,config.sql_query,bind);
  }
- const {simulateEvent127}=await import('./sagas-payroll-designer127.js');
  if(config.calculation==='LIQUIDO_RESCISAO'&&(!('TOTAL_PROVENTOS_RESCISAO' in valid)||!('TOTAL_DESCONTOS_RESCISAO' in valid)))
   invalid129(d,'Informe proventos e descontos da rescisao.');
  if(['DECIMO_TERCEIRO_AVOS','FERIAS_DIAS','SALARIO_DIAS','FALTA_DIAS','HORAS_BASE'].includes(config.calculation)&&!('quantidade' in valid))
