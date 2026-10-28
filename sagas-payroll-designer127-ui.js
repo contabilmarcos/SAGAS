@@ -39,7 +39,7 @@
  }
  function formBody(form){
   const v=Object.fromEntries(new FormData(form));
-  return {code:v.code,name:v.name,category:v.category,system:v.system,active:form.elements.active.checked,
+  return {code:v.code,name:v.name,category:form.elements.category.value,system:v.system,active:form.elements.active.checked,
    calculation:v.calculation,base:v.base,trigger:v.trigger,effective_from:v.effective_from,
    group_id:v.group_id||null,nature_id:v.nature_id||null,
    days_basis:v.days_basis||'30',rate:v.rate||0,fixed_amount:v.fixed_amount||0,
@@ -114,7 +114,7 @@
    '<tbody id="ed127-bands"></tbody></table></div>'+
    '<button id="ed127-add-band" class="btn secondary sm" type="button">+ Adicionar faixa</button></div>'+
    '<div class="section-title">Incidencias e contabilizacao</div><div class="grid">'+
-   ...['inss','irrf','fgts'].map(key=>sel(key,'Compõe base '+key.toUpperCase(),[['SIM','Sim'],['NAO','Nao']],cfg.incidences?.[key]||'NAO'))+
+   ['inss','irrf','fgts'].map(key=>sel(key,'Compõe base '+key.toUpperCase(),[['SIM','Sim'],['NAO','Nao']],cfg.incidences?.[key]||'NAO')).join('')+
    field('nature','Natureza orcamentaria','<select name="nature_id">'+natureOptions+'</select>')+
    '</div><p class="help">Encargos patronais (FGTS, CPP, RAT e terceiros) nao sao descontos do trabalhador. Na contabilizacao, a natureza podera ter somente debito, somente credito ou ambos, conforme o evento. Nenhum valor e enviado automaticamente para uma folha fechada.</p>'+
    '<div class="section-title">Simular regra antes de salvar</div><div class="grid">'+
