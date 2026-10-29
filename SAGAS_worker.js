@@ -10000,7 +10000,8 @@ async function payrollMonthlyRunCreate35(env,request,auth,companyId,competenceId
     FROM payroll_calc_runs WHERE company_id=? AND competence_id=? AND process_kind='MONTHLY'
     ORDER BY revision DESC LIMIT 1`).bind(companyId,competenceId).first());
   if(previous?.status!=='VOID' && previous?.source_fingerprint===source.fingerprint && previous.payment_date===date){
-    const detail=await payrollMonthlyRunDetail35(env,companyId,previous.id);
+    const detail=await payrollMonthlyChecked139('RECUPERAR_CALCULO_EXISTENTE',
+      ()=>payrollMonthlyRunDetail35(env,companyId,previous.id));
     return {...detail,reused:true};
   }
   if(previous && !['CALCULATED','VOID'].includes(previous.status))
@@ -10040,9 +10041,10 @@ async function payrollMonthlyRunCreate35(env,request,auth,companyId,competenceId
       throw new HttpError(409,'Outro processamento ou alteracao de competencia ocorreu. Atualize e tente novamente.','CONFLICT');
     throw payrollMonthlyTechnical139(err,'GRAVAR_ENVELOPES');
   }
-  await audit(env,{companyId,userId:auth.user.id,action:'CREATE',entity:'payroll_calc_runs',entityId:runId,
-    after:{competence_id:competenceId,revision,employee_count:source.employee_count,
-      source_fingerprint:source.fingerprint,totals:source.totals,approved:false},request});
+  await payrollMonthlyChecked139('REGISTRAR_AUDITORIA',
+    ()=>audit(env,{companyId,userId:auth.user.id,action:'CREATE',entity:'payroll_calc_runs',entityId:runId,
+      after:{competence_id:competenceId,revision,employee_count:source.employee_count,
+        source_fingerprint:source.fingerprint,totals:source.totals,approved:false},request}));
   return {...await payrollMonthlyChecked139('CONSULTAR_ENVELOPES_GRAVADOS',
     ()=>payrollMonthlyRunDetail35(env,companyId,runId)),reused:false};
 }
@@ -11932,7 +11934,10 @@ async function route(request, env) {
   }
   if(path==='/api/payroll/monthly-runs'&&method==='POST'){
     const body=await readJson(request);
-    return ok(await payrollMonthlyRunCreate35(env,request,auth,companyId,body.competence_id,body.payment_date),201);
+    // Garantir que erros inesperados desta operação não sejam ocultados
+    // sob o aviso genérico "Erro interno do servidor" no navegador.
+    return ok(await payrollMonthlyChecked139('PROCESSAR_FOLHA_MENSAL',
+      ()=>payrollMonthlyRunCreate35(env,request,auth,companyId,body.competence_id,body.payment_date)),201);
   }
   // Etapa 32: comparar duas fotografias historicas sem atualizar a folha.
   // Esta rota deve preceder o GET generico /:id.
