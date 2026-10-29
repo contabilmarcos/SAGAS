@@ -11371,6 +11371,30 @@ async function route(request, env) {
        hash:payrollProcessingSnapshotHash28,taxes:payrollTaxHistoricalWithDependents}
     }));
   }
+  if(path==='/api/payroll/monthly-engine-preview'&&method==='GET'){
+    await requirePermission(env,auth.user.id,companyId,'payroll.read');
+    await ensureSchemaRevision(env,'payroll-event-rules',1,()=>ensurePayrollEventRulesSchema(env));
+    await ensureSchemaRevision(env,'payroll-employee-history',1,()=>ensurePayrollEmployeeRecordsSchema(env));
+    await ensureSchemaRevision(env,'payroll-calculation-foundation',1,()=>ensurePayrollCalculationFoundation34(env));
+    await ensureSchemaRevision(env,'payroll-vacation-monthly-use100',1,()=>payrollVacationMonthlySchema100(env));
+    await payrollDesigner127('sql-variables',{env,companyId,auth,request,
+      d:{HttpError,requirePermission,ensureSchemaRevision,audit,uuid}});
+    await ensureSchemaRevision(env,'payroll-formulas129',1,()=>ensureFormulaSchema129(env));
+    await provisionCatalog132('list',{env,companyId,auth,request,
+      d:{HttpError,requirePermission,ensureSchemaRevision,audit,uuid}});
+    const competenceId=required(url.searchParams.get('competence_id'),'competencia');
+    const paymentDate=payrollStrictDate(required(url.searchParams.get('payment_date'),'data de pagamento'),'Data prevista de pagamento');
+    const source=await payrollMonthlySource35(env,companyId,competenceId,paymentDate);
+    return ok(await payrollEnginePreview133({
+      env,companyId,auth,request,source,
+      d:{HttpError,requirePermission,
+        employerRead:competence=>payrollEmployer40('read',{
+          env,companyId,auth,request,competence,
+          d:{HttpError,requirePermission,ensureSchemaRevision,audit,uuid}
+        }).then(x=>x.settings)
+      }
+    }));
+  }
   // v133: conferir novo motor contra os envelopes reais, sem gravar ou alterar
   // folhas fechadas. Inclui formulas, encargos e provisoes por competencia.
   p=routeMatch(path,'/api/payroll/monthly-runs/:id/engine-preview');
