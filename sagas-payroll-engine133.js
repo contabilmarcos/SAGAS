@@ -278,18 +278,25 @@ export async function payrollEnginePreview133({env,companyId,auth,request,runId,
   !['SALARIO_BASE','INSS_EMP','IRRF_EMP'].includes(x.config.code)).map(x=>x.config.code));
  const neededCodes=[...new Set(detail.envelopes.flatMap(e=>(e.lines||[])
    .filter(l=>configuredCodes.has(l.event_code)).map(l=>l.event_code)))];
- const historicalIncidences=new Map();
+ const historicalIncidences=new Map(),historyProblems=[];
  if(neededCodes.length){
-  const sql="SELECT ev.code AS event_code,r.effective_from,r.revision,r.inss,r.irrf,r.fgts "+
-   "FROM payroll_event_rule_versions r JOIN payroll_events ev "+
-   "ON ev.company_id=r.company_id AND ev.id=r.event_id "+
-   "WHERE r.company_id=? AND ev.code IN ("+neededCodes.map(()=>'?').join(',')+
-   ") AND r.effective_from<=? ORDER BY ev.code,r.effective_from DESC,r.revision DESC LIMIT 2501";
-  const history=(await env.DB.prepare(sql).bind(companyId,...neededCodes,period).all()).results||[];
-  if(history.length>2500)throw new d.HttpError(409,'Histórico de incidências excede o limite da conferência.','INCIDENCE_HISTORY_LIMIT');
-  for(const row of history){
-   historicalIncidences.set(row.event_code+'|'+row.effective_from+'#'+row.revision,
-    {inss:row.inss,irrf:row.irrf,fgts:row.fgts});
+  try{
+   const sql="SELECT ev.code AS event_code,r.effective_from,r.revision,r.inss,r.irrf,r.fgts "+
+    "FROM payroll_event_rule_versions r JOIN payroll_events ev "+
+    "ON ev.company_id=r.company_id AND ev.id=r.event_id "+
+    "WHERE r.company_id=? AND ev.code IN ("+neededCodes.map(()=>'?').join(',')+
+    ") AND r.effective_from<=? ORDER BY ev.code,r.effective_from DESC,r.revision DESC LIMIT 2501";
+   const history=(await env.DB.prepare(sql).bind(companyId,...neededCodes,period).all()).results||[];
+   if(history.length>2500)throw Error('Histórico de incidências excedeu o limite de segurança.');
+   for(const row of history){
+    historicalIncidences.set(row.event_code+'|'+row.effective_from+'#'+row.revision,
+     {inss:row.inss,irrf:row.irrf,fgts:row.fgts});
+   }
+  }catch(e){
+   // NENHUMA incidência histórica deve ser presumida em caso de falha de leitura.
+   historicalIncidences.clear();
+   historyProblems.push({code:'INCIDENCE_HISTORY_UNAVAILABLE',
+    message:'Regras históricas não puderam ser verificadas: '+String(e?.message||e).slice(0,200)});
   }
  }
  const settings=await d.employerRead(period);
@@ -303,7 +310,7 @@ export async function payrollEnginePreview133({env,companyId,auth,request,runId,
   return cache.get(id);
  };
  const envelopes=[];
- const problems=[];
+ const problems=[...historyProblems];
  for(const envelope of detail.envelopes){
   const result=await simulateEnvelope133({
    db:env.DB,envelope,employeeSalaryCents:salaries.get(envelope.employee_id)??null,
