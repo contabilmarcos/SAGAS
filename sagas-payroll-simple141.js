@@ -1,7 +1,9 @@
+import {planNatureDefaults126} from './sagas-payroll-ledger126.js';
+import {reversalSchema141,guardedBatch141,undoPayroll141} from './sagas-payroll-reversal141.js';
 // SAGAS — Folha Simplificada v141.
 // Fluxo: cadastro básico -> cálculo fechado por CC -> relatório -> configurações D/C -> lote novo.
 // Não executa o fluxo legado de eventos manuais, férias, 13º ou rescisão.
-// Os valores das provisões neste fluxo são estimativas mensais, não baixas de direitos.
+// Constituições do principal integram o livro existente; encargos seguem estimativas.
 const C141=[
  ['SALARIO_BASE','Salário-base','PROVENTO'],
  ['INSS_EMP','INSS empregado','DESCONTO'],
@@ -111,6 +113,42 @@ export function ledgerLines141(totals,maps,cc,d){
  return {lines,missing,debit_cents:debit,credit_cents:credit,
   balanced:!missing.length&&debit===credit&&debit>0};
 }
+// A mesma seleção de defaults do SAGAS: específico por lado, senão geral.
+export async function natureLedger141(db,company,totals,maps,cc){
+ const lines=[],missing=[],problems=[];
+ const center=await db.prepare('SELECT id FROM cost_centers WHERE company_id=? AND id=? AND active=1').bind(company,cc).first();
+ if(!center)problems.push('Centro de custo inativo ou de outra empresa.');
+ for(const [code,label] of C141){
+  const amount=Number(totals[code]||0);if(!amount)continue;
+  if(!money141(amount)){problems.push('Valor inválido: '+label);continue;}
+  const id=maps[code]?.nature_id;
+  if(!id){missing.push(label);continue;}
+  const nature=await db.prepare("SELECT id FROM budget_natures WHERE company_id=? AND id=? AND active=1 AND synthetic_analytic='ANALYTIC'").bind(company,id).first();
+  if(!nature){problems.push('Natureza inválida: '+label);continue;}
+  const defaults=(await db.prepare('SELECT * FROM budget_nature_accounts WHERE company_id=? AND nature_id=? ORDER BY created_at,id').bind(company,id).all()).results||[];
+  const plan=planNatureDefaults126(defaults,cc,amount,{requireCreditOnly:code==='SALARIO_LIQUIDO'});
+  for(const issue of plan.problems)problems.push(label+': '+issue.message);
+  for(const side of ['D','C']){
+   const entries=plan.lines.filter(x=>x.side===side);
+   if(entries.length&&entries.reduce((n,x)=>n+x.amount_cents,0)!==amount)
+    problems.push('Rateio não concilia com o valor do componente: '+label);
+  }
+  for(const x of plan.lines){
+   if(!money141(x.amount_cents)||!x.amount_cents){problems.push('Rateio inválido: '+label);continue;}
+   const account=await db.prepare('SELECT id FROM accounts WHERE company_id=? AND id=? AND active=1 AND analytic=1').bind(company,x.account_id).first();
+   if(!account){problems.push('Conta inválida: '+label);continue;}
+   for(const [table,key] of [['branches','branch_id'],['history_templates','history_template_id']]){
+    if(x[key]&&!await db.prepare('SELECT id FROM '+table+' WHERE company_id=? AND id=? AND active=1').bind(company,x[key]).first())
+     problems.push('Filial ou histórico inválido: '+label);
+   }
+   lines.push({...x,event_code:code,description:label,nature_id:id,cost_center_id:cc});
+  }
+ }
+ const sum=side=>lines.filter(x=>x.side===side).reduce((n,x)=>n+x.amount_cents,0);
+ const debit=sum('D'),credit=sum('C');
+ return {lines,missing,problems,debit_cents:debit,credit_cents:credit,
+  balanced:!missing.length&&!problems.length&&money141(debit)&&debit>0&&debit===credit};
+}
 async function schema141(env){
  await env.DB.batch([
   env.DB.prepare("CREATE TABLE IF NOT EXISTS payroll_simple_runs141(id TEXT PRIMARY KEY,company_id TEXT NOT NULL,competence TEXT NOT NULL,cost_center_id TEXT NOT NULL,revision INTEGER NOT NULL,payment_date TEXT NOT NULL,report_json TEXT NOT NULL,created_by TEXT NOT NULL,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,UNIQUE(company_id,competence,cost_center_id,revision))"),
@@ -119,9 +157,47 @@ async function schema141(env){
   env.DB.prepare("CREATE TABLE IF NOT EXISTS payroll_simple_postings141(run_id TEXT PRIMARY KEY,company_id TEXT NOT NULL,batch_id TEXT NOT NULL,entry_id TEXT NOT NULL,created_by TEXT NOT NULL,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)")
  ]);
 }
+async function integrationSchema141(env){
+ await env.DB.batch([
+  env.DB.prepare("CREATE TABLE IF NOT EXISTS payroll_simple_ledger141(run_id TEXT PRIMARY KEY,company_id TEXT NOT NULL,entry_id TEXT NOT NULL,plan_json TEXT NOT NULL)"),
+  env.DB.prepare("CREATE TABLE IF NOT EXISTS payroll_simple_payables141(payable_id TEXT PRIMARY KEY,company_id TEXT NOT NULL,run_id TEXT NOT NULL,employee_id TEXT NOT NULL,cost_center_id TEXT NOT NULL,UNIQUE(company_id,run_id,employee_id))"),
+  env.DB.prepare("CREATE TABLE IF NOT EXISTS payroll_simple_natures141(company_id TEXT NOT NULL,cost_center_id TEXT NOT NULL,event_code TEXT NOT NULL,nature_id TEXT NOT NULL,updated_by TEXT NOT NULL,updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,PRIMARY KEY(company_id,cost_center_id,event_code))"),
+  env.DB.prepare("CREATE TABLE IF NOT EXISTS payroll_simple_integrations141(run_id TEXT NOT NULL,company_id TEXT NOT NULL,kind TEXT NOT NULL,created_by TEXT NOT NULL,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,PRIMARY KEY(run_id,kind))")
+ ]);
+}
+async function periodMappingSchema141(env){
+ await env.DB.batch([
+  env.DB.prepare(`CREATE TABLE IF NOT EXISTS payroll_simple_period_natures141(
+   company_id TEXT NOT NULL,competence TEXT NOT NULL,cost_center_id TEXT NOT NULL,
+   event_code TEXT NOT NULL,nature_id TEXT NOT NULL,updated_by TEXT NOT NULL,
+   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+   PRIMARY KEY(company_id,competence,cost_center_id,event_code))`),
+  // Folhas contabilizadas fornecem a configuração efetivamente aplicada no mês.
+  env.DB.prepare(`INSERT OR IGNORE INTO payroll_simple_period_natures141
+   (company_id,competence,cost_center_id,event_code,nature_id,updated_by)
+   SELECT r.company_id,r.competence,r.cost_center_id,json_extract(j.value,'$.event_code'),
+    json_extract(j.value,'$.nature_id'),r.created_by
+   FROM payroll_simple_ledger141 l JOIN payroll_simple_runs141 r ON r.id=l.run_id AND r.company_id=l.company_id,
+    json_each(l.plan_json,'$.lines') j
+   WHERE json_extract(j.value,'$.nature_id') IS NOT NULL
+    AND json_extract(j.value,'$.event_code') IS NOT NULL ORDER BY r.revision DESC`),
+  // O cadastro antigo não tinha competência. Preservá-lo somente no último mês
+  // calculado de cada CC, sem atribuir a meses antigos uma configuração incerta.
+  env.DB.prepare(`INSERT OR IGNORE INTO payroll_simple_period_natures141
+   (company_id,competence,cost_center_id,event_code,nature_id,updated_by,updated_at)
+   SELECT m.company_id,r.competence,m.cost_center_id,m.event_code,m.nature_id,m.updated_by,m.updated_at
+   FROM payroll_simple_natures141 m JOIN
+    (SELECT company_id,cost_center_id,MAX(competence) competence FROM payroll_simple_runs141 GROUP BY company_id,cost_center_id) r
+   ON r.company_id=m.company_id AND r.cost_center_id=m.cost_center_id`)
+ ]);
+}
+function previousMonth141(month){
+ const [year,m]=month.split('-').map(Number);
+ return m===1?String(year-1)+'-12':String(year)+'-'+String(m-1).padStart(2,'0');
+}
 async function read141(env,company,month,cc){
  const cond=cc==='all'?'':' AND r.cost_center_id=?';
- const rows=(await env.DB.prepare(`SELECT r.* FROM payroll_simple_runs141 r
+ const rows=(await env.DB.prepare(`SELECT r.*,EXISTS(SELECT 1 FROM payroll_simple_reversals141 u WHERE u.company_id=r.company_id AND u.run_id=r.id) AS reversed FROM payroll_simple_runs141 r
  WHERE r.company_id=? AND r.competence=? ${cond} AND r.revision=(
   SELECT MAX(z.revision) FROM payroll_simple_runs141 z
   WHERE z.company_id=r.company_id AND z.competence=r.competence AND z.cost_center_id=r.cost_center_id)
@@ -129,11 +205,11 @@ async function read141(env,company,month,cc){
  return rows.map(x=>({...x,report:JSON.parse(x.report_json)}));
 }
 function assemble141(runs){
- const employees=runs.flatMap(r=>r.report.employees);
+ const active=runs.filter(r=>!r.reversed),employees=active.flatMap(r=>r.report.employees);
  const totals=total141(employees);
- return {run_count:runs.length,employee_count:employees.length,totals,employees,
+ return {run_count:active.length,employee_count:employees.length,totals,employees,
   centers:runs.map(x=>({id:x.cost_center_id,revision:x.revision,run_id:x.id,
-   employee_count:x.report.employees.length,posted:!!x.posting,
+   employee_count:x.report.employees.length,posted:!!x.posting,reversed:!!x.reversed,
    totals:x.report.totals})),event_definitions:C141.map(([code,name,category])=>({code,name,category}))};
 }
 // Controle cronológico das estimativas por competência. Não presume baixas de férias
@@ -145,6 +221,7 @@ async function provisionHistory141(env,company,month,cc){
  const where=cc==='all'?'':' AND r.cost_center_id=?';
  const sql="SELECT r.competence,"+fields.join(',')+
   " FROM payroll_simple_runs141 r WHERE r.company_id=? AND r.competence<=?"+where+
+  " AND NOT EXISTS(SELECT 1 FROM payroll_simple_reversals141 u WHERE u.company_id=r.company_id AND u.run_id=r.id)"+
   " AND r.revision=(SELECT MAX(z.revision) FROM payroll_simple_runs141 z"+
   " WHERE z.company_id=r.company_id AND z.competence=r.competence AND z.cost_center_id=r.cost_center_id)"+
   " GROUP BY r.competence ORDER BY r.competence LIMIT 241";
@@ -161,21 +238,25 @@ async function provisionHistory141(env,company,month,cc){
    accrued_cents:accrued,cumulative_estimate_cents:accumulated};
  });
 }
-async function mapping141(env,company,cc){
- const r=(await env.DB.prepare("SELECT event_code,debit_account_id,credit_account_id FROM payroll_simple_accounts141 WHERE company_id=? AND cost_center_id=?").bind(company,cc).all()).results||[];
+async function mapping141(env,company,month,cc){
+ const r=(await env.DB.prepare("SELECT event_code,nature_id FROM payroll_simple_period_natures141 WHERE company_id=? AND competence=? AND cost_center_id=?").bind(company,month,cc).all()).results||[];
  return Object.fromEntries(r.map(x=>[x.event_code,x]));
 }
 export async function payrollSimple141(action,c){
  const {env,companyId,auth,request,body={},d}=c;
  await d.requirePermission(env,auth.user.id,companyId,
-  ['calculate','mapping','post'].includes(action)?'payroll.manage':'payroll.read');
+  ['calculate','mapping','copy-previous','post','finance','provisions','undo-preview','undo'].includes(action)?'payroll.manage':'payroll.read');
  await d.ensureSchemaRevision(env,'payroll-simple141',1,()=>schema141(env));
+ await d.ensureSchemaRevision(env,'payroll-simple-integration141',3,()=>integrationSchema141(env));
+ await d.ensureSchemaRevision(env,'payroll-simple-period-mappings141',1,()=>periodMappingSchema141(env));
+ await d.ensureSchemaRevision(env,'payroll-simple-reversals141',1,()=>reversalSchema141(env));
  const month=String(body.competence||c.competence||''),cc=String(body.cost_center_id||c.cost_center_id||'all');
  if(action==='setup'){
   const centers=(await env.DB.prepare("SELECT id,code,name FROM cost_centers WHERE company_id=? AND active=1 ORDER BY code").bind(companyId).all()).results||[];
   const months=(await env.DB.prepare("SELECT id,competence,status FROM payroll_competences WHERE company_id=? ORDER BY competence DESC LIMIT 240").bind(companyId).all()).results||[];
   const accounts=(await env.DB.prepare("SELECT id,code,name FROM accounts WHERE company_id=? AND analytic=1 AND active=1 ORDER BY code LIMIT 3000").bind(companyId).all()).results||[];
-  return {centers,months,accounts,events:C141.map(([code,name,category])=>({code,name,category}))};
+  const natures=(await env.DB.prepare("SELECT id,code,description FROM budget_natures WHERE company_id=? AND active=1 AND synthetic_analytic='ANALYTIC' ORDER BY code").bind(companyId).all()).results||[];
+  return {centers,months,accounts,natures,events:C141.map(([code,name,category])=>({code,name,category}))};
  }
  if(!period141(month))fail141(d,'PERIOD_INVALID','Informe a competência no formato AAAA-MM.',400);
  if(cc!=='all'&&!validId141(cc))fail141(d,'CC_INVALID','Centro de custo inválido.',400);
@@ -221,15 +302,23 @@ export async function payrollSimple141(action,c){
     if(posting)fail141(d,'RUN_POSTED','A folha do centro de custo já foi contabilizada. Não é permitido substituir sua revisão.');
    }
   }
-  const result=[];
+  const result=[],stored=[];
   for(const [cost,employees] of groups){
    const prior=await read141(env,companyId,month,cost),revision=prior.length?prior[0].revision+1:1;
    const totals=total141(employees),id=d.uuid();
-   await env.DB.prepare("INSERT INTO payroll_simple_runs141(id,company_id,competence,cost_center_id,revision,payment_date,report_json,created_by) VALUES(?,?,?,?,?,?,?,?)")
-    .bind(id,companyId,month,cost,revision,payment,JSON.stringify({employees,totals,
-      employer_settings_revision:{effective_from:s.effective_from,revision:s.revision}}),auth.user.id).run();
+   stored.push({id,cost_center_id:cost,revision,report_json:JSON.stringify({employees,totals,
+    employer_settings_revision:{effective_from:s.effective_from,revision:s.revision}})});
    result.push({run_id:id,cost_center_id:cost,revision,employee_count:employees.length,totals});
   }
+  await guardedBatch141(env,d,`EXISTS(SELECT 1 FROM payroll_competences WHERE company_id=? AND competence=? AND status='OPEN')
+   AND NOT EXISTS(SELECT 1 FROM json_each(?) g JOIN payroll_simple_runs141 r
+    ON r.company_id=? AND r.competence=? AND r.cost_center_id=json_extract(g.value,'$.cost_center_id')
+    LEFT JOIN payroll_simple_postings141 p ON p.run_id=r.id AND p.company_id=r.company_id
+    WHERE p.run_id IS NOT NULL OR r.revision>=json_extract(g.value,'$.revision'))`,
+   [companyId,month,JSON.stringify(result.map(x=>({cost_center_id:x.cost_center_id,revision:x.revision}))),companyId,month],
+   [env.DB.prepare(`INSERT INTO payroll_simple_runs141(id,company_id,competence,cost_center_id,revision,payment_date,report_json,created_by)
+    SELECT json_extract(value,'$.id'),?,?,json_extract(value,'$.cost_center_id'),json_extract(value,'$.revision'),?,json_extract(value,'$.report_json'),? FROM json_each(?)`)
+    .bind(companyId,month,payment,auth.user.id,JSON.stringify(stored))]);
   await d.audit(env,{companyId,userId:auth.user.id,request,action:'CALCULATE',entity:'payroll_simple_runs141',
    entityId:month,after:{competence:month,cost_centers:result.map(x=>x.cost_center_id),employees:selected.length}});
   return {saved:true,competence:month,results:result,report:assemble141(await read141(env,companyId,month,cc))};
@@ -237,43 +326,78 @@ export async function payrollSimple141(action,c){
  if(action==='report'){
   const runs=await read141(env,companyId,month,cc);
   for(const r of runs)r.posting=await env.DB.prepare("SELECT batch_id,entry_id FROM payroll_simple_postings141 WHERE company_id=? AND run_id=?").bind(companyId,r.id).first();
-  return {competence:month,cost_center_id:cc,...assemble141(runs),
+  const provision_balances=(await env.DB.prepare(`SELECT component,SUM(CASE WHEN movement_kind IN ('ACCRUAL','OPENING') THEN amount_cents ELSE 0 END) AS constituted_cents,
+   -SUM(CASE WHEN movement_kind='USE' THEN amount_cents ELSE 0 END) AS used_cents,SUM(amount_cents) AS balance_cents
+   FROM payroll_provision_movements43 WHERE company_id=? AND competence<=? AND (?='all' OR cost_center_id=?) GROUP BY component`).bind(companyId,month,cc,cc).all()).results||[];
+  return {competence:month,cost_center_id:cc,...assemble141(runs),provision_balances,
    provision_history:await provisionHistory141(env,companyId,month,cc),
-   provision_notice:'Histórico de provisões estimadas sem baixas; não corresponde necessariamente ao saldo oficial do passivo.'};
+   provision_notice:'A tabela mensal mostra estimativas de principal e encargos. Os saldos do livro incluem constituições e baixas registradas (inclusive históricas) de férias, terço e 13º; não incluem encargos. Nenhuma baixa é presumida pelo pagamento do salário mensal.'};
  }
  if(cc==='all')fail141(d,'SELECT_CENTER','Selecione um centro de custo específico para contabilizar.');
  const latest=(await read141(env,companyId,month,cc))[0];
  if(!latest)fail141(d,'RUN_MISSING','Calcule primeiro a folha deste centro de custo.');
- const posted=await env.DB.prepare("SELECT batch_id,entry_id FROM payroll_simple_postings141 WHERE run_id=? AND company_id=?").bind(latest.id,companyId).first();
+ const posted=await env.DB.prepare(`SELECT p.batch_id,p.entry_id,b.code AS batch_code,b.description AS batch_description
+  FROM payroll_simple_postings141 p LEFT JOIN journal_batches b ON b.id=p.batch_id AND b.company_id=p.company_id
+  WHERE p.run_id=? AND p.company_id=?`).bind(latest.id,companyId).first();
+ if(action==='undo-preview'||action==='undo')return undoPayroll141(action,{...c,latest,posted});
+ const reversal=await env.DB.prepare('SELECT run_id,entry_id,batch_id,reason,created_at FROM payroll_simple_reversals141 WHERE company_id=? AND run_id=?').bind(companyId,latest.id).first();
  if(action==='mapping'){
   if(posted)fail141(d,'ALREADY_POSTED','O centro de custo já foi contabilizado. Mapeamentos dessa folha estão bloqueados.');
-  const code=String(body.event_code||''),debit=body.debit_account_id||null,credit=body.credit_account_id||null;
+  const code=String(body.event_code||''),natureId=String(body.nature_id||'');
   if(!keys141.includes(code))fail141(d,'EVENT_INVALID','Selecione um evento da folha.',400);
-  if(!debit&&!credit)fail141(d,'ACCOUNT_REQUIRED','Informe uma conta a débito, a crédito ou ambas.',400);
-  for(const id of [debit,credit].filter(Boolean)){
-   const a=await env.DB.prepare('SELECT id FROM accounts WHERE company_id=? AND id=? AND analytic=1 AND active=1').bind(companyId,id).first();
-   if(!a)fail141(d,'ACCOUNT_INVALID','A conta escolhida deve ser analítica, ativa e pertencer à empresa.');
-  }
-  await env.DB.prepare(`INSERT INTO payroll_simple_accounts141
-   (company_id,cost_center_id,event_code,debit_account_id,credit_account_id,updated_by)
-   VALUES(?,?,?,?,?,?) ON CONFLICT(company_id,cost_center_id,event_code)
-   DO UPDATE SET debit_account_id=excluded.debit_account_id,credit_account_id=excluded.credit_account_id,updated_by=excluded.updated_by,updated_at=CURRENT_TIMESTAMP`)
-   .bind(companyId,cc,code,debit,credit,auth.user.id).run();
+  const nature=await env.DB.prepare("SELECT id FROM budget_natures WHERE company_id=? AND id=? AND active=1 AND synthetic_analytic='ANALYTIC'").bind(companyId,natureId).first();
+  if(!nature)fail141(d,'NATURE_INVALID','Selecione natureza analítica, ativa e da mesma empresa.',400);
+  await env.DB.prepare(`INSERT INTO payroll_simple_period_natures141
+   (company_id,competence,cost_center_id,event_code,nature_id,updated_by) VALUES(?,?,?,?,?,?)
+   ON CONFLICT(company_id,competence,cost_center_id,event_code) DO UPDATE SET nature_id=excluded.nature_id,updated_by=excluded.updated_by,updated_at=CURRENT_TIMESTAMP`)
+   .bind(companyId,month,cc,code,natureId,auth.user.id).run();
+  await d.audit(env,{companyId,userId:auth.user.id,request,action:'UPDATE',entity:'payroll_simple_period_natures141',entityId:month+':'+cc+':'+code,after:{nature_id:natureId}});
   return {saved:true,event_code:code};
  }
- const maps=await mapping141(env,companyId,cc);
- const plan=ledgerLines141(latest.report.totals,maps,cc,d);
+ if(action==='copy-previous'){
+  if(posted)fail141(d,'ALREADY_POSTED','A folha já foi contabilizada. Seus parâmetros estão bloqueados.');
+  const previous=previousMonth141(month),source=await mapping141(env,companyId,previous,cc);
+  if(!Object.keys(source).length)fail141(d,'PREVIOUS_MAPPING_MISSING','Não há parâmetros contábeis na competência anterior para este centro de custo.');
+  const current=await mapping141(env,companyId,month,cc),skipped=[],statements=[];
+  for(const [code,label] of C141){
+   const natureId=source[code]?.nature_id;
+   if(!natureId||current[code])continue;
+   const nature=await env.DB.prepare("SELECT id FROM budget_natures WHERE company_id=? AND id=? AND active=1 AND synthetic_analytic='ANALYTIC'").bind(companyId,natureId).first();
+   if(!nature){skipped.push(label);continue;}
+   statements.push(env.DB.prepare(`INSERT INTO payroll_simple_period_natures141
+    (company_id,competence,cost_center_id,event_code,nature_id,updated_by)
+    SELECT ?,?,?,?,?,? WHERE NOT EXISTS(SELECT 1 FROM payroll_simple_postings141 WHERE company_id=? AND run_id=?)
+    ON CONFLICT(company_id,competence,cost_center_id,event_code) DO NOTHING`)
+    .bind(companyId,month,cc,code,natureId,auth.user.id,companyId,latest.id));
+  }
+  const results=statements.length?await env.DB.batch(statements):[];
+  const copied=results.reduce((n,r)=>n+Number(r.meta?.changes||0),0);
+  await d.audit(env,{companyId,userId:auth.user.id,request,action:'COPY_PREVIOUS',entity:'payroll_simple_period_natures141',entityId:month+':'+cc,
+   after:{source_competence:previous,copied,skipped}});
+  return {saved:true,source_competence:previous,copied,skipped};
+ }
+ if(action==='finance'||action==='provisions')return integrate141(action,{...c,latest,posted,month,cc});
+ const maps=await mapping141(env,companyId,month,cc);
+ const snapshot=posted?await env.DB.prepare('SELECT plan_json FROM payroll_simple_ledger141 WHERE company_id=? AND run_id=?').bind(companyId,latest.id).first():null;
+ const plan=snapshot?JSON.parse(snapshot.plan_json):await natureLedger141(env.DB,companyId,latest.report.totals,maps,cc);
  if(action==='accounting'){
   return {competence:month,cost_center_id:cc,revision:latest.revision,
    events:C141.map(([code,name,category])=>({code,name,category,amount_cents:get141(latest.report.totals,code),
-    debit_account_id:maps[code]?.debit_account_id||null,
-    credit_account_id:maps[code]?.credit_account_id||null})),
-   plan,posted,run_id:latest.id};
+    nature_id:maps[code]?.nature_id||null})),
+   plan,posted,reversal,integrations:(await env.DB.prepare("SELECT kind FROM payroll_simple_integrations141 WHERE company_id=? AND run_id=?").bind(companyId,latest.id).all()).results||[],run_id:latest.id};
  }
  if(action==='post'){
   await d.requirePermission(env,auth.user.id,companyId,'accounting.batch.manage');
   await d.requirePermission(env,auth.user.id,companyId,'accounting.entry.create');
-  if(posted)return {posted:true,reused:true,batch_id:posted.batch_id,entry_id:posted.entry_id};
+  await d.requirePermission(env,auth.user.id,companyId,'accounting.entry.post');
+  if(posted)return {posted:true,reused:true,...posted};
+  if(reversal)fail141(d,'RUN_REVERSED','Esta revisão foi desfeita. Recalcule a folha antes de contabilizar novamente.');
+  const batchCode=String(body.batch_code??'').trim(),batchDescription=String(body.batch_description??'').trim();
+  if(!/^\d{1,15}$/.test(batchCode)||Number(batchCode)===0)
+   fail141(d,'INVALID_BATCH_CODE','Informe um número de lote inteiro e positivo, com até 15 dígitos. O lote 0 é reservado.',400);
+  if(!batchDescription||batchDescription.length>500)
+   fail141(d,'INVALID_BATCH_DESCRIPTION','Informe a descrição do lote, com até 500 caracteres.',400);
+  if(plan.lines.length>180)fail141(d,'LEDGER_LIMIT','Rateios excedem 180 partidas por centro de custo. Reduza os defaults antes de contabilizar.');
   if(!plan.balanced)fail141(d,'UNBALANCED_OR_UNMAPPED','Configure os débitos e créditos de todos os eventos e confira o equilíbrio antes de contabilizar.');
   // Impedir que uma conta excluída, inativa ou alterada após o mapeamento
   // entre em lote oficial sem validação no momento da postagem.
@@ -288,11 +412,13 @@ export async function payrollSimple141(action,c){
   const eligible=periods.filter(p=>p.status!=='LOCKED'&&p.status!=='CLOSED'&&(!p.closed_until||p.closed_until<date));
   if(eligible.length!==1)fail141(d,'ACCOUNTING_PERIOD_INVALID','Cadastre um único período contábil aberto que inclua o último dia da competência.');
   const batch=await d.createBatch(env,request,auth,companyId,{period_id:eligible[0].id,
-    description:'Folha simplificada '+month+' — centro de custo '+cc});
+    code:batchCode,description:batchDescription});
   const entry=d.uuid(),lines=plan.lines;
   const statements=[env.DB.prepare(`INSERT INTO payroll_simple_postings141
     (run_id,company_id,batch_id,entry_id,created_by) VALUES(?,?,?,?,?)`)
     .bind(latest.id,companyId,batch.id,entry,auth.user.id),
+   env.DB.prepare('INSERT INTO payroll_simple_ledger141(run_id,company_id,entry_id,plan_json) VALUES(?,?,?,?)')
+    .bind(latest.id,companyId,entry,JSON.stringify(plan)),
    env.DB.prepare(`INSERT INTO journal_entries
     (id,company_id,batch_id,branch_id,entry_date,document_number,description,
      source_module,source_reference,status,total_debit_cents,total_credit_cents,
@@ -306,12 +432,14 @@ export async function payrollSimple141(action,c){
    statements.push(env.DB.prepare(`INSERT INTO journal_lines
     (id,company_id,entry_id,line_no,account_id,side,amount_cents,branch_id,
      cost_center_id,history_template_id,history_complement,document_number)
-    VALUES(?,?,?,?,?,?,?,NULL,?,NULL,?,?)`)
-    .bind(d.uuid(),companyId,entry,i+1,x.account_id,x.side,x.amount_cents,cc,
-     x.description,'FOLHA '+month));
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`)
+    .bind(d.uuid(),companyId,entry,i+1,x.account_id,x.side,x.amount_cents,x.branch_id||null,cc,x.history_template_id||null,
+     x.history_complement||x.description,'FOLHA '+month));
   }
   // Marcador único e partidas na MESMA transação: nunca duplicar contabilização.
-  try{await env.DB.batch(statements);}
+  try{await guardedBatch141(env,d,`NOT EXISTS(SELECT 1 FROM payroll_simple_reversals141 WHERE company_id=? AND run_id=?)
+   AND NOT EXISTS(SELECT 1 FROM payroll_simple_runs141 WHERE company_id=? AND competence=? AND cost_center_id=? AND revision>?)`,
+   [companyId,latest.id,companyId,month,cc,latest.revision],statements);}
   catch(e){
    if(/UNIQUE constraint failed/i.test(String(e)))fail141(d,'POST_ALREADY_EXISTS','Esta folha já foi contabilizada por outra operação.');
    throw e;
@@ -322,4 +450,72 @@ export async function payrollSimple141(action,c){
    debit_cents:plan.debit_cents,credit_cents:plan.credit_cents};
  }
  fail141(d,'NOT_FOUND','Operação não encontrada.',404);
+}
+
+// Integrações explícitas, após a contabilização. O marcador e os documentos
+// são gravados na mesma transação; repetir a requisição não duplica valores.
+async function integrate141(kind,c){
+ const {env,companyId,auth,request,latest,posted,month,cc,d}=c;
+ if(kind==='finance')await d.requirePermission(env,auth.user.id,companyId,'financial.payable.manage');
+ if(!posted)fail141(d,'NOT_POSTED','Contabilize a folha antes de gerar títulos ou constituir provisões.');
+ const exists=await env.DB.prepare('SELECT kind FROM payroll_simple_integrations141 WHERE company_id=? AND run_id=? AND kind=?').bind(companyId,latest.id,kind).first();
+ if(exists)return {integrated:true,reused:true,kind};
+ const employees=latest.report.employees;
+ if(!employees.length||employees.length>2000)fail141(d,'EMPLOYEE_LIMIT','Quantidade de funcionários inválida.');
+ const statements=[env.DB.prepare('INSERT INTO payroll_simple_integrations141(run_id,company_id,kind,created_by) VALUES(?,?,?,?)').bind(latest.id,companyId,kind,auth.user.id)];
+ let count=0,total=0;
+ if(kind==='finance'){
+  const old=await env.DB.prepare(`SELECT id FROM financial_payables WHERE company_id=? AND supplier_id IN (SELECT json_extract(value,'$.employee_id') FROM json_each(?)) AND source_type='PAYROLL_MONTHLY' AND substr(issue_date,1,7)=? AND status<>'CANCELLED' LIMIT 1`).bind(companyId,JSON.stringify(employees),month).first();
+  if(old)fail141(d,'PAYABLE_EXISTS','Já existe título mensal de funcionário na competência. Confira a integração anterior.');
+  // O tipo mensal mantém as permissões, restrições e baixa contábil do Financeiro.
+  const items=[];
+  for(const e of employees){
+   const amount=e.events.SALARIO_LIQUIDO;
+   if(!money141(amount))fail141(d,'NET_INVALID','Salário líquido inválido.');
+   if(!amount)continue;
+   items.push({id:d.uuid(),employee_id:e.employee_id,amount,source_id:'SIMPLE141:'+latest.id+':'+e.employee_id,
+    description:'Salário líquido '+month+' — '+e.name+' — CC '+cc});
+   total+=amount;
+  }
+  if(total!==latest.report.totals.SALARIO_LIQUIDO||!money141(total))fail141(d,'NET_MISMATCH','Títulos não conciliam com o líquido da folha.');
+  count=items.length;
+  statements.push(env.DB.prepare(`INSERT INTO financial_payables
+   (id,company_id,number,supplier_id,source_type,source_id,issue_date,due_date,document_number,description,amount_cents,balance_cents,status,created_by)
+   SELECT json_extract(value,'$.id'),?,'FL-'||json_extract(value,'$.id'),json_extract(value,'$.employee_id'),
+    'PAYROLL_MONTHLY',json_extract(value,'$.source_id'),?,?,?,json_extract(value,'$.description'),
+    json_extract(value,'$.amount'),json_extract(value,'$.amount'),'OPEN',? FROM json_each(?)`)
+   .bind(companyId,last141(month),latest.payment_date,'FOLHA '+month,auth.user.id,JSON.stringify(items)));
+  statements.push(env.DB.prepare(`INSERT INTO payroll_simple_payables141(payable_id,company_id,run_id,employee_id,cost_center_id)
+   SELECT json_extract(value,'$.id'),?,?,json_extract(value,'$.employee_id'),? FROM json_each(?)`)
+   .bind(companyId,latest.id,cc,JSON.stringify(items)));
+ }else{
+  const items=[],components={PROV_FERIAS:'FERIAS',PROV_TERCO:'TERCO_FERIAS',PROV_13:'DECIMO_TERCEIRO'};
+  const future=await env.DB.prepare(`SELECT id FROM payroll_provision_movements43 WHERE company_id=? AND employee_id IN (SELECT json_extract(value,'$.employee_id') FROM json_each(?)) AND competence>? LIMIT 1`).bind(companyId,JSON.stringify(employees),month).first();
+  if(future)fail141(d,'PROVISION_BACKDATED','Há movimentos posteriores no livro de provisões de funcionário.');
+  for(const e of employees){
+   // O livro compartilhado não aceita constituição retroativa após uma baixa.
+   for(const [code,component] of Object.entries(components)){
+    const amount=e.events[code];
+    if(!money141(amount))fail141(d,'PROVISION_INVALID','Valor de provisão inválido.');
+    if(!amount)continue;
+    items.push({id:d.uuid(),employee_id:e.employee_id,component,amount,
+     origin:'SIMPLE141:'+latest.id+':'+e.employee_id+':'+component});
+    total+=amount;
+   }
+  }
+  count=items.length;
+  statements.push(env.DB.prepare(`INSERT INTO payroll_provision_movements43
+   (id,company_id,employee_id,cost_center_id,component,movement_kind,competence,amount_cents,origin_key,document_ref,notes,cycle_id,created_by)
+   SELECT json_extract(value,'$.id'),?,json_extract(value,'$.employee_id'),?,json_extract(value,'$.component'),
+    'ACCRUAL',?,json_extract(value,'$.amount'),json_extract(value,'$.origin'),?,'Constituição pela folha simplificada; encargos permanecem estimativas contábeis.',NULL,? FROM json_each(?)`)
+   .bind(companyId,cc,month,'FOLHA '+month,auth.user.id,JSON.stringify(items)));
+ }
+ try{await guardedBatch141(env,d,`EXISTS(SELECT 1 FROM payroll_simple_postings141 WHERE company_id=? AND run_id=? AND entry_id=?)
+  AND NOT EXISTS(SELECT 1 FROM payroll_simple_reversals141 WHERE company_id=? AND run_id=?)`,
+  [companyId,latest.id,posted.entry_id,companyId,latest.id],statements);}catch(err){
+  if(/UNIQUE constraint failed/i.test(String(err)))fail141(d,'INTEGRATION_CONFLICT','Integração ou constituição já existente. Atualize a consulta; nenhuma gravação parcial foi mantida.');
+  throw err;
+ }
+ await d.audit(env,{companyId,userId:auth.user.id,request,action:'INTEGRATE',entity:'payroll_simple_integrations141',entityId:latest.id,after:{kind,count,total_cents:total}});
+ return {integrated:true,kind,count,total_cents:total};
 }

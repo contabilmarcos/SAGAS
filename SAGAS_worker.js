@@ -47,6 +47,7 @@ import { payrollDesigner127,schema127 } from './sagas-payroll-designer127.js';
 import {loadAutomaticMonthly137,calculateAutomaticMonthly137} from './sagas-payroll-monthly137.js';
 import {payrollBasicHistory138} from './sagas-payroll-basic-history138.js';
 import {payrollSimple141} from './sagas-payroll-simple141.js';
+import {guardedBatch141,reversalSchema141} from './sagas-payroll-reversal141.js';
 import { provisionCatalog132 } from './sagas-payroll-provision-catalog132.js';
 import { payrollFormulas129,formulaSnapshot129,ensureFormulaSchema129 } from './sagas-payroll-formulas129.js';
 import { payrollEnginePreview133 } from './sagas-payroll-engine133.js';
@@ -1522,10 +1523,22 @@ async function createBatch(env, request, auth, companyId, body) {
     );
   }
 
-  const code=await nextBatchCode(env,companyId);
+  let code;
+  if(body.code!==undefined && body.code!==null){
+    const number=String(body.code).trim();
+    if(!/^\d{1,15}$/.test(number) || Number(number)===0)
+      throw new HttpError(400,'Informe um número de lote inteiro e positivo, com até 15 dígitos. O lote 0 é reservado.','INVALID_BATCH_CODE');
+    code=String(Number(number));
+    const existing=await env.DB.prepare(`SELECT id FROM journal_batches WHERE company_id=?
+      AND (code=? OR (code NOT GLOB '*[^0-9]*' AND CAST(code AS INTEGER)=?)) LIMIT 1`)
+      .bind(companyId,code,Number(code)).first();
+    if(existing)throw new HttpError(409,'Este número de lote já existe na empresa. Informe outro número.','BATCH_CODE_EXISTS');
+  }else{
+    code=await nextBatchCode(env,companyId);
+  }
   const id=uuid();
 
-  await env.DB.prepare(`
+  try{await env.DB.prepare(`
     INSERT INTO journal_batches
       (id,company_id,period_id,code,description,start_date,end_date,status,created_by,cover_mode,cover_amount_cents)
     VALUES (?,?,?,?,?,?,?,'OPEN',?,?,?)
@@ -1540,7 +1553,11 @@ async function createBatch(env, request, auth, companyId, body) {
     auth.user.id,
     coverMode,
     coverAmountCents
-  ).run();
+  ).run();}catch(err){
+    if(/UNIQUE constraint failed:\s*journal_batches\.company_id,\s*journal_batches\.code/i.test(String(err)))
+      throw new HttpError(409,'Este número de lote já existe na empresa. Informe outro número.','BATCH_CODE_EXISTS');
+    throw err;
+  }
 
   const row=await env.DB.prepare("SELECT * FROM journal_batches WHERE id=?").bind(id).first();
   await audit(env,{companyId,userId:auth.user.id,action:"CREATE",entity:"journal_batch",entityId:id,after:row,request});
@@ -1902,6 +1919,8 @@ async function migrateEnsureEntryMaintenanceSchema(env) {
 }
 
 async function assertEntryCanBeMaintained(env, companyId, entry, actionLabel) {
+  if(entry.source_module==='PAYROLL_SIMPLE')
+    throw new HttpError(409,'Utilize Desfazer contabilização na folha simplificada para manter seus vínculos.','PAYROLL_LINK_LOCKED');
   await ensureBatchIntegrationSchema(env);
   await ensureAccountingPeriodSchema(env);
 
@@ -2070,6 +2089,8 @@ async function deleteEntry(env, request, auth, companyId, id) {
 
 
   const before=await entrySnapshot(env,companyId,id);
+  if(before.source_module==='PAYROLL_SIMPLE')
+    throw new HttpError(409,'Utilize Desfazer contabilização na folha simplificada para manter seus vínculos.','PAYROLL_LINK_LOCKED');
   if(before.source_module==="PAYROLL"&&String(before.source_reference||"").startsWith("MONTHLY:"))
     throw new HttpError(409,"Lancamento integrado pela folha nao pode ser excluido isoladamente.","PAYROLL_LINK_LOCKED");
 
@@ -2773,6 +2794,8 @@ async function voidEntry(env, request, auth, companyId, id, reason) {
 
   const before=await env.DB.prepare("SELECT * FROM journal_entries WHERE id=? AND company_id=?").bind(id,companyId).first();
   if (!before) throw new HttpError(404,"Lançamento não encontrado.","NOT_FOUND");
+  if(before.source_module==='PAYROLL_SIMPLE')
+    throw new HttpError(409,'Utilize Desfazer contabilização na folha simplificada para manter seus vínculos.','PAYROLL_LINK_LOCKED');
   if(before.source_module==="PAYROLL"&&String(before.source_reference||"").startsWith("MONTHLY:"))
     throw new HttpError(409,"Lancamento integrado pela folha nao pode ser anulado isoladamente.","PAYROLL_LINK_LOCKED");
   await ensureBatchIntegrationSchema(env);
@@ -5113,8 +5136,19 @@ async function buildFinancialPaymentAccountingLines(env,companyId,{eventId,cashA
   const cashCents=grossCents+interest-Number(discountCents||0)-Number(advanceCents||0);
   if(cashCents<0) throw new HttpError(400,'Desconto e adiantamento não podem superar o valor do título somado aos juros.','INVALID_PAYMENT_VALUES');
   const ctx={grossCents,cashCents,discountCents:Number(discountCents||0),advanceCents:Number(advanceCents||0),interestCents:interest,supplierType};
+  // O CC de origem da folha simplificada acompanha a baixa financeira.
+  let payrollCenter=null;
+  if(payable.source_type==='PAYROLL_MONTHLY'){
+    const links=await env.DB.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='payroll_simple_payables141'").first();
+    if(links){
+      const link=await env.DB.prepare('SELECT cost_center_id FROM payroll_simple_payables141 WHERE company_id=? AND payable_id=?').bind(companyId,payable.id).first();
+      payrollCenter=link?.cost_center_id||null;
+    }
+  }
   const lines=[];
   for(const item of event.items){
+    if(payrollCenter&&item.cost_center_id&&item.cost_center_id!==payrollCenter)
+      throw new HttpError(409,'O centro de custo do evento de baixa diverge da folha de origem.','PAYROLL_PAYMENT_CENTER_MISMATCH');
     const amount=evalFinancialPaymentFormula(item.formula,ctx);
     if(amount===0&&!event.allow_zero) continue;
     if(amount<0) throw new HttpError(409,'O Evento Contábil gerou valor negativo.','INVALID_ACCOUNTING_AMOUNT');
@@ -5129,7 +5163,7 @@ async function buildFinancialPaymentAccountingLines(env,companyId,{eventId,cashA
     let historyPattern=String(item.history_complement||'').trim();
     if(item.history_template_id&&!historyPattern) historyPattern=financialDefaultHistoryPattern(item.formula);
     lines.push({
-      side:item.side,account_id:accountId,amount:centsToMoney(amount),branch_id:item.branch_id||null,cost_center_id:item.cost_center_id||null,
+      side:item.side,account_id:accountId,amount:centsToMoney(amount),branch_id:item.branch_id||null,cost_center_id:payrollCenter||item.cost_center_id||null,
       history_template_id:item.history_template_id||null,
       history_complement:financialHistoryTokens(historyPattern,{paymentDate,payableNumber:payable.number,supplierName:payable.supplier_name,documentNumber:payable.document_number})
     });
@@ -5174,7 +5208,18 @@ async function payFinancialPayable(env,request,auth,companyId,id,body){
     date,cleanText(body.payment_notes,1000),cashAccountId,eventId,batchId,built?.entryId||null,discountCents,advanceCents,interestCents,cashCents,auth.user.id,id,companyId
   );
   const stmts=[update,...(built?.stmts||[])];
-  await env.DB.batch(stmts);
+  const simpleTable=await env.DB.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='payroll_simple_payables141'").first();
+  const simpleLink=simpleTable?await env.DB.prepare('SELECT run_id FROM payroll_simple_payables141 WHERE company_id=? AND payable_id=?').bind(companyId,id).first():null;
+  if(simpleLink){
+    await ensureSchemaRevision(env,'payroll-simple-reversals141',1,()=>reversalSchema141(env));
+    await guardedBatch141(env,{uuid,HttpError},`EXISTS(SELECT 1 FROM financial_payables f JOIN payroll_simple_postings141 p
+      ON p.run_id=? AND p.company_id=f.company_id WHERE f.company_id=? AND f.id=? AND f.status='OPEN'
+      AND f.balance_cents=? AND f.payment_journal_entry_id IS NULL)
+      AND NOT EXISTS(SELECT 1 FROM payroll_simple_reversals141 WHERE company_id=? AND run_id=?)`,
+      [simpleLink.run_id,companyId,id,before.balance_cents,companyId,simpleLink.run_id],stmts);
+  }else{
+    await env.DB.batch(stmts);
+  }
   const after=await getFinancialPayable(env,companyId,id);
   await audit(env,{companyId,userId:auth.user.id,action:'PAY',entity:'financial_payable',entityId:id,before:{status:before.status,balance_cents:before.balance_cents},after:{status:after.status,payment_cash_account_id:cashAccountId,payment_accounting_event_id:eventId,payment_journal_entry_id:built?.entryId||null},request});
   return after;
@@ -12288,12 +12333,21 @@ async function route(request, env) {
   // Fluxo simplificado da folha — separado de lançamentos manuais e folhas históricas.
   if(path.startsWith('/api/payroll/simple141/')){
     const action=path.slice('/api/payroll/simple141/'.length);
-    const actions={setup:'GET',calculate:'POST',report:'GET',accounting:'GET',mapping:'POST',post:'POST'};
+    const actions={setup:'GET',calculate:'POST',report:'GET',accounting:'GET',mapping:'POST','copy-previous':'POST',post:'POST',finance:'POST',provisions:'POST','undo-preview':'GET',undo:'POST'};
     if(Object.hasOwn(actions,action)&&method===actions[action]){
       // O cálculo simples precisa dos IDs e centros do cadastro, mas não de
       // históricos salariais, férias, licenças nem movimentos variáveis.
       await ensureSchemaRevision(env,'payroll-employee-numbers',1,()=>ensurePayrollEmployeeNumbersSchema(env));
       await ensureSchemaRevision(env,'payroll-employee-cost-center39',1,()=>ensurePayrollCostCenter39(env));
+      await ensureSchemaRevision(env,'purchasing',1,async()=>{
+        await ensurePurchasingSchema(env);await ensurePurchaseIntegrationSchema(env);await ensureRmPurchasingSchema(env);
+      });
+      await ensureSchemaRevision(env,'payroll-provision-ledger43',1,()=>ensureProvisionLedger43(env));
+      if(action==='undo'||action==='undo-preview'){
+        await ensureEntryMaintenanceSchema(env);
+        await ensureBatchIntegrationSchema(env);
+        await ensureSchemaRevision(env,'financial_payment_columns',1,()=>ensureFinancialCashAccountSchema(env));
+      }
       const body=method==='POST'?await readJson(request):{};
       return ok(await payrollSimple141(action,{env,companyId,auth,request,body,
         competence:url.searchParams.get('competence'),
