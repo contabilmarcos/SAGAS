@@ -84,3 +84,17 @@ test('outra falha do catálogo não é confundida com cadastro inexistente',asyn
    load,{DB:{}},'COMP',{competence:{competence:'2020-01'}},H),
    err=>err instanceof H&&err.status===503&&err.code==='AUTO_CONFIG_READ_FAILED');
 });
+
+test('cálculo mensal oficial passa BASE_IRRF apurada para fórmula de provento',async()=>{
+ const rule=[{event_id:'E_BONUS_BASE',effective_from:'2026-10',revision:1,
+  config:{code:'BONUS_IRRF',name:'Bônus pela base IRRF',active:true,
+   category:'PROVENTO',calculation:'PERCENTUAL_BASE',base:'BASE_IRRF',
+   rate:5,nature_id:'N_BONUS_IRRF',
+   incidences:{inss:'SIM',irrf:'SIM',fgts:'SIM'}}}];
+ const result=await fn(employee,[],new Map(),0,'2026-10','2026-11-05',null,
+  'RM_NEXT_MONTH',[],null,null,rule,{},'COMP');
+ assert.equal(result.lines.find(x=>x.event_code==='BONUS_IRRF').amount_cents,15000);
+ assert.equal(result.earnings_cents,315000);
+ assert.equal(result.fgts_cents,25200);
+ assert.equal(result.inss_cents,31500);
+});
