@@ -45,7 +45,21 @@ function params133(envelope,salaryCents,settings){
  const gross=cents133(envelope.earnings_cents);
  const oldInss=cents133(envelope.inss_cents);
  const oldIrrf=cents133(envelope.irrf_cents);
+ const oldFgts=cents133(envelope.fgts_cents);
  const discount=cents133(envelope.deductions_cents);
+ const net=cents133(envelope.net_cents);
+ // v134: origem reconciliada antes de qualquer fórmula configurável.
+ // Duplicidades ou linhas que não somam o envelope impedem a prévia contábil.
+ const sum=kind=>lines.filter(x=>x.line_type===kind)
+  .reduce((n,x)=>n+cents133(x.amount_cents),0);
+ if(sum('PROVENTO')!==gross||sum('DESCONTO')!==discount||
+    discount>gross||gross-discount!==net)
+  throw Error('Proventos, descontos e líquido não conciliam com as linhas da folha.');
+ for(const [code,value] of [['INSS_EMP',oldInss],['IRRF_EMP',oldIrrf],['FGTS_PATRONAL',oldFgts]]){
+  const found=lines.filter(x=>x.event_code===code);
+  if(found.length!==1||cents133(found[0].amount_cents)!==value)
+   throw Error('Evento obrigatório '+code+' não concilia com o envelope histórico.');
+ }
  const baseInss=baseFrom133(lines,'INSS_EMP');
  const baseIrrf=baseFrom133(lines,'IRRF_EMP');
  const baseFgts=baseFrom133(lines,'FGTS_PATRONAL');
