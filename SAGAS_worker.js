@@ -9655,6 +9655,9 @@ async function payrollMonthlyPreparation34(env,companyId,competenceId,paymentDat
     items.push({employee_id:emp.id,employee_code:emp.employee_code||null,
       cost_center_id:emp.cost_center_id||null,cost_center_code:emp.cost_center_code||null,
       employee_name:emp.name,admission_date:emp.admission_date,
+      // A etapa de cálculo recebe a fotografia cadastral, sem voltar
+      // a exigir histórico para obter salário e situação funcional.
+      salary_cents:emp.salary_cents,position_id:emp.position_id,active:emp.active,
       salary_history:salary?centsToMoney(salary.salary_cents):null,
       monthly_hours:schedule?Number(schedule.monthly_hours_milli)/1000:null,
       movement_count:events.length,leave_days:leave?.leave?.reduce((n,x)=>n+x.days,0)||0,absence_days:absence?.absences?.filter(x=>x.classification==='INJUSTIFICADA').length||0,
