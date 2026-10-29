@@ -19,6 +19,9 @@ on:
       - 'sagas-payroll-provision-catalog132.js'
       - 'sagas-payroll-provision-catalog132-ui.js'
       - 'tests/payroll-provision-catalog-v132.test.mjs'
+      - 'sagas-payroll-engine133.js'
+      - 'sagas-payroll-engine133-ui.js'
+      - 'tests/payroll-engine-v133.test.mjs'
       - 'sagas-payroll-formulas129-ui.js'
       - 'tests/payroll-formulas-v129.test.mjs'
       - 'tests/payroll-models-v130.test.mjs'
@@ -126,6 +129,8 @@ jobs:
           node --check sagas-payroll-formulas129.js
           node --check sagas-payroll-provision-catalog132.js
           node --check sagas-payroll-provision-catalog132-ui.js
+          node --check sagas-payroll-engine133.js
+          node --check sagas-payroll-engine133-ui.js
           node --check sagas-payroll-formulas129-ui.js
           node --check sagas-payroll-designer127-ui.js
           node --check sagas-payroll39.js
@@ -149,7 +154,8 @@ jobs:
             tests/payroll-formulas-v129.test.mjs \
             tests/payroll-models-v130.test.mjs \
             tests/payroll-event-save-ui-v131.test.mjs \
-            tests/payroll-provision-catalog-v132.test.mjs
+            tests/payroll-provision-catalog-v132.test.mjs \
+            tests/payroll-engine-v133.test.mjs
 
       - name: Validar configuração e gerar Wrangler temporário
         env:
