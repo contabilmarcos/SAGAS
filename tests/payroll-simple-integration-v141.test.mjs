@@ -137,3 +137,86 @@ test('rateio conserva centavos e outro CC usa defaults gerais',async()=>{
  const external=await natureLedger141(f.DB,'foreign',{SALARIO_BASE:101},{SALARIO_BASE:{nature_id:'salary'}},'cc');
  assert.equal(external.balanced,false);
 });
+
+function nextRun(f,month='2026-02',cc='cc',company='company'){
+ const original=f.sql.prepare("SELECT * FROM payroll_simple_runs141 WHERE id='run'").get();
+ f.sql.prepare(`INSERT INTO payroll_simple_runs141(id,company_id,competence,cost_center_id,revision,payment_date,report_json,created_by)
+ VALUES(?,?,?,?,1,?,?,?)`).run('run-'+month+'-'+cc+'-'+company,company,month,cc,month+'-28',original.report_json,'user');
+}
+test('copiar competência anterior preenche a tela contábil sem alterar os parâmetros da origem',async()=>{
+ const f=fixture();await f.seed();await f.call('post');nextRun(f);
+ const before=await f.call('accounting',{competence:'2026-02'});
+ assert.equal(before.events.find(x=>x.code==='SALARIO_BASE').nature_id,null);
+ const copy=await f.call('copy-previous',{competence:'2026-02'});
+ assert.equal(copy.source_competence,'2026-01');assert.equal(copy.copied,5);
+ assert.equal((await f.call('accounting',{competence:'2026-02'})).plan.balanced,true);
+ assert.equal((await f.call('copy-previous',{competence:'2026-02'})).copied,0);
+ await f.call('mapping',{competence:'2026-02',event_code:'SALARIO_BASE',nature_id:'provision'});
+ assert.equal((await f.call('accounting')).events.find(x=>x.code==='SALARIO_BASE').nature_id,'salary');
+ assert.ok(f.permissions.includes('payroll.manage'));
+});
+test('cópia preserva ajustes do destino e ignora naturezas inativas ou de outra empresa',async()=>{
+ const f=fixture();await f.seed();nextRun(f);
+ await f.call('mapping',{competence:'2026-02',event_code:'SALARIO_BASE',nature_id:'provision'});
+ f.sql.exec("UPDATE budget_natures SET active=0 WHERE id='net'; UPDATE budget_natures SET company_id='foreign' WHERE id='salary'");
+ const copy=await f.call('copy-previous',{competence:'2026-02'});
+ assert.equal(copy.copied,3);assert.deepEqual(copy.skipped,['Salário líquido a pagar']);
+ const r=await f.call('accounting',{competence:'2026-02'});
+ assert.equal(r.events.find(x=>x.code==='SALARIO_BASE').nature_id,'provision');
+ assert.equal(r.events.find(x=>x.code==='SALARIO_LIQUIDO').nature_id,null);
+ assert.equal(r.plan.balanced,false);
+});
+test('cópia usa mês imediatamente anterior inclusive na virada de ano e respeita empresa/CC',async()=>{
+ const f=fixture();await f.seed();
+ nextRun(f,'2026-03');
+ await assert.rejects(f.call('copy-previous',{competence:'2026-03'}),e=>e.code==='PREVIOUS_MAPPING_MISSING');
+ nextRun(f,'2026-02','other');
+ await assert.rejects(f.call('copy-previous',{competence:'2026-02',cost_center_id:'other'}),e=>e.code==='PREVIOUS_MAPPING_MISSING');
+ nextRun(f,'2026-02','cc','foreign');
+ await assert.rejects(payrollSimple141('copy-previous',{...f.base,companyId:'foreign',body:{competence:'2026-02',cost_center_id:'cc'}}),e=>e.code==='PREVIOUS_MAPPING_MISSING');
+ f.sql.exec("UPDATE payroll_simple_period_natures141 SET competence='2025-12'");
+ assert.equal((await f.call('copy-previous')).source_competence,'2025-12');
+ assert.equal((await f.call('accounting')).plan.balanced,true);
+});
+test('folhas contabilizadas bloqueiam cópia, e falhas na cópia são atômicas',async()=>{
+ const f=fixture();await f.seed();await f.call('post');
+ await assert.rejects(f.call('copy-previous'),e=>e.code==='ALREADY_POSTED');
+ nextRun(f);
+ f.sql.exec("CREATE TRIGGER reject_copy BEFORE INSERT ON payroll_simple_period_natures141 WHEN NEW.competence='2026-02' AND NEW.event_code='SALARIO_LIQUIDO' BEGIN SELECT RAISE(ABORT,'copy failure'); END");
+ await assert.rejects(f.call('copy-previous',{competence:'2026-02'}),/copy failure/);
+ assert.equal(f.sql.prepare("SELECT COUNT(*) n FROM payroll_simple_period_natures141 WHERE competence='2026-02'").get().n,0);
+});
+test('migração preserva snapshots históricos e cadastro antigo somente no último mês calculado',async()=>{
+ const f=fixture();await f.seed();await f.call('post');nextRun(f);
+ f.sql.exec(`DELETE FROM payroll_simple_period_natures141;
+ INSERT INTO payroll_simple_natures141(company_id,cost_center_id,event_code,nature_id,updated_by) VALUES('company','cc','SALARIO_BASE','provision','user');`);
+ // Simula a primeira execução da nova revisão em um banco da versão anterior.
+ const ensure=f.base.d.ensureSchemaRevision;
+ f.base.d.ensureSchemaRevision=async(env,key,revision,fn)=>key==='payroll-simple-period-mappings141'?fn():ensure(env,key,revision,fn);
+ const january=await f.call('accounting');
+ const february=await f.call('accounting',{competence:'2026-02'});
+ assert.equal(january.events.find(x=>x.code==='SALARIO_BASE').nature_id,'salary');
+ assert.equal(february.events.find(x=>x.code==='SALARIO_BASE').nature_id,'provision');
+ assert.equal(f.sql.prepare("SELECT COUNT(*) n FROM payroll_simple_period_natures141 WHERE competence='2025-12'").get().n,0);
+});
+
+test('botão de copiar preenche os parâmetros e atualiza a prévia na mesma tela',async()=>{
+ const elements=new Map(),messages=[];let copied=false;
+ const element=id=>{if(!elements.has(id))elements.set(id,{innerHTML:'',querySelectorAll:()=>[],click(){return this.onclick?.();}});return elements.get(id);};
+ const setup={months:[{competence:'2026-02'}],centers:[{id:'cc',code:'001',name:'Produção'}],natures:[{id:'salary',code:'1',description:'Salários'}]};
+ const api=async(path,options={})=>{
+  if(path.endsWith('/setup'))return setup;
+  if(path.endsWith('/copy-previous')){assert.equal(options.body.competence,'2026-02');assert.equal(options.body.cost_center_id,'cc');copied=true;return {source_competence:'2026-01',copied:1,skipped:[]};}
+  return {posted:null,revision:1,events:[{code:'SALARIO_BASE',name:'Salário',amount_cents:100,nature_id:copied?'salary':null}],plan:{lines:[],missing:[],problems:[],debit_cents:100,credit_cents:100,balanced:true}};
+ };
+ const window={};
+ runInNewContext(readFileSync(new URL('../sagas-payroll-simple141-ui.js',import.meta.url),'utf8'),{
+  window,api,S:{companyId:'company',page:'payroll-simple-accounting'},esc:x=>x,money:x=>String(x),toast:x=>messages.push(x),document:{getElementById:element}
+ });
+ await window.SAGAS_SIMPLE141.render('payroll-simple-accounting');
+ await new Promise(resolve=>setImmediate(resolve));
+ assert.match(element('s141result').innerHTML,/Usar parâmetros da competência anterior/);
+ await element('s141copyPrevious').onclick();
+ assert.match(element('s141result').innerHTML,/1 - Salários/);
+ assert.match(messages.at(-1),/1 parâmetro\(s\) preenchido\(s\) de 01\/2026/);
+});

@@ -12299,7 +12299,7 @@ async function route(request, env) {
   // Fluxo simplificado da folha — separado de lançamentos manuais e folhas históricas.
   if(path.startsWith('/api/payroll/simple141/')){
     const action=path.slice('/api/payroll/simple141/'.length);
-    const actions={setup:'GET',calculate:'POST',report:'GET',accounting:'GET',mapping:'POST',post:'POST',finance:'POST',provisions:'POST'};
+    const actions={setup:'GET',calculate:'POST',report:'GET',accounting:'GET',mapping:'POST','copy-previous':'POST',post:'POST',finance:'POST',provisions:'POST'};
     if(Object.hasOwn(actions,action)&&method===actions[action]){
       // O cálculo simples precisa dos IDs e centros do cadastro, mas não de
       // históricos salariais, férias, licenças nem movimentos variáveis.

@@ -166,6 +166,8 @@
    const issues=[...r.plan.missing.map(x=>'Sem natureza: '+x),...r.plan.problems];
    const issue=issues.length?'<p class="muted">'+e(issues.join(' · '))+'</p>':'';
    target.innerHTML='<p>Centro de custo '+e(shortName(state.cost_center_id))+' · Revisão '+e(r.revision)+'</p>'+
+    '<div style="padding-bottom:14px"><button class="btn secondary" id="s141copyPrevious">Usar parâmetros da competência anterior</button>'+
+    '<p class="muted">Preenche as naturezas ainda não configuradas para o mesmo centro de custo. Mantém os ajustes deste mês e aplica os defaults atuais das naturezas.</p></div>'+
     '<div class="table-wrap"><table class="table"><thead><tr><th>Evento</th><th>Descrição</th><th>Total</th>'+
     '<th>Natureza orçamentária</th><th>Ação</th></tr></thead><tbody>'+rows+'</tbody></table></div>'+
     '<div class="totals"><span>Débitos: <b>'+cur(r.plan.debit_cents)+'</b></span><span>Créditos: <b>'+cur(r.plan.credit_cents)+
@@ -173,6 +175,18 @@
     '>Criar lote e contabilizar</button></div>'+
     '<p class="muted">O lote é criado somente ao confirmar a contabilização. A natureza pode definir débito, crédito ou ambos. O líquido exige somente crédito. Defaults específicos do centro prevalecem sobre os gerais por lado.</p>';
    target.querySelectorAll('[data-s141map]').forEach(btn=>btn.onclick=()=>openMapping(r.events.find(x=>x.code===btn.dataset.s141map)));
+   const copyButton=document.getElementById('s141copyPrevious');
+   copyButton.onclick=async()=>{
+    copyButton.disabled=true;
+    try{
+     const copied=await api141('copy-previous',{competence:state.competence,cost_center_id:state.cost_center_id});
+     const source=copied.source_competence.slice(5,7)+'/'+copied.source_competence.slice(0,4);
+     const notice=copied.copied+' parâmetro(s) preenchido(s) de '+source+'. Ajustes existentes foram mantidos.'+
+      (copied.skipped.length?' Naturezas indisponíveis, não copiadas: '+copied.skipped.join(', ')+'.':'');
+     await loadAccounting();
+     toast(notice,copied.skipped.length?'error':undefined);
+    }catch(err){copyButton.disabled=false;toast(err.message,'error')}
+   };
    const button=document.getElementById('s141post');
    button.onclick=async()=>{
     if(!confirm('Criar um NOVO lote e contabilizar a folha deste centro de custo?'))return;

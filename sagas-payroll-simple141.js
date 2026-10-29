@@ -164,6 +164,36 @@ async function integrationSchema141(env){
   env.DB.prepare("CREATE TABLE IF NOT EXISTS payroll_simple_integrations141(run_id TEXT NOT NULL,company_id TEXT NOT NULL,kind TEXT NOT NULL,created_by TEXT NOT NULL,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,PRIMARY KEY(run_id,kind))")
  ]);
 }
+async function periodMappingSchema141(env){
+ await env.DB.batch([
+  env.DB.prepare(`CREATE TABLE IF NOT EXISTS payroll_simple_period_natures141(
+   company_id TEXT NOT NULL,competence TEXT NOT NULL,cost_center_id TEXT NOT NULL,
+   event_code TEXT NOT NULL,nature_id TEXT NOT NULL,updated_by TEXT NOT NULL,
+   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+   PRIMARY KEY(company_id,competence,cost_center_id,event_code))`),
+  // Folhas contabilizadas fornecem a configuração efetivamente aplicada no mês.
+  env.DB.prepare(`INSERT OR IGNORE INTO payroll_simple_period_natures141
+   (company_id,competence,cost_center_id,event_code,nature_id,updated_by)
+   SELECT r.company_id,r.competence,r.cost_center_id,json_extract(j.value,'$.event_code'),
+    json_extract(j.value,'$.nature_id'),r.created_by
+   FROM payroll_simple_ledger141 l JOIN payroll_simple_runs141 r ON r.id=l.run_id AND r.company_id=l.company_id,
+    json_each(l.plan_json,'$.lines') j
+   WHERE json_extract(j.value,'$.nature_id') IS NOT NULL
+    AND json_extract(j.value,'$.event_code') IS NOT NULL ORDER BY r.revision DESC`),
+  // O cadastro antigo não tinha competência. Preservá-lo somente no último mês
+  // calculado de cada CC, sem atribuir a meses antigos uma configuração incerta.
+  env.DB.prepare(`INSERT OR IGNORE INTO payroll_simple_period_natures141
+   (company_id,competence,cost_center_id,event_code,nature_id,updated_by,updated_at)
+   SELECT m.company_id,r.competence,m.cost_center_id,m.event_code,m.nature_id,m.updated_by,m.updated_at
+   FROM payroll_simple_natures141 m JOIN
+    (SELECT company_id,cost_center_id,MAX(competence) competence FROM payroll_simple_runs141 GROUP BY company_id,cost_center_id) r
+   ON r.company_id=m.company_id AND r.cost_center_id=m.cost_center_id`)
+ ]);
+}
+function previousMonth141(month){
+ const [year,m]=month.split('-').map(Number);
+ return m===1?String(year-1)+'-12':String(year)+'-'+String(m-1).padStart(2,'0');
+}
 async function read141(env,company,month,cc){
  const cond=cc==='all'?'':' AND r.cost_center_id=?';
  const rows=(await env.DB.prepare(`SELECT r.* FROM payroll_simple_runs141 r
@@ -206,16 +236,17 @@ async function provisionHistory141(env,company,month,cc){
    accrued_cents:accrued,cumulative_estimate_cents:accumulated};
  });
 }
-async function mapping141(env,company,cc){
- const r=(await env.DB.prepare("SELECT event_code,nature_id FROM payroll_simple_natures141 WHERE company_id=? AND cost_center_id=?").bind(company,cc).all()).results||[];
+async function mapping141(env,company,month,cc){
+ const r=(await env.DB.prepare("SELECT event_code,nature_id FROM payroll_simple_period_natures141 WHERE company_id=? AND competence=? AND cost_center_id=?").bind(company,month,cc).all()).results||[];
  return Object.fromEntries(r.map(x=>[x.event_code,x]));
 }
 export async function payrollSimple141(action,c){
  const {env,companyId,auth,request,body={},d}=c;
  await d.requirePermission(env,auth.user.id,companyId,
-  ['calculate','mapping','post','finance','provisions'].includes(action)?'payroll.manage':'payroll.read');
+  ['calculate','mapping','copy-previous','post','finance','provisions'].includes(action)?'payroll.manage':'payroll.read');
  await d.ensureSchemaRevision(env,'payroll-simple141',1,()=>schema141(env));
  await d.ensureSchemaRevision(env,'payroll-simple-integration141',3,()=>integrationSchema141(env));
+ await d.ensureSchemaRevision(env,'payroll-simple-period-mappings141',1,()=>periodMappingSchema141(env));
  const month=String(body.competence||c.competence||''),cc=String(body.cost_center_id||c.cost_center_id||'all');
  if(action==='setup'){
   const centers=(await env.DB.prepare("SELECT id,code,name FROM cost_centers WHERE company_id=? AND active=1 ORDER BY code").bind(companyId).all()).results||[];
@@ -301,15 +332,37 @@ export async function payrollSimple141(action,c){
   if(!keys141.includes(code))fail141(d,'EVENT_INVALID','Selecione um evento da folha.',400);
   const nature=await env.DB.prepare("SELECT id FROM budget_natures WHERE company_id=? AND id=? AND active=1 AND synthetic_analytic='ANALYTIC'").bind(companyId,natureId).first();
   if(!nature)fail141(d,'NATURE_INVALID','Selecione natureza analítica, ativa e da mesma empresa.',400);
-  await env.DB.prepare(`INSERT INTO payroll_simple_natures141
-   (company_id,cost_center_id,event_code,nature_id,updated_by) VALUES(?,?,?,?,?)
-   ON CONFLICT(company_id,cost_center_id,event_code) DO UPDATE SET nature_id=excluded.nature_id,updated_by=excluded.updated_by,updated_at=CURRENT_TIMESTAMP`)
-   .bind(companyId,cc,code,natureId,auth.user.id).run();
-  await d.audit(env,{companyId,userId:auth.user.id,request,action:'UPDATE',entity:'payroll_simple_natures141',entityId:cc+':'+code,after:{nature_id:natureId}});
+  await env.DB.prepare(`INSERT INTO payroll_simple_period_natures141
+   (company_id,competence,cost_center_id,event_code,nature_id,updated_by) VALUES(?,?,?,?,?,?)
+   ON CONFLICT(company_id,competence,cost_center_id,event_code) DO UPDATE SET nature_id=excluded.nature_id,updated_by=excluded.updated_by,updated_at=CURRENT_TIMESTAMP`)
+   .bind(companyId,month,cc,code,natureId,auth.user.id).run();
+  await d.audit(env,{companyId,userId:auth.user.id,request,action:'UPDATE',entity:'payroll_simple_period_natures141',entityId:month+':'+cc+':'+code,after:{nature_id:natureId}});
   return {saved:true,event_code:code};
  }
+ if(action==='copy-previous'){
+  if(posted)fail141(d,'ALREADY_POSTED','A folha já foi contabilizada. Seus parâmetros estão bloqueados.');
+  const previous=previousMonth141(month),source=await mapping141(env,companyId,previous,cc);
+  if(!Object.keys(source).length)fail141(d,'PREVIOUS_MAPPING_MISSING','Não há parâmetros contábeis na competência anterior para este centro de custo.');
+  const current=await mapping141(env,companyId,month,cc),skipped=[],statements=[];
+  for(const [code,label] of C141){
+   const natureId=source[code]?.nature_id;
+   if(!natureId||current[code])continue;
+   const nature=await env.DB.prepare("SELECT id FROM budget_natures WHERE company_id=? AND id=? AND active=1 AND synthetic_analytic='ANALYTIC'").bind(companyId,natureId).first();
+   if(!nature){skipped.push(label);continue;}
+   statements.push(env.DB.prepare(`INSERT INTO payroll_simple_period_natures141
+    (company_id,competence,cost_center_id,event_code,nature_id,updated_by)
+    SELECT ?,?,?,?,?,? WHERE NOT EXISTS(SELECT 1 FROM payroll_simple_postings141 WHERE company_id=? AND run_id=?)
+    ON CONFLICT(company_id,competence,cost_center_id,event_code) DO NOTHING`)
+    .bind(companyId,month,cc,code,natureId,auth.user.id,companyId,latest.id));
+  }
+  const results=statements.length?await env.DB.batch(statements):[];
+  const copied=results.reduce((n,r)=>n+Number(r.meta?.changes||0),0);
+  await d.audit(env,{companyId,userId:auth.user.id,request,action:'COPY_PREVIOUS',entity:'payroll_simple_period_natures141',entityId:month+':'+cc,
+   after:{source_competence:previous,copied,skipped}});
+  return {saved:true,source_competence:previous,copied,skipped};
+ }
  if(action==='finance'||action==='provisions')return integrate141(action,{...c,latest,posted,month,cc});
- const maps=await mapping141(env,companyId,cc);
+ const maps=await mapping141(env,companyId,month,cc);
  const snapshot=posted?await env.DB.prepare('SELECT plan_json FROM payroll_simple_ledger141 WHERE company_id=? AND run_id=?').bind(companyId,latest.id).first():null;
  const plan=snapshot?JSON.parse(snapshot.plan_json):await natureLedger141(env.DB,companyId,latest.report.totals,maps,cc);
  if(action==='accounting'){
