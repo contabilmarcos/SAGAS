@@ -48,11 +48,16 @@
    '<tbody>'+employees.map(x=>{
     const charge=['CPP_PATRONAL','RAT_PATRONAL','TERCEIROS_PATRONAL','PIS_FOLHA'].reduce((v,k)=>v+Number(x.events[k]||0),0);
     const prov=defs.filter(v=>v.category==='PROVISAO').reduce((v,k)=>v+Number(x.events[k.code]||0),0);
+    const details='<details><summary>Ver todos os eventos</summary><table style="width:100%;margin-top:8px">'+
+      defs.filter(v=>Number(x.events[v.code]||0)>0).map(v=>
+       '<tr><td>'+e(v.name)+'</td><td style="text-align:right">'+cur(x.events[v.code])+'</td></tr>').join('')+
+      '</table></details>';
     return '<tr><td>'+e(x.employee_code||'')+'</td><td>'+e(x.name)+'</td>'+
      '<td>'+e(shortName(x.cost_center_id))+'</td><td>'+cur(x.events.SALARIO_BASE)+'</td>'+
      '<td>'+cur(x.events.INSS_EMP)+'</td><td>'+cur(x.events.IRRF_EMP)+'</td>'+
      '<td><b>'+cur(x.events.SALARIO_LIQUIDO)+'</b></td><td>'+cur(x.events.FGTS_PATRONAL)+'</td>'+
-     '<td>'+cur(charge)+'</td><td>'+cur(prov)+'</td></tr>';
+     '<td>'+cur(charge)+'</td><td>'+cur(prov)+'</td></tr>'+
+     '<tr><td colspan="10" style="padding:4px 14px 12px;background:#fafbfc">'+details+'</td></tr>';
    }).join('')+'</tbody></table></div>';
  };
  async function render(page){
