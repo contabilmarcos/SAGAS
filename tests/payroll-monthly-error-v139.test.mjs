@@ -83,3 +83,14 @@ test('falha de fórmula mostra somente código validado do evento, sem SQL',()=>
  assert.match(result.message,/GRATIFICACAO/);
  assert.doesNotMatch(result.message,/SELECT|CPF|senha/);
 });
+
+test('variável SQL não disponível mostra código do evento e base na mensagem segura',()=>{
+ const err=Object.assign(new Error('Base TOTAL_DESCONTOS indisponível no evento AJUSTE'),
+  {code:'AUTO_FORMULA_REFERENCE',event_code:'AJUSTE',base_name:'TOTAL_DESCONTOS'});
+ const r=payrollMonthlyTechnical139(err,'CALCULAR_EVENTOS_AUTOMATICOS');
+ assert.equal(r.status,409);
+ assert.equal(r.code,'AUTO_FORMULA_REFERENCE');
+ assert.match(r.message,/AJUSTE/);
+ assert.match(r.message,/TOTAL_DESCONTOS/);
+ assert.doesNotMatch(r.message,/SELECT|cpf|segredo/);
+});
