@@ -172,7 +172,7 @@ export function simulateEvent127(cfg,values={}){
  return {amount_cents:cents,amount:cents/100,employee_discount:cfg.category==='DESCONTO',
   employer_charge:cfg.category==='ENCARGO',read_only:true};
 }
-async function schema127(env){
+export async function schema127(env){
  await env.DB.batch([
   env.DB.prepare("CREATE TABLE IF NOT EXISTS payroll_designer_groups127(id TEXT PRIMARY KEY,company_id TEXT NOT NULL,code TEXT NOT NULL,name TEXT NOT NULL,active INTEGER NOT NULL DEFAULT 1,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,UNIQUE(company_id,code))"),
   env.DB.prepare("CREATE TABLE IF NOT EXISTS payroll_event_natures39(company_id TEXT NOT NULL,event_id TEXT NOT NULL REFERENCES payroll_events(id) ON DELETE RESTRICT,nature_id TEXT NOT NULL REFERENCES budget_natures(id) ON DELETE RESTRICT,updated_by TEXT NOT NULL,updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,PRIMARY KEY(company_id,event_id))"),
