@@ -110,6 +110,20 @@ test('descontos superiores aos proventos não geram líquido fictício',async()=
  assert.equal(r.net_cents,null);
  assert.ok(r.problems.some(x=>x.code==='NET_PROJECTION_INVALID'));
 });
+test('salário-base divergente é conferido mas não substituído silenciosamente',async()=>{
+ const e=event('SALARIO_BASE','PROVENTO',{amount:320000});
+ const r=await run({configs:[...defaults(),e]});
+ assert.equal(r.gross_cents,300000);
+ assert.ok(r.problems.some(x=>x.code==='SALARY_RECALC_NOT_APPLIED'));
+ assert.equal(r.events.find(x=>x.code==='SALARIO_BASE').status,'COMPARADO');
+});
+test('não presume que todo bruto é base de rendimento tributável',async()=>{
+ const events=defaults().map(e=>e.config.code==='INSS_EMP'?
+  event('INSS_EMP','DESCONTO',{rate:10,base:'PROVENTOS_TRIBUTAVEIS'}):e);
+ const r=await run({configs:events});
+ assert.equal(r.inss_cents,27000);
+ assert.ok(r.problems.some(x=>x.code==='TAX_FORMULA_FAILED'));
+});
 test('interface mostra projeção separada dos valores antigos e origem das incidências',()=>{
  const ui=readFileSync(new URL('../sagas-payroll-engine133-ui.js',import.meta.url),'utf8');
  const engine=readFileSync(new URL('../sagas-payroll-engine133.js',import.meta.url),'utf8');
