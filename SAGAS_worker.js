@@ -43,7 +43,8 @@ import { payrollTermination122 } from './sagas-payroll-termination122.js';
 import { payrollTermination123 } from './sagas-payroll-termination123.js';
 import { payrollLiveAudit124 } from './sagas-payroll-live-audit124.js';
 import { payrollCompetenceReopen125 } from './sagas-payroll-reopen125.js';
-import { payrollDesigner127 } from './sagas-payroll-designer127.js';
+import { payrollDesigner127,schema127 } from './sagas-payroll-designer127.js';
+import {loadAutomaticMonthly137,calculateAutomaticMonthly137} from './sagas-payroll-monthly137.js';
 import { provisionCatalog132 } from './sagas-payroll-provision-catalog132.js';
 import { payrollFormulas129,formulaSnapshot129,ensureFormulaSchema129 } from './sagas-payroll-formulas129.js';
 import { payrollEnginePreview133 } from './sagas-payroll-engine133.js';
@@ -9669,7 +9670,7 @@ async function payrollMonthlyPreparation34(env,companyId,competenceId,paymentDat
 // ===== SAGAS Folha Etapa 35: processamento mensal versionado e NAO homologado =====
 // O cálculo mensal aceita admissão proporcional e histórico salarial conforme
 // parâmetros por empresa. Ocorrências e mudanças de jornada permanecem bloqueadas.
-function payrollMonthlyEmployeeCalc35(employee, movements, rules, dependents, competence, paymentDate, prorationMode,salaryMode,salaryChanges,attendance,leave){
+async function payrollMonthlyEmployeeCalc35(employee, movements, rules, dependents, competence, paymentDate, prorationMode,salaryMode,salaryChanges,attendance,leave,automatic137=[],db=null,companyId=null){
   const moneySafe=(value,label)=>{
     if(!Number.isSafeInteger(value)||value<0||value>99999999999)
       throw new HttpError(409,'Valor invalido no calculo de '+label+'.','DATA_INVALID');
@@ -9750,6 +9751,21 @@ function payrollMonthlyEmployeeCalc35(employee, movements, rules, dependents, co
     lines.push({event_id:null,event_code:x.event_code,event_name:x.event_name,
       line_type:x.line_type,amount_cents:x.amount_cents,reference_text:x.reference_text,rule_version:'LICENCA49'});
   }
+  const automated=await calculateAutomaticMonthly137({
+    db,companyId,period:competence,items:automatic137,
+    salaryCents:salary,paidCents:paid,manualCodes:movements.map(m=>m.event_code)
+  });
+  for(const item of automated){
+    if(item.line_type==='PROVENTO'){
+      earnings+=item.amount_cents;
+      if(item.incidences.inss==='SIM')baseInss+=item.amount_cents;
+      if(item.incidences.irrf==='SIM')baseIrrf+=item.amount_cents;
+      if(item.incidences.fgts==='SIM')baseFgts+=item.amount_cents;
+    }else if(item.line_type==='DESCONTO')manualDiscounts+=item.amount_cents;
+    else throw new HttpError(409,'Categoria de evento automático não suportada.','AUTO_EVENT_INVALID');
+    const {incidences,nature_id,...line}=item;
+    lines.push(line);
+  }
   for(const [n,v] of Object.entries({earnings,manualDiscounts,baseInss,baseIrrf,baseFgts}))moneySafe(v,n);
   // Para o caso mensal padrao, INSS do segurado incide sobre o total da base
   // contribuinte e IRRF sobre rendimentos tributaveis no mes de pagamento.
@@ -9777,6 +9793,9 @@ async function payrollMonthlySource35(env,companyId,competenceId,paymentDate){
   if(prep.employee_count===0||prep.employee_count>100)
     throw new HttpError(409,'Esta rotina processa de 1 a 100 funcionarios por competencia.','LIMIT');
   const employees=prep.employees;
+  await ensureSchemaRevision(env,'payroll-designer127',1,()=>schema127(env));
+  await ensureSchemaRevision(env,'payroll-formulas129',1,()=>ensureFormulaSchema129(env));
+  const automatic137=await loadAutomaticMonthly137(env.DB,companyId,prep.competence.competence);
   const ids=new Set(employees.map(e=>e.employee_id));
   const mov=await env.DB.prepare(`SELECT m.id,m.employee_id,m.event_id,m.unit,m.amount_cents,m.quantity_milli,
       e.code AS event_code,e.name AS event_name,e.event_type
@@ -9835,12 +9854,15 @@ async function payrollMonthlySource35(env,companyId,competenceId,paymentDate){
     const staged=vacation100.byEmployee.get(emp.employee_id);
     if(staged&&relevant.length)
       throw new HttpError(409,'Movimentos manuais ainda não conciliados com férias.','VACATION_EXTRA_MOVEMENT');
+    if(staged&&automatic137.length)
+      throw new HttpError(409,'Eventos automáticos novos exigem conciliação com as férias deste funcionário.','VACATION_AUTO_EVENT_REVIEW');
     const calculated=staged?{...staged,employee_code:emp.employee_code,employee_name:emp.employee_name}:
-      payrollMonthlyEmployeeCalc35({...emp,salary_cents:salary.salary_cents,
+      await payrollMonthlyEmployeeCalc35({...emp,salary_cents:salary.salary_cents,
       monthly_hours_milli:schedule.monthly_hours_milli},relevant,rules,count,
       prep.competence.competence,paymentDate,prep.proration_settings?.mode||null,
       prep.salary_change_settings?.mode||'RM_NEXT_MONTH',changedSalary.get(emp.employee_id)||[],
-      attendance.get(emp.employee_id)||null,leave.get(emp.employee_id)||null);
+      attendance.get(emp.employee_id)||null,leave.get(emp.employee_id)||null,
+      automatic137,env.DB,companyId);
     items.push(calculated);
   }
   const financialSafe=items.every(x=>[x.earnings_cents,x.deductions_cents,x.net_cents,x.inss_cents,
@@ -9855,6 +9877,7 @@ async function payrollMonthlySource35(env,companyId,competenceId,paymentDate){
     history_schedule:items.map(x=>[x.employee_id,history.schedule.get(x.employee_id)]),
     history_functional:items.map(x=>[x.employee_id,history.functional.get(x.employee_id)]),
     movements,rules:[...rulesResult.results||[]],dependents:[...dependents.entries()],
+    automatic_event_versions:automatic137,
     ...(vacation100.records.length?{vacation_stages:vacation100.records}:{}),items});
   const fingerprint=vacation100.records.length?'VACATION100:'+rawFingerprint:rawFingerprint;
   return {prep,items,fingerprint,vacation_records:vacation100.records,employee_count:items.length,
