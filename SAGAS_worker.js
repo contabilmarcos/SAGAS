@@ -9963,19 +9963,41 @@ async function payrollMonthlyRuns35(env,companyId,competenceId){
     .bind(companyId,competenceId).all();
   return {runs:r.results||[]};
 }
+// v139: Falhas técnicas do cálculo precisam informar a etapa sem vazar dados de
+// funcionários, credenciais nem instruções SQL ao navegador.
+function payrollMonthlyTechnical139(err,stage){
+ if(err instanceof HttpError)return err;
+ const raw=String(err?.message||err);
+ const schema=/no such (table|column):\s*(?:(?:main)\.)?([A-Za-z][A-Za-z0-9_]*)/i.exec(raw);
+ const binding=/incorrect number of bindings|too many sql variables|bind parameters|wrong number of bindings/i.test(raw);
+ const kind=schema?'SCHEMA':binding?'PARAMETERS':'SERVER';
+ const hint=schema?
+  ('A estrutura '+schema[2]+' não está disponível no banco desta empresa.'):
+  binding?'A consulta da folha contém parâmetros incompatíveis com a estrutura do banco.':
+  'Falha técnica ao executar esta etapa da folha.';
+ console.error('PAYROLL_MONTHLY_DIAGNOSTIC_139',{stage,kind,error:err});
+ return new HttpError(503,hint+' Etapa: '+stage+
+  '. Não houve confirmação do processamento; informe este código ao suporte: FOLHA_'+kind+'_139.',
+  'PAYROLL_'+kind+'_139',{stage});
+}
+async function payrollMonthlyChecked139(stage,fn){
+ try{return await fn();}
+ catch(err){throw payrollMonthlyTechnical139(err,stage);}
+}
 async function payrollMonthlyRunCreate35(env,request,auth,companyId,competenceId,paymentDate){
-  await ensureSchemaRevision(env,'payroll-vacation-monthly-use100',1,()=>payrollVacationMonthlySchema100(env));
+  await payrollMonthlyChecked139('PREPARAR_FERIAS',()=>ensureSchemaRevision(env,'payroll-vacation-monthly-use100',1,()=>payrollVacationMonthlySchema100(env)));
 
   await requirePermission(env,auth.user.id,companyId,'payroll.manage');
   const date=payrollStrictDate(paymentDate,'Data prevista de pagamento');
-  await ensureSchemaRevision(env,'payroll-event-rules',1,()=>ensurePayrollEventRulesSchema(env));
-  await ensureSchemaRevision(env,'payroll-employee-history',1,()=>ensurePayrollEmployeeRecordsSchema(env));
-  await ensureSchemaRevision(env,'payroll-calculation-foundation',1,()=>ensurePayrollCalculationFoundation34(env));
-  await ensureSchemaRevision(env,'payroll-envelope-cost-center39',1,()=>ensurePayrollEnvelopeCostCenter39(env));
-  const source=await payrollMonthlySource35(env,companyId,competenceId,date);
-  const previous=await env.DB.prepare(`SELECT id,revision,source_fingerprint,payment_date,status
+  await payrollMonthlyChecked139('PREPARAR_REGRAS_EVENTOS',()=>ensureSchemaRevision(env,'payroll-event-rules',1,()=>ensurePayrollEventRulesSchema(env)));
+  await payrollMonthlyChecked139('PREPARAR_HISTORICOS_OPCIONAIS',()=>ensureSchemaRevision(env,'payroll-employee-history',1,()=>ensurePayrollEmployeeRecordsSchema(env)));
+  await payrollMonthlyChecked139('PREPARAR_CALCULO_MENSAL',()=>ensureSchemaRevision(env,'payroll-calculation-foundation',1,()=>ensurePayrollCalculationFoundation34(env)));
+  await payrollMonthlyChecked139('PREPARAR_CENTROS_CUSTO',()=>ensureSchemaRevision(env,'payroll-envelope-cost-center39',1,()=>ensurePayrollEnvelopeCostCenter39(env)));
+  const source=await payrollMonthlyChecked139('CALCULAR_FONTE_MENSAL',
+    ()=>payrollMonthlySource35(env,companyId,competenceId,date));
+  const previous=await payrollMonthlyChecked139('CONSULTAR_REVISOES',()=>env.DB.prepare(`SELECT id,revision,source_fingerprint,payment_date,status
     FROM payroll_calc_runs WHERE company_id=? AND competence_id=? AND process_kind='MONTHLY'
-    ORDER BY revision DESC LIMIT 1`).bind(companyId,competenceId).first();
+    ORDER BY revision DESC LIMIT 1`).bind(companyId,competenceId).first());
   if(previous?.status!=='VOID' && previous?.source_fingerprint===source.fingerprint && previous.payment_date===date){
     const detail=await payrollMonthlyRunDetail35(env,companyId,previous.id);
     return {...detail,reused:true};
@@ -10011,7 +10033,7 @@ async function payrollMonthlyRunCreate35(env,request,auth,companyId,competenceId
       "INSERT INTO payroll_vacation_monthly_usage100(id,company_id,run_id,stage_id,employee_id,competence_id,source_fingerprint) VALUES (?,?,?,?,?,?,?)"
     ).bind(uuid(),companyId,runId,stage.id,stage.employee_id,competenceId,stage.source_fingerprint));
   }
-  try{await env.DB.batch(statements)}
+  try{await payrollMonthlyChecked139('GRAVAR_ENVELOPES',()=>env.DB.batch(statements))}
   catch(err){
     if(/UNIQUE constraint failed|FOREIGN KEY constraint failed/i.test(String(err?.message||err)))
       throw new HttpError(409,'Outro processamento ou alteracao de competencia ocorreu. Atualize e tente novamente.','CONFLICT');
@@ -10020,7 +10042,8 @@ async function payrollMonthlyRunCreate35(env,request,auth,companyId,competenceId
   await audit(env,{companyId,userId:auth.user.id,action:'CREATE',entity:'payroll_calc_runs',entityId:runId,
     after:{competence_id:competenceId,revision,employee_count:source.employee_count,
       source_fingerprint:source.fingerprint,totals:source.totals,approved:false},request});
-  return {...await payrollMonthlyRunDetail35(env,companyId,runId),reused:false};
+  return {...await payrollMonthlyChecked139('CONSULTAR_ENVELOPES_GRAVADOS',
+    ()=>payrollMonthlyRunDetail35(env,companyId,runId)),reused:false};
 }
 
 // ===== SAGAS Folha Etapa 36 — conferencia e fechamento da folha mensal =====
