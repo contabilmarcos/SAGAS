@@ -623,7 +623,7 @@ async function payrollPreparationScreen34(date=''){
     `<form id="payrollPrepForm34" class="grid" style="align-items:end">
       <label class="field"><span>Data prevista de pagamento (para IRRF)</span><input name="payment_date" type="date" value="${esc(lastDate)}" required></label>
       <div><button class="btn primary" type="submit">Verificar preparacao</button></div>
-    </form><p class="help">A verificacao nao calcula nem grava salarios liquidos, encargos, financeiro ou contabilidade. O calculo definitivo sera implementado na etapa 35.</p>
+    </form><p class="help">A preparação confere os cadastros; histórico salarial, jornada e histórico funcional são opcionais. Sem histórico, usa o salário do cadastro e a referência de 220h/mês para o cálculo simples. Eventos por hora exigem jornada efetiva. Não gera financeiro ou contabilidade.</p>
     <div id="payrollPrepResults34"></div>`,true);
   $('#payrollPrepForm34').onsubmit=async e=>{
     e.preventDefault();
@@ -644,7 +644,7 @@ function payrollPreparationResults34(d){
   const alerts=(d.global_blockers||[]).map(x=>'<div style="padding:6px 8px;margin:3px 0;border:1px solid #dfc5b8">'+esc(x.message)+'</div>').join('');
   const rows=(d.employees||[]).map((e,i)=>'<tr><td class="code">'+esc(e.employee_code||'—')+'</td><td>'+esc(e.employee_name)+'</td><td>'+esc(e.salary_history===null?'—':money(e.salary_history))+'</td><td>'+esc(e.monthly_hours===null?'—':e.monthly_hours+' h')+'</td><td>'+(e.blocker_count?'<span class="badge yellow">'+e.blocker_count+' pendência(s)</span>':'<span class="badge green">Cadastros completos</span>')+'</td><td><button type="button" class="btn secondary sm" data-payroll-prep-detail="'+i+'">Detalhes</button></td></tr>').join('');
   results.innerHTML='<div class="section-title">Resultado da verificação</div>'+alerts+
-    '<p class="help">'+Number(d.employee_count||0)+' funcionário(s) · '+Number(d.complete_employee_count||0)+' com cadastros completos · '+Number(d.pending_employee_count||0)+' com pendências. A folha definitiva ainda não está liberada.</p>'+
+    '<p class="help">'+Number(d.employee_count||0)+' funcionário(s) · '+Number(d.complete_employee_count||0)+' com cadastros completos · '+Number(d.pending_employee_count||0)+' com pendências. Histórico salarial, jornada e situação funcional são opcionais para funcionários ativos com cadastro básico válido.</p>'+
     '<div class="table-wrap" style="max-height:330px;overflow:auto"><table class="table"><thead><tr><th>ID</th><th>Funcionário</th><th>Salário histórico</th><th>Jornada mensal</th><th>Cadastro</th><th>Ação</th></tr></thead><tbody>'+ (rows||empty(6,'Nenhum funcionário','Verifique a empresa e competência selecionadas.'))+'</tbody></table></div>'+
     '<div class="form-actions"><button type="button" class="btn secondary" id="prepEmployees34">Abrir cadastro de funcionários</button></div>';
   $$('[data-payroll-prep-detail]',results).forEach(btn=>btn.onclick=()=>payrollPreparationEmployee34(Number(btn.dataset.payrollPrepDetail)));
