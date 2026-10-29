@@ -12290,6 +12290,10 @@ async function route(request, env) {
     const action=path.slice('/api/payroll/simple141/'.length);
     const actions={setup:'GET',calculate:'POST',report:'GET',accounting:'GET',mapping:'POST',post:'POST'};
     if(Object.hasOwn(actions,action)&&method===actions[action]){
+      // O cálculo simples precisa dos IDs e centros do cadastro, mas não de
+      // históricos salariais, férias, licenças nem movimentos variáveis.
+      await ensureSchemaRevision(env,'payroll-employee-numbers',1,()=>ensurePayrollEmployeeNumbersSchema(env));
+      await ensureSchemaRevision(env,'payroll-employee-cost-center39',1,()=>ensurePayrollCostCenter39(env));
       const body=method==='POST'?await readJson(request):{};
       return ok(await payrollSimple141(action,{env,companyId,auth,request,body,
         competence:url.searchParams.get('competence'),
