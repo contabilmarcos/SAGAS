@@ -228,3 +228,17 @@ test('tela inclui opcao de conferir antes de gravar e link para API sem run',()=
  assert.match(worker,/payrollMonthlySource35\(env,companyId,competenceId,paymentDate\)/);
  assert.match(worker,/path==='\/api\/payroll\/monthly-engine-preview'/);
 });
+
+test('prévia interrompe fonte com líquido ou tributos que não conciliam com linhas',async()=>{
+ const e=envelope();
+ e.net_cents+=1;
+ const net=await simulateEnvelope133({db:sqlDb(),envelope:e,employeeSalaryCents:300000,
+  configs:configurations(),provisions:[],settings:{cpp_due:'SIM'},resolveFormula:async()=>null});
+ assert.ok(net.problems.some(x=>x.code==='SOURCE_INVALID'));
+ assert.equal(net.computed,undefined);
+ const e2=envelope();
+ e2.lines.find(x=>x.event_code==='FGTS_PATRONAL').amount_cents+=1;
+ const fgts=await simulateEnvelope133({db:sqlDb(),envelope:e2,employeeSalaryCents:300000,
+  configs:configurations(),provisions:[],settings:{cpp_due:'SIM'},resolveFormula:async()=>null});
+ assert.ok(fgts.problems.some(x=>x.code==='SOURCE_INVALID'));
+});
