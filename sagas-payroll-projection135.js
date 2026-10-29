@@ -3,7 +3,7 @@
 // Os eventos antigos só podem ser substituídos na projeção quando a incidência
 // da regra exata da linha histórica foi recuperada e validada.
 const MAX135=99999999999;
-const monetary135=n=>Number.isSafeInteger(Number(n))&&Number(n)>=0&&Number(n)<=MAX135;
+const monetary135=n=>typeof n==='number'&&Number.isSafeInteger(n)&&n>=0&&n<=MAX135;
 const core135=new Set(['SALARIO_BASE','INSS_EMP','IRRF_EMP','FGTS_PATRONAL']);
 const money135=n=>n/100;
 const sum135=(items)=>items.reduce((s,x)=>s+Number(x.amount_cents),0);
