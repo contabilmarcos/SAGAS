@@ -11,19 +11,8 @@ export async function previewProvisionAccounting134({db,companyId,envelopes}){
  let expected=0,recognized=0,estimatedCount=0;
  const add=(code,message,emp)=>problems.push(fail134(code,message,emp?.employee_code||null));
  for(const emp of envelopes){
-  const pending=(emp.provisions||[]).filter(p=>p.status==='ESTIMADO'&&Number(p.amount_cents)>0);
+  const pending=(emp.provisions||[]).filter(p=>p.status==='ESTIMADO'&&Number(p.amount_cents)!==0);
   if(!pending.length)continue;
-  if(!emp.cost_center_id){
-   add('CC_PROVISAO_AUSENTE','Centro de custo não informado para provisões.',emp);continue;
-  }
-  if(!centerCache.has(emp.cost_center_id)){
-   centerCache.set(emp.cost_center_id,await db.prepare(
-    'SELECT id,code FROM cost_centers WHERE company_id=? AND id=? AND active=1'
-   ).bind(companyId,emp.cost_center_id).first());
-  }
-  if(!centerCache.get(emp.cost_center_id)){
-   add('CC_PROVISAO_INVALIDO','Centro de custo da provisão inativo ou não pertence à empresa.',emp);continue;
-  }
   for(const p of pending){
    const cents=Number(p.amount_cents);
    estimatedCount++;
@@ -33,6 +22,17 @@ export async function previewProvisionAccounting134({db,companyId,envelopes}){
    expected+=cents;
    if(!Number.isSafeInteger(expected)||expected>maximum134){
     add('LIMITE_PROVISOES','Total das provisões excede o limite de segurança.',emp);continue;
+   }
+   if(!emp.cost_center_id){
+    add('CC_PROVISAO_AUSENTE','Centro de custo não informado para provisões.',emp);continue;
+   }
+   if(!centerCache.has(emp.cost_center_id)){
+    centerCache.set(emp.cost_center_id,await db.prepare(
+     'SELECT id,code FROM cost_centers WHERE company_id=? AND id=? AND active=1'
+    ).bind(companyId,emp.cost_center_id).first());
+   }
+   if(!centerCache.get(emp.cost_center_id)){
+    add('CC_PROVISAO_INVALIDO','Centro de custo da provisão inativo ou não pertence à empresa.',emp);continue;
    }
    const natureId=String(p.nature_id||'');
    if(!natureId){add('NATUREZA_PROVISAO_AUSENTE','Provisão '+p.code+' sem natureza de constituição.',emp);continue;}
