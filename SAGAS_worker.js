@@ -9980,10 +9980,11 @@ function payrollMonthlyTechnical139(err,stage){
  if(/^AUTO_[A-Z0-9_]+$/.test(String(err?.code||''))){
   const code=String(err.code);
   console.warn('PAYROLL_AUTOMATIC_VALIDATION_140',{stage,code});
-  const safe=['AUTO_EVENT_MANUAL_DUPLICATE','AUTO_FORMULA_UNSUPPORTED','AUTO_FORMULA_REFERENCE',
-   'AUTO_FORMULA_INACTIVE','AUTO_BASE_INVALID','AUTO_AMOUNT_INVALID','AUTO_FORMULA_ERROR'].includes(code)?
-    'Há um evento automático que não pode ser calculado para esta competência. Confira sua fórmula, vigência, incidências e possíveis lançamentos duplicados.':
-    'Confira a configuração dos eventos automáticos desta competência.';
+  const safeMessage=String(err.message||'');
+  const safeCode=/^Falha na fórmula automática do evento ([A-Z0-9_-]{1,30})\. Confira os parâmetros e a vigência\.$/i.exec(safeMessage);
+  const safe=safeCode?
+    'Não foi possível calcular o evento '+safeCode[1]+'. Confira a fórmula e sua vigência.':
+    'Há um evento automático que não pode ser calculado para esta competência. Confira fórmula, vigência, incidências e lançamentos duplicados.';
   return new HttpError(409,safe+' Etapa: '+stage+'. Código: '+code+'.',
     code,{stage});
  }
