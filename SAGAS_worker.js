@@ -9510,46 +9510,46 @@ async function ensurePayrollCalculationFoundation34(env){
 async function payrollMonthlyPreparation34(env,companyId,competenceId,paymentDate){
   if(!competenceId)throw new HttpError(400,'Selecione a competencia.','VALIDATION_ERROR');
   const payment=payrollStrictDate(paymentDate,'Data prevista de pagamento');
-  const period=await env.DB.prepare(`SELECT id,competence,status FROM payroll_competences
-    WHERE company_id=? AND id=?`).bind(companyId,competenceId).first();
+  const period=await payrollMonthlyChecked139('LER_COMPETENCIA',()=>env.DB.prepare(`SELECT id,competence,status FROM payroll_competences
+    WHERE company_id=? AND id=?`).bind(companyId,competenceId).first());
   if(!period)throw new HttpError(404,'Competencia nao encontrada nesta empresa.','NOT_FOUND');
   const first=period.competence+'-01';
   const [year,month]=period.competence.split('-').map(Number);
   const last=period.competence+'-'+String(new Date(Date.UTC(year,month,0)).getUTCDate()).padStart(2,'0');
-  const candidates=(await listPayroll(env,companyId,'employees')).filter(e=>e.admission_date<=last);
+  const candidates=(await payrollMonthlyChecked139('LER_FUNCIONARIOS',()=>listPayroll(env,companyId,'employees'))).filter(e=>e.admission_date<=last);
   if(candidates.length>2000)throw new HttpError(409,'Mais de 2.000 funcionarios na competencia. Consulte em lotes.','LIMIT');
-  const history=await payrollEmployeeHistoricalContext(env,companyId,first,last);
-  await ensureSchemaRevision(env,'payroll-admission-proration46',1,()=>payrollAdmissionSchema46(env));
-  const prorationSettings=await payrollAdmissionRead46(env,companyId,period.competence);
-  await payrollAdmissionHistory46(env,companyId,candidates,first,last,history,HttpError);
+  const history=await payrollMonthlyChecked139('LER_HISTORICOS_OPCIONAIS',()=>payrollEmployeeHistoricalContext(env,companyId,first,last));
+  await payrollMonthlyChecked139('PREPARAR_ADMISSOES',()=>ensureSchemaRevision(env,'payroll-admission-proration46',1,()=>payrollAdmissionSchema46(env)));
+  const prorationSettings=await payrollMonthlyChecked139('PARAMETROS_ADMISSAO',()=>payrollAdmissionRead46(env,companyId,period.competence));
+  await payrollMonthlyChecked139('VIGENCIAS_ADMISSAO',()=>payrollAdmissionHistory46(env,companyId,candidates,first,last,history,HttpError));
   // Histórico informado tem prioridade; sem ele, o cadastro básico é suficiente.
-  const fallback138=payrollBasicHistory138(candidates,history,first);
-  await ensureSchemaRevision(env,'payroll-salary-change47',1,()=>payrollSalarySchema47(env));
-  const salarySettings=await payrollSalaryRead47(env,companyId,period.competence);
+  const fallback138=await payrollMonthlyChecked139('DADOS_CADASTRO_BASICO',()=>payrollBasicHistory138(candidates,history,first));
+  await payrollMonthlyChecked139('PREPARAR_REAJUSTES',()=>ensureSchemaRevision(env,'payroll-salary-change47',1,()=>payrollSalarySchema47(env)));
+  const salarySettings=await payrollMonthlyChecked139('PARAMETROS_REAJUSTE',()=>payrollSalaryRead47(env,companyId,period.competence));
   const salaryMode=salarySettings?.mode||'RM_NEXT_MONTH';
   const admissionMode=prorationSettings?.mode||'CALENDAR';
-  const salaryChangesByEmployee=await payrollSalaryHistory47(env,companyId,candidates,history,first,last,HttpError);
-  await ensureSchemaRevision(env,'payroll-absence48',1,()=>payrollAbsenceSchema48(env));
-  const absenceSnapshot=await payrollAbsenceSnapshot48(env,companyId,period.competence,{HttpError});
-  await ensureSchemaRevision(env,'payroll-leave49',1,()=>payrollLeaveSchema49(env));
-  const leaveSnapshot=await payrollLeaveSnapshot49(env,companyId,period.competence,{HttpError});
+  const salaryChangesByEmployee=await payrollMonthlyChecked139('CONFERIR_REAJUSTES',()=>payrollSalaryHistory47(env,companyId,candidates,history,first,last,HttpError));
+  await payrollMonthlyChecked139('PREPARAR_FREQUENCIA',()=>ensureSchemaRevision(env,'payroll-absence48',1,()=>payrollAbsenceSchema48(env)));
+  const absenceSnapshot=await payrollMonthlyChecked139('CONSULTAR_FREQUENCIA',()=>payrollAbsenceSnapshot48(env,companyId,period.competence,{HttpError}));
+  await payrollMonthlyChecked139('PREPARAR_AFASTAMENTOS',()=>ensureSchemaRevision(env,'payroll-leave49',1,()=>payrollLeaveSchema49(env)));
+  const leaveSnapshot=await payrollMonthlyChecked139('CONSULTAR_AFASTAMENTOS_PREVIOS',()=>payrollLeaveSnapshot49(env,companyId,period.competence,{HttpError}));
   // Funcionarios ja desligados no inicio da competencia nao compoem a folha mensal.
   // Quem foi desligado DURANTE o mes permanece para conferencia das verbas proporcionais.
   const allEmployees=candidates.filter(e=>history.functional.get(e.id)?.[0]?.situation!=='DESLIGADO');
-  const movements=await env.DB.prepare(`SELECT m.id,m.employee_id,m.event_id,m.unit,m.amount_cents,m.quantity_milli,
+  const movements=await payrollMonthlyChecked139('LER_LANCAMENTOS',()=>env.DB.prepare(`SELECT m.id,m.employee_id,m.event_id,m.unit,m.amount_cents,m.quantity_milli,
       v.code AS event_code,v.name AS event_name,v.event_type,v.active AS event_active
     FROM payroll_movements m JOIN payroll_events v
       ON v.id=m.event_id AND v.company_id=m.company_id
     WHERE m.company_id=? AND m.competence_id=? ORDER BY m.employee_id,v.code,m.id LIMIT 5001`)
-      .bind(companyId,competenceId).all();
+      .bind(companyId,competenceId).all());
   const eventRows=movements.results||[];
   if(eventRows.length>5000)throw new HttpError(409,'Ha mais de 5.000 eventos na competencia.','LIMIT');
-  const rulesRes=await env.DB.prepare(`SELECT event_id,effective_from,revision,inss,irrf,fgts,calculation_code,formula_text
+  const rulesRes=await payrollMonthlyChecked139('LER_PARAMETROS_EVENTOS',()=>env.DB.prepare(`SELECT event_id,effective_from,revision,inss,irrf,fgts,calculation_code,formula_text
     FROM payroll_event_rule_versions WHERE company_id=? AND effective_from<=?
       AND event_id IN (SELECT DISTINCT event_id FROM payroll_movements
         WHERE company_id=? AND competence_id=?)
     ORDER BY event_id,effective_from DESC,revision DESC LIMIT 5001`)
-      .bind(companyId,period.competence,companyId,competenceId).all();
+      .bind(companyId,period.competence,companyId,competenceId).all());
   if((rulesRes.results||[]).length>5000)throw new HttpError(409,'Historico de parametros excede o limite.','LIMIT');
   const latest=new Map();
   for(const rule of rulesRes.results||[])if(!latest.has(rule.event_id))latest.set(rule.event_id,rule);
