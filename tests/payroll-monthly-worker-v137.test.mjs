@@ -50,3 +50,36 @@ test('impede repetição do evento na folha oficial',async()=>{
  '2026-10','2026-11-05',null,'RM_NEXT_MONTH',[],null,null,bonus,{},'COMP'),
  /Evento sem parametros fiscais vigentes|lançado manualmente/);
 });
+
+test('cálculo de janeiro/2020 não exige criação do catálogo de fórmulas',async()=>{
+ const s=text.indexOf('  let automatic137=[];',text.indexOf('async function payrollMonthlySource35('));
+ const e=text.indexOf('  const ids=new Set(',s);
+ assert.ok(s>0&&e>s,'Fluxo de configuração automática não localizado');
+ const body=text.slice(s,e);
+ assert.doesNotMatch(body,/ensureSchemaRevision\(/);
+ const load=async()=>{throw Error('D1_ERROR: no such table: payroll_designer_config127');};
+ const results=await new Function('loadAutomaticMonthly137','env','companyId','prep','HttpError',
+   'return (async()=>{'+body+' return automatic137;})()')(
+   load,{DB:{}},'COMP',{competence:{competence:'2020-01'}},H);
+ assert.deepEqual(results,[]);
+});
+test('erro de cadastro automático é comunicado sem retornar erro genérico 500',async()=>{
+ const s=text.indexOf('  let automatic137=[];',text.indexOf('async function payrollMonthlySource35('));
+ const e=text.indexOf('  const ids=new Set(',s);
+ const body=text.slice(s,e);
+ const load=async()=>{throw Object.assign(new Error('Incidências incompletas no bônus'),{code:'AUTO_INCIDENCE_MISSING'});};
+ await assert.rejects(()=>new Function('loadAutomaticMonthly137','env','companyId','prep','HttpError',
+   'return (async()=>{'+body+' return automatic137;})()')(
+   load,{DB:{}},'COMP',{competence:{competence:'2020-01'}},H),
+   err=>err instanceof H&&err.status===409&&err.code==='AUTO_INCIDENCE_MISSING');
+});
+test('outra falha do catálogo não é confundida com cadastro inexistente',async()=>{
+ const s=text.indexOf('  let automatic137=[];',text.indexOf('async function payrollMonthlySource35('));
+ const e=text.indexOf('  const ids=new Set(',s);
+ const body=text.slice(s,e);
+ const load=async()=>{throw Error('SQLITE_CORRUPT');};
+ await assert.rejects(()=>new Function('loadAutomaticMonthly137','env','companyId','prep','HttpError',
+   'return (async()=>{'+body+' return automatic137;})()')(
+   load,{DB:{}},'COMP',{competence:{competence:'2020-01'}},H),
+   err=>err instanceof H&&err.status===503&&err.code==='AUTO_CONFIG_READ_FAILED');
+});
