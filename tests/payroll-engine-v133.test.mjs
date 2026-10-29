@@ -92,6 +92,21 @@ test('sem fonte de salario nao inventa base nem calcula provisoes',async()=>{
  assert.ok(r.problems.some(x=>x.code==='PROVISION_DEPENDENCY'));
  assert.ok(r.provisions.every(x=>x.code!=='PROV_FERIAS'||x.status!=='ESTIMADO'));
 });
+test('parametros patronais ausentes nunca sao tratados como isencao',async()=>{
+ const result=await simulateEnvelope133({db:sqlDb(),envelope:envelope(),employeeSalaryCents:300000,
+  configs:configurations(),provisions:[],settings:null,resolveFormula:async()=>null});
+ const cpp=result.events.find(x=>x.code==='INSS_PATRONAL');
+ assert.equal(cpp.status,'PENDENTE');
+ assert.ok(result.problems.some(p=>p.code==='EMPLOYER_PARAMETERS_MISSING'));
+ assert.equal(result.ready,false);
+});
+test('divergencia entre formula INSS e folha anterior e exibida como pendencia',async()=>{
+ const result=await simulateEnvelope133({db:sqlDb(),envelope:envelope(),employeeSalaryCents:300000,
+  configs:configurations(),provisions:[],settings:{cpp_due:'SIM'},
+  resolveFormula:async()=>null});
+ assert.ok(result.problems.some(p=>p.code==='EVENT_VALUE_DIVERGENCE'&&p.message.includes('INSS_EMP')));
+ assert.equal(result.ready,false);
+});
 test('nao homologa fechamento sem formula essencial do INSS',async()=>{
  const r=await simulateEnvelope133({db:sqlDb(),envelope:envelope(),employeeSalaryCents:300000,
   configs:configurations().filter(x=>x.config.code!=='INSS_EMP'),
