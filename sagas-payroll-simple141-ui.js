@@ -145,7 +145,7 @@
   try{
    const r=await api141('accounting');
    if(r.posted){target.innerHTML='<p class="badge green">Contabilizado</p>'+
-      '<p>Lote: '+e(r.posted.batch_id)+' · Lançamento: '+e(r.posted.entry_id)+'</p>'+
+      '<p>Lote: '+e(r.posted.batch_code||r.posted.batch_id)+' — '+e(r.posted.batch_description||'')+' · Lançamento: '+e(r.posted.entry_id)+'</p>'+
       '<p class="muted">Títulos de salário líquido usam o Financeiro existente. Provisões de férias, terço e 13º usam o livro de provisões e suas baixas. Encargos provisionados permanecem estimativas contábeis; não geram guias.</p>'+
       ['finance','provisions'].map(kind=>'<button class="btn secondary" data-s141integrate="'+kind+'" '+
        (r.integrations.some(x=>x.kind===kind)?'disabled':'')+'>'+
@@ -188,16 +188,32 @@
     }catch(err){copyButton.disabled=false;toast(err.message,'error')}
    };
    const button=document.getElementById('s141post');
-   button.onclick=async()=>{
-    if(!confirm('Criar um NOVO lote e contabilizar a folha deste centro de custo?'))return;
-    button.disabled=true;
-    try{
-     const p=await api141('post',{competence:state.competence,cost_center_id:state.cost_center_id});
-     toast('Lote '+p.batch_code+' criado e contabilizado.');
-     await loadAccounting();
-    }catch(err){button.disabled=false;toast(err.message,'error')}
-   };
+   button.onclick=openPosting;
   }catch(err){target.innerHTML='<p class="badge red">'+e(err.message)+'</p>'}
+ }
+ function openPosting(){
+  const competence=state.competence,cost_center_id=state.cost_center_id;
+  const description='Folha simplificada '+competence+' — centro de custo '+shortName(cost_center_id);
+  openModal('Criar lote e contabilizar','Informe os dados do novo lote para esta folha.',
+   '<form id="s141postForm" class="stack">'+
+   '<label class="field"><span>Número do lote</span><input name="batch_code" inputmode="numeric" pattern="[0-9]+" maxlength="15" required autocomplete="off"></label>'+
+   '<p class="muted">Use um número positivo ainda não cadastrado na empresa. O lote 0 é reservado.</p>'+
+   '<label class="field"><span>Descrição do lote</span><input name="batch_description" maxlength="500" required value="'+e(description)+'"></label>'+
+   '<div class="form-actions"><button class="btn secondary" type="button" id="s141postCancel">Cancelar</button>'+
+   '<button class="btn primary" type="submit" id="s141postConfirm">Criar lote e contabilizar</button></div></form>');
+  document.getElementById('s141postCancel').onclick=closeModal;
+  document.getElementById('s141postForm').onsubmit=async ev=>{
+   ev.preventDefault();
+   const submit=document.getElementById('s141postConfirm');
+   if(submit.disabled)return;
+   const fd=new FormData(ev.currentTarget);
+   submit.disabled=true;
+   try{
+    const p=await api141('post',{competence,cost_center_id,
+     batch_code:String(fd.get('batch_code')||'').trim(),batch_description:String(fd.get('batch_description')||'').trim()});
+    closeModal();toast('Lote '+p.batch_code+' criado e contabilizado.');await loadAccounting();
+   }catch(err){submit.disabled=false;toast(err.message,'error')}
+  };
  }
  function openMapping(row){
   const natures=state.setup.natures||[];

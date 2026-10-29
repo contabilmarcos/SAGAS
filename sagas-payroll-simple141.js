@@ -325,7 +325,9 @@ export async function payrollSimple141(action,c){
  if(cc==='all')fail141(d,'SELECT_CENTER','Selecione um centro de custo específico para contabilizar.');
  const latest=(await read141(env,companyId,month,cc))[0];
  if(!latest)fail141(d,'RUN_MISSING','Calcule primeiro a folha deste centro de custo.');
- const posted=await env.DB.prepare("SELECT batch_id,entry_id FROM payroll_simple_postings141 WHERE run_id=? AND company_id=?").bind(latest.id,companyId).first();
+ const posted=await env.DB.prepare(`SELECT p.batch_id,p.entry_id,b.code AS batch_code,b.description AS batch_description
+  FROM payroll_simple_postings141 p LEFT JOIN journal_batches b ON b.id=p.batch_id AND b.company_id=p.company_id
+  WHERE p.run_id=? AND p.company_id=?`).bind(latest.id,companyId).first();
  if(action==='mapping'){
   if(posted)fail141(d,'ALREADY_POSTED','O centro de custo já foi contabilizado. Mapeamentos dessa folha estão bloqueados.');
   const code=String(body.event_code||''),natureId=String(body.nature_id||'');
@@ -375,7 +377,12 @@ export async function payrollSimple141(action,c){
   await d.requirePermission(env,auth.user.id,companyId,'accounting.batch.manage');
   await d.requirePermission(env,auth.user.id,companyId,'accounting.entry.create');
   await d.requirePermission(env,auth.user.id,companyId,'accounting.entry.post');
-  if(posted)return {posted:true,reused:true,batch_id:posted.batch_id,entry_id:posted.entry_id};
+  if(posted)return {posted:true,reused:true,...posted};
+  const batchCode=String(body.batch_code??'').trim(),batchDescription=String(body.batch_description??'').trim();
+  if(!/^\d{1,15}$/.test(batchCode)||Number(batchCode)===0)
+   fail141(d,'INVALID_BATCH_CODE','Informe um número de lote inteiro e positivo, com até 15 dígitos. O lote 0 é reservado.',400);
+  if(!batchDescription||batchDescription.length>500)
+   fail141(d,'INVALID_BATCH_DESCRIPTION','Informe a descrição do lote, com até 500 caracteres.',400);
   if(plan.lines.length>180)fail141(d,'LEDGER_LIMIT','Rateios excedem 180 partidas por centro de custo. Reduza os defaults antes de contabilizar.');
   if(!plan.balanced)fail141(d,'UNBALANCED_OR_UNMAPPED','Configure os débitos e créditos de todos os eventos e confira o equilíbrio antes de contabilizar.');
   // Impedir que uma conta excluída, inativa ou alterada após o mapeamento
@@ -391,7 +398,7 @@ export async function payrollSimple141(action,c){
   const eligible=periods.filter(p=>p.status!=='LOCKED'&&p.status!=='CLOSED'&&(!p.closed_until||p.closed_until<date));
   if(eligible.length!==1)fail141(d,'ACCOUNTING_PERIOD_INVALID','Cadastre um único período contábil aberto que inclua o último dia da competência.');
   const batch=await d.createBatch(env,request,auth,companyId,{period_id:eligible[0].id,
-    description:'Folha simplificada '+month+' — centro de custo '+cc});
+    code:batchCode,description:batchDescription});
   const entry=d.uuid(),lines=plan.lines;
   const statements=[env.DB.prepare(`INSERT INTO payroll_simple_postings141
     (run_id,company_id,batch_id,entry_id,created_by) VALUES(?,?,?,?,?)`)

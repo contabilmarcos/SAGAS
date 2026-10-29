@@ -1522,10 +1522,22 @@ async function createBatch(env, request, auth, companyId, body) {
     );
   }
 
-  const code=await nextBatchCode(env,companyId);
+  let code;
+  if(body.code!==undefined && body.code!==null){
+    const number=String(body.code).trim();
+    if(!/^\d{1,15}$/.test(number) || Number(number)===0)
+      throw new HttpError(400,'Informe um número de lote inteiro e positivo, com até 15 dígitos. O lote 0 é reservado.','INVALID_BATCH_CODE');
+    code=String(Number(number));
+    const existing=await env.DB.prepare(`SELECT id FROM journal_batches WHERE company_id=?
+      AND (code=? OR (code NOT GLOB '*[^0-9]*' AND CAST(code AS INTEGER)=?)) LIMIT 1`)
+      .bind(companyId,code,Number(code)).first();
+    if(existing)throw new HttpError(409,'Este número de lote já existe na empresa. Informe outro número.','BATCH_CODE_EXISTS');
+  }else{
+    code=await nextBatchCode(env,companyId);
+  }
   const id=uuid();
 
-  await env.DB.prepare(`
+  try{await env.DB.prepare(`
     INSERT INTO journal_batches
       (id,company_id,period_id,code,description,start_date,end_date,status,created_by,cover_mode,cover_amount_cents)
     VALUES (?,?,?,?,?,?,?,'OPEN',?,?,?)
@@ -1540,7 +1552,11 @@ async function createBatch(env, request, auth, companyId, body) {
     auth.user.id,
     coverMode,
     coverAmountCents
-  ).run();
+  ).run();}catch(err){
+    if(/UNIQUE constraint failed:\s*journal_batches\.company_id,\s*journal_batches\.code/i.test(String(err)))
+      throw new HttpError(409,'Este número de lote já existe na empresa. Informe outro número.','BATCH_CODE_EXISTS');
+    throw err;
+  }
 
   const row=await env.DB.prepare("SELECT * FROM journal_batches WHERE id=?").bind(id).first();
   await audit(env,{companyId,userId:auth.user.id,action:"CREATE",entity:"journal_batch",entityId:id,after:row,request});

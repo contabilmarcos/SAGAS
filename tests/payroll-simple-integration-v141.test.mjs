@@ -16,6 +16,7 @@ function fixture(){
  CREATE TABLE history_templates(id TEXT,company_id TEXT,active INTEGER);
  CREATE TABLE payroll_competences(id TEXT,company_id TEXT,competence TEXT,status TEXT);
  CREATE TABLE accounting_periods(id TEXT,company_id TEXT,code TEXT,status TEXT,start_date TEXT,end_date TEXT,closed_until TEXT);
+ CREATE TABLE journal_batches(id TEXT PRIMARY KEY,company_id TEXT,period_id TEXT,code TEXT,description TEXT,start_date TEXT,end_date TEXT,status TEXT,created_by TEXT,cover_mode TEXT,cover_amount_cents INTEGER,UNIQUE(company_id,code));
  CREATE TABLE journal_entries(id TEXT PRIMARY KEY,company_id TEXT,batch_id TEXT,branch_id TEXT,entry_date TEXT,document_number TEXT,description TEXT,source_module TEXT,source_reference TEXT,status TEXT,total_debit_cents INTEGER,total_credit_cents INTEGER,created_by TEXT,posted_by TEXT,posted_at TEXT);
  CREATE TABLE journal_lines(id TEXT PRIMARY KEY,company_id TEXT,entry_id TEXT,line_no INTEGER,account_id TEXT,side TEXT,amount_cents INTEGER,branch_id TEXT,cost_center_id TEXT,history_template_id TEXT,history_complement TEXT,document_number TEXT);
  CREATE TABLE financial_payables(id TEXT PRIMARY KEY,company_id TEXT,number TEXT,supplier_id TEXT,source_type TEXT,source_id TEXT,issue_date TEXT,due_date TEXT,document_number TEXT,description TEXT,amount_cents INTEGER,balance_cents INTEGER,status TEXT,created_by TEXT,UNIQUE(company_id,source_type,source_id));
@@ -34,9 +35,10 @@ function fixture(){
  INSERT INTO accounting_periods VALUES('period','company','2026','OPEN','2026-01-01','2026-12-31',NULL);`);
  let seq=0;const initialized=new Set(),permissions=[];
  const d={HttpError,uuid:()=>`id${++seq}`,audit:async()=>{},requirePermission:async(...args)=>permissions.push(args.at(-1)),
- ensureSchemaRevision:async(e,key,revision,fn)=>{if(!initialized.has(key)){await fn();initialized.add(key);}},createBatch:async()=>({id:'batch',code:'LOTE1'})};
+ ensureSchemaRevision:async(e,key,revision,fn)=>{if(!initialized.has(key)){await fn();initialized.add(key);}}};
+ d.createBatch=realCreateBatch(DB,d);
  const base={env:{DB},companyId:'company',auth:{user:{id:'user'}},d};
- const call=(action,body={})=>payrollSimple141(action,{...base,body:{competence:'2026-01',cost_center_id:'cc',...body}});
+ const call=(action,body={})=>payrollSimple141(action,{...base,body:{competence:'2026-01',cost_center_id:'cc',...(action==='post'?{batch_code:'77',batch_description:'Folha de janeiro'}:{}),...body}});
  async function seed(){
   await call('setup');await ensureProvisionLedger43(base.env);
   const setup=await call('setup');
@@ -219,4 +221,93 @@ test('botão de copiar preenche os parâmetros e atualiza a prévia na mesma tel
  await element('s141copyPrevious').onclick();
  assert.match(element('s141result').innerHTML,/1 - Salários/);
  assert.match(messages.at(-1),/1 parâmetro\(s\) preenchido\(s\) de 01\/2026/);
+});
+
+// Executa o cadastro de lotes real do Worker sobre SQLite, sem rede ou migrações externas.
+function realCreateBatch(DB,d){
+ const worker=readFileSync(new URL('../SAGAS_worker.js',import.meta.url),'utf8');
+ const common=worker.slice(worker.indexOf('function required('),worker.indexOf('function bool01('));
+ const numbering=worker.slice(worker.indexOf('function nextIsoDate('),worker.indexOf('async function batchEntrySummary('));
+ const create=worker.slice(worker.indexOf('async function createBatch('),worker.indexOf('async function updateBatch('));
+ return runInNewContext(common+numbering+create+';createBatch',{
+  HttpError,requirePermission:d.requirePermission,uuid:d.uuid,audit:d.audit,
+  ensureAccountingPeriodSchema:async()=>{},ensureBatchIntegrationSchema:async()=>{},
+  assertCompanyEntity:async(env,table,id,company)=>{
+   const row=await DB.prepare('SELECT * FROM '+table+' WHERE id=? AND company_id=?').bind(id,company).first();
+   if(!row)throw new HttpError(404,'Registro não encontrado.','NOT_FOUND');
+   return row;
+  }
+ });
+}
+test('postagem grava o número e a descrição informados no lote real',async()=>{
+ const f=fixture();await f.seed();
+ const posted=await f.call('post',{batch_code:'00123',batch_description:'  Salários da produção — janeiro  '});
+ const batch=f.sql.prepare('SELECT * FROM journal_batches WHERE id=?').get(posted.batch_id);
+ assert.equal(batch.code,'123');assert.equal(batch.description,'Salários da produção — janeiro');
+ assert.equal(batch.period_id,'period');assert.equal(posted.batch_code,'123');
+ assert.equal(f.sql.prepare('SELECT batch_id FROM journal_entries').get().batch_id,batch.id);
+ assert.equal((await f.call('post',{batch_code:'999',batch_description:'Outra descrição'})).reused,true);
+ assert.equal(f.sql.prepare('SELECT COUNT(*) n FROM journal_batches').get().n,1);
+});
+test('postagem exige número positivo e descrição, sem criar lote em caso de erro',async()=>{
+ const f=fixture();await f.seed();
+ for(const batch_code of ['', '0','000','-3','1.5','12A','1234567890123456']){
+  await assert.rejects(f.call('post',{batch_code}),e=>e.code==='INVALID_BATCH_CODE');
+ }
+ for(const batch_description of ['', '   ','a'.repeat(501)]){
+  await assert.rejects(f.call('post',{batch_description}),e=>e.code==='INVALID_BATCH_DESCRIPTION');
+ }
+ assert.equal(f.sql.prepare('SELECT COUNT(*) n FROM journal_batches').get().n,0);
+ assert.equal(f.sql.prepare('SELECT COUNT(*) n FROM journal_entries').get().n,0);
+});
+test('número existente na empresa bloqueia sem usar o lote anterior',async()=>{
+ const f=fixture();await f.seed();
+ f.sql.exec("INSERT INTO journal_batches(id,company_id,code,description) VALUES('old','company','00077','Lote existente')");
+ await assert.rejects(f.call('post'),e=>e.code==='BATCH_CODE_EXISTS');
+ assert.equal(f.sql.prepare('SELECT COUNT(*) n FROM journal_batches').get().n,1);
+ assert.equal(f.sql.prepare('SELECT COUNT(*) n FROM journal_entries').get().n,0);
+ assert.equal(f.sql.prepare('SELECT description FROM journal_batches').get().description,'Lote existente');
+});
+test('cadastro compartilhado mantém numeração automática e permite o mesmo número em outra empresa',async()=>{
+ const f=fixture();await f.seed();
+ f.sql.exec("INSERT INTO journal_batches(id,company_id,code) VALUES('foreign','foreign','77')");
+ assert.equal((await f.call('post')).batch_code,'77');
+ const automatic=await f.base.d.createBatch(f.base.env,null,f.base.auth,'company',{period_id:'period',description:'Lote automático'});
+ assert.equal(automatic.code,'78');
+ for(const code of ['0','-1','1A'])await assert.rejects(f.base.d.createBatch(f.base.env,null,f.base.auth,'company',{period_id:'period',description:'Inválido',code}),e=>e.code==='INVALID_BATCH_CODE');
+});
+
+test('clicar em contabilizar abre formulário; só a confirmação envia os dados do lote',async()=>{
+ const elements=new Map(),requests=[],messages=[];let modal=null,closed=0;
+ const element=id=>{if(!elements.has(id))elements.set(id,{innerHTML:'',disabled:false,querySelectorAll:()=>[],click(){return this.onclick?.();}});return elements.get(id);};
+ const setup={months:[{competence:'2026-01'}],centers:[{id:'cc',code:'001',name:'Produção'}],natures:[]};
+ const api=async(path,options={})=>{
+  if(path.endsWith('/setup'))return setup;
+  if(path.endsWith('/post')){
+   requests.push(options.body);
+   if(requests.length===1)throw new Error('Este número de lote já existe na empresa.');
+   return {batch_code:options.body.batch_code};
+  }
+  return {posted:null,revision:1,events:[],plan:{lines:[],missing:[],problems:[],debit_cents:100,credit_cents:100,balanced:true}};
+ };
+ const window={};
+ runInNewContext(readFileSync(new URL('../sagas-payroll-simple141-ui.js',import.meta.url),'utf8'),{
+  window,api,S:{companyId:'company',page:'payroll-simple-accounting'},esc:x=>x,money:x=>String(x),toast:x=>messages.push(x),
+  document:{getElementById:element},openModal:(title,help,html)=>{modal={title,help,html};element('s141postConfirm').disabled=false;},closeModal:()=>closed++,
+  FormData:class {constructor(form){this.values=form.values;}get(key){return this.values[key];}}
+ });
+ await window.SAGAS_SIMPLE141.render('payroll-simple-accounting');await new Promise(resolve=>setImmediate(resolve));
+ element('s141post').click();
+ assert.equal(requests.length,0);assert.match(modal.html,/name="batch_code"/);assert.match(modal.html,/name="batch_description"/);
+ assert.match(modal.html,/Folha simplificada 2026-01/);
+ element('s141postCancel').click();assert.equal(closed,1);assert.equal(requests.length,0);
+ element('s141post').click();
+ const form=element('s141postForm');form.values={batch_code:' 77 ',batch_description:' Salários janeiro '};
+ await form.onsubmit({preventDefault(){},currentTarget:form});
+ assert.equal(element('s141postConfirm').disabled,false);assert.equal(closed,1);
+ assert.match(messages.at(-1),/já existe/);
+ form.values.batch_code='78';
+ await form.onsubmit({preventDefault(){},currentTarget:form});
+ assert.equal(closed,2);assert.equal(requests[1].batch_code,'78');assert.equal(requests[1].batch_description,'Salários janeiro');
+ assert.equal(requests[1].competence,'2026-01');assert.equal(requests[1].cost_center_id,'cc');
 });
