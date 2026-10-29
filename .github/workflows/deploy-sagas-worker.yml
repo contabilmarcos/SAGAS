@@ -255,42 +255,6 @@ jobs:
           NODE
 
 
-      - name: Diagnosticar estrutura da folha no D1 de produção (somente leitura)
-        continue-on-error: true
-        env:
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_D1_DATABASE_ID: ${{ secrets.CLOUDFLARE_D1_DATABASE_ID }}
-        run: |
-          node --input-type=module <<'NODE'
-          const account=process.env.CLOUDFLARE_ACCOUNT_ID;
-          const token=process.env.CLOUDFLARE_API_TOKEN;
-          const database=process.env.CLOUDFLARE_D1_DATABASE_ID;
-          const expected={
-            payroll_designer_config127:['company_id','event_id','effective_from','revision','config_json'],
-            payroll_events:['company_id','id','code','event_type','active'],
-            payroll_calc_runs:['id','company_id','competence_id','status'],
-            payroll_calc_envelopes:['id','company_id','run_id','employee_id'],
-            payroll_calc_lines:['id','company_id','envelope_id','event_code'],
-            sagas_schema_revisions:['scope','revision']
-          };
-          const url='https://api.cloudflare.com/client/v4/accounts/'+account+'/d1/database/'+database+'/query';
-          for(const [table,columns] of Object.entries(expected)){
-            try{
-              const r=await fetch(url,{method:'POST',headers:{
-                Authorization:'Bearer '+token,'Content-Type':'application/json'
-              },body:JSON.stringify({sql:'PRAGMA table_info("'+table+'")'})});
-              if(!r.ok){console.log('D1 '+table+': consulta indisponível (HTTP '+r.status+').');continue;}
-              const data=await r.json();
-              if(!data.success){console.log('D1 '+table+': não foi possível consultar estrutura.');continue;}
-              const rows=(data.result||[]).flatMap(x=>x.results||[]);
-              const names=new Set(rows.map(x=>x.name));
-              console.log('D1 '+table+': '+(rows.length?'existe':'NÃO EXISTE')+
-               ', campos ausentes: '+(columns.filter(x=>!names.has(x)).join(', ')||'nenhum'));
-            }catch(e){console.log('D1 '+table+': consulta de leitura indisponível.');}
-          }
-          NODE
-
       - name: Publicar no Cloudflare
         if: ${{ (github.event_name == 'push' && vars.SAGAS_CLOUDFLARE_AUTO_DEPLOY == 'enabled') || (github.event_name == 'workflow_dispatch' && inputs.mode == 'publicar') }}
         uses: cloudflare/wrangler-action@v4
