@@ -85,6 +85,16 @@ test('nao calcula CPP quando cadastro patronal indica nao devido',async()=>{
  assert.equal(cpp.status,'NAO_DEVIDO');
  assert.equal(cpp.amount_cents,0);
 });
+test('estimativa 13o de salario contratual emite aviso sobre medias e avos',async()=>{
+ const p=[{config:{code:'PROV_13',name:'13o salario',active:true,
+  formula_sql:'SELECT ROUND(:SALARIO_REFERENCIA_13 / 12, 2) AS VALOR',
+  accounting:{nature_accrual_id:'NAT_13'}},revision:1}];
+ const r=await simulateEnvelope133({db:sqlDb(),envelope:envelope(),employeeSalaryCents:300000,
+  configs:configurations(),provisions:p,settings:{cpp_due:'SIM'},resolveFormula:async()=>null});
+ assert.equal(r.provisions[0].amount_cents,25000);
+ assert.ok(r.problems.some(x=>x.code==='AVERAGE_REFERENCE_NOT_VALIDATED'));
+ assert.equal(r.ready,false);
+});
 test('sem fonte de salario nao inventa base nem calcula provisoes',async()=>{
  const r=await simulateEnvelope133({db:sqlDb(),envelope:envelope(),employeeSalaryCents:null,
   configs:configurations(),provisions:provisions(),settings:{cpp_due:'SIM'},
