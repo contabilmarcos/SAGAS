@@ -93,7 +93,7 @@ test('fórmula SQL usa variáveis fiscais mensais já calculadas',async()=>{
  })]);
  const original=db.prepare;
  db.prepare=(sql)=>{
-  if(sql.startsWith('SELECT ('))return {bind(...args){return {first:async()=>({
+  if(sql.startsWith('SELECT ROUND(')&&sql.endsWith(' AS VALOR'))return {bind(...args){return {first:async()=>({
    VALOR:Number((args[0]*0.08+args[1]*0.02).toFixed(2))
   })}}};
   return original.call(db,sql);
