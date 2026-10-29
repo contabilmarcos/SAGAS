@@ -118,8 +118,14 @@ export async function simulateEnvelope133({db,envelope,employeeSalaryCents,confi
   if(cfg.category==='ENCARGO'){
    const due=recognizedPatronal133(code);
    if(due&&settings?.[due]!=='SIM'){
-    rows.push({code,name:cfg.name,category:'ENCARGO',status:'NAO_DEVIDO',
-     amount_cents:0,reference:'Configuracao patronal indica nao devido',formula:item.formula_version});
+    if(settings?.[due]!=='NAO'){
+     issue('EMPLOYER_PARAMETERS_MISSING',code+': a obrigacao patronal nao foi configurada nesta competencia.');
+     rows.push({code,name:cfg.name,category:'ENCARGO',status:'PENDENTE',
+      error:'Parametros da empresa ausentes.',formula:item.formula_version});
+    }else{
+     rows.push({code,name:cfg.name,category:'ENCARGO',status:'NAO_DEVIDO',
+      amount_cents:0,reference:'Configuracao patronal indica nao devido',formula:item.formula_version});
+    }
     continue;
    }
   }
@@ -137,6 +143,11 @@ export async function simulateEnvelope133({db,envelope,employeeSalaryCents,confi
    if(code==='INSS_EMP'){discount+=amount-currentInss;currentInss=amount;}
    else if(code==='IRRF_EMP'){discount+=amount-currentIrrf;currentIrrf=amount;}
    if(discount>legacy.gross)issue('NET_NEGATIVE','Descontos superam os proventos apos recalculo configurado.');
+   if((isCore||code==='SALARIO_BASE'||code==='FGTS_PATRONAL')&&amount!==old)
+    issue('EVENT_VALUE_DIVERGENCE',code+': formula '+money133(amount).toFixed(2)+
+      ', folha anterior '+money133(old).toFixed(2)+'. Confira vigencia, base e arredondamento.');
+   if(!isCore&&['PROVENTO','DESCONTO'].includes(cfg.category)&&code!=='SALARIO_BASE'&&amount!==old)
+    issue('EVENT_NOT_APPLIED',code+': formula calculada para comparacao; evento ainda nao esta incorporado ao novo liquido.');
    rows.push({code,name:cfg.name,category:cfg.category,status:'CALCULADO',
     amount_cents:amount,legacy_cents:old,difference_cents:amount-old,
     applies_to_net:isCore,formula:item.formula_version,
