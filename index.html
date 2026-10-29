@@ -677,6 +677,7 @@ async function payrollMonthlyCalcScreen35(){
     `<form id="payroll35Form" class="grid" style="align-items:end">
       <label class="field"><span>Data prevista de pagamento</span><input type="date" name="payment_date" value="${esc(old.competenceId===competenceId?old.payment:'')}" required></label>
       <div><button type="submit" class="btn primary">Calcular e gravar</button></div>
+      <div><button type="button" class="btn secondary" id="payroll133Preflight">Conferir fórmulas antes de gravar</button></div>
     </form>
     <p class="help">O calculo exige os cadastros conferidos na preparacao da folha. Situacoes especiais serao bloqueadas. A conferência e os holerites imprimíveis ficam disponíveis após o cálculo. Não gera financeiro, contabilidade ou pagamento.</p>
     <div class="toolbar"><button type="button" class="btn secondary sm" id="payroll35History">Processamentos anteriores</button></div>
@@ -695,6 +696,12 @@ async function payrollMonthlyCalcScreen35(){
     finally{button.disabled=false}
   };
   $('#payroll35History').onclick=()=>payrollMonthlyHistory35(competenceId).catch(err=>toast(err.message,'error'));
+  $('#payroll133Preflight').onclick=()=>{
+    const form=$('#payroll35Form');
+    if(!form.reportValidity())return;
+    window.SAGAS_ENGINE133.openSource(competenceId,form.elements.payment_date.value)
+      .catch(err=>toast(err.message,'error'));
+  };
 }
 function payrollMonthlyCalcResults35(data){
   const target=$('#payroll35Results');if(!target)return;
