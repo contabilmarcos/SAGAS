@@ -164,3 +164,42 @@ test('interface possui acao na folha mensal e detalhamento de provisoes',()=>{
  assert.ok(ui.includes('provisions'));
  assert.ok(ui.includes('Nenhuma provisão'));
 });
+
+test('prévia sem processamento gravado utiliza fonte mensal sem chamar histórico de runs',async()=>{
+ const sqlDb={prepare(sql){
+  return {bind(...args){
+   return {
+    all:async()=>{
+     if(sql.includes('FROM payroll_designer_config127'))return {results:[]};
+     if(sql.includes('FROM payroll_provision_versions132'))return {results:[]};
+     if(sql.includes('FROM payroll_salary_history'))return {results:[]};
+     throw Error('Fonte inesperada '+sql);
+    }
+   };
+  }};
+ }};
+ const r=await payrollEnginePreview133({
+  env:{DB:sqlDb},companyId:'COMPANY',auth:{user:{id:'USER'}},request:{},
+  source:{prep:{competence:{id:'COMP_ID',competence:'2020-01'}},fingerprint:'safe',
+   items:[envelope()]},
+  d:{HttpError:class extends Error{},
+   requirePermission:async()=>{},
+   runDetail:()=>{throw Error('Não deve consultar folha gravada');},
+   employerRead:async()=>null}
+ });
+ assert.equal(r.run.id,null);
+ assert.equal(r.run.status,'PREVIEW_UNSTORED');
+ assert.equal(r.official,false);
+ assert.equal(r.ready_for_posting,false);
+ assert.ok(r.problems.some(x=>x.code==='EVENTS_NOT_CONFIGURED'));
+});
+test('tela inclui opcao de conferir antes de gravar e link para API sem run',()=>{
+ const index=readFileSync(new URL('../index.html',import.meta.url),'utf8');
+ const ui=readFileSync(new URL('../sagas-payroll-engine133-ui.js',import.meta.url),'utf8');
+ const worker=readFileSync(new URL('../SAGAS_worker.js',import.meta.url),'utf8');
+ assert.match(index,/payroll133Preflight/);
+ assert.match(ui,/openSource/);
+ assert.match(ui,/monthly-engine-preview/);
+ assert.match(worker,/payrollMonthlySource35\(env,companyId,competenceId,paymentDate\)/);
+ assert.match(worker,/path==='\/api\/payroll\/monthly-engine-preview'/);
+});
