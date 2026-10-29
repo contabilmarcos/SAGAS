@@ -9793,9 +9793,24 @@ async function payrollMonthlySource35(env,companyId,competenceId,paymentDate){
   if(prep.employee_count===0||prep.employee_count>100)
     throw new HttpError(409,'Esta rotina processa de 1 a 100 funcionarios por competencia.','LIMIT');
   const employees=prep.employees;
-  await ensureSchemaRevision(env,'payroll-designer127',1,()=>schema127(env));
-  await ensureSchemaRevision(env,'payroll-formulas129',1,()=>ensureFormulaSchema129(env));
-  const automatic137=await loadAutomaticMonthly137(env.DB,companyId,prep.competence.competence);
+  // A folha antiga não deve depender de migrations do designer de eventos.
+  // Empresas sem catálogo de fórmulas ainda devem conseguir calcular 2020+.
+  // O cadastro de fórmulas cria seus esquemas ao salvar, fora deste fluxo.
+  let automatic137=[];
+  try{
+    automatic137=await loadAutomaticMonthly137(env.DB,companyId,prep.competence.competence);
+  }catch(e){
+    const message=String(e?.message||e);
+    if(/no such table:\s*(?:main\.)?payroll_designer_config127/i.test(message)){
+      // Catálogo ainda não implantado: não existe fórmula automática para aplicar.
+      automatic137=[];
+    }else if(e?.code&&String(e.code).startsWith('AUTO_')){
+      throw new HttpError(409,message,e.code);
+    }else{
+      console.error('PAYROLL_AUTOMATIC_CONFIG_READ_FAILED',e);
+      throw new HttpError(503,'Não foi possível consultar os eventos automáticos desta competência. Verifique o cadastro e a integridade do banco.','AUTO_CONFIG_READ_FAILED');
+    }
+  }
   const ids=new Set(employees.map(e=>e.employee_id));
   const mov=await env.DB.prepare(`SELECT m.id,m.employee_id,m.event_id,m.unit,m.amount_cents,m.quantity_milli,
       e.code AS event_code,e.name AS event_name,e.event_type
