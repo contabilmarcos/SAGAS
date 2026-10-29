@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {loadAutomaticMonthly137,calculateAutomaticMonthly137} from '../sagas-payroll-monthly137.js';
+import {loadAutomaticMonthly137,calculateAutomaticMonthly137,resolveAutomaticNature137} from '../sagas-payroll-monthly137.js';
 
 const cfg=(code,category='PROVENTO',extra={})=>({
  code,name:code,active:true,trigger:'AUTOMATICO',category,
@@ -71,4 +71,51 @@ test('só considera versão mais recente por evento dentro da competência',asyn
  const r=await loadAutomaticMonthly137(db,'COMP','2026-10');
  assert.equal(r.length,1);
  assert.equal(r[0].revision,2);
+});
+
+test('fórmula compartilhada de valor fixo é convertida corretamente de reais para centavos',async()=>{
+ const original=cfg('PREMIO','PROVENTO',{calculation:'FORMULA_CADASTRADA',formula_id:'FORMULA1'});
+ const db=dbFor([original]);
+ const prepare=db.prepare;
+ db.prepare=function(sql){
+  if(sql.includes('FROM payroll_formulas129'))
+   return {bind:()=>({first:async()=>({id:'FORMULA1',active:1,code:'PREMIO'})})};
+  if(sql.includes('FROM payroll_formula_versions129'))
+   return {bind:()=>({first:async()=>({id:'FV1',effective_from:'2026-10',revision:1,
+    source_json:JSON.stringify({
+     code:'PREMIO',name:'Prêmio mensal',active:true,category:'PROVENTO',system:'REMUNERACAO',
+     trigger:'AUTOMATICO',calculation:'VALOR_FIXO',fixed_amount:125.5,
+     base:'SALARIO_CONTRATUAL',effective_from:'2026-10',
+     incidences:{inss:'NAO',irrf:'NAO',fgts:'NAO'}
+    })
+   })})};
+  return prepare.call(this,sql);
+ };
+ const items=await loadAutomaticMonthly137(db,'COMP','2026-10');
+ assert.equal(items[0].linked_version,'2026-10#1');
+ const r=await calculateAutomaticMonthly137({db,companyId:'COMP',period:'2026-10',
+  items,salaryCents:300000,paidCents:300000,manualCodes:[]});
+ assert.equal(r[0].amount_cents,12550);
+});
+test('natureza contábil usa revisão imutável gravada no envelope',async()=>{
+ const item=cfg('BONUS');
+ const db={prepare(sql){
+  assert.match(sql,/^SELECT /);
+  return {bind(...args){
+   return {first:async()=>{
+    if(sql.includes('payroll_designer_config127')){
+     assert.deepEqual(args,['COMP','E1','2026-10',2]);
+     return {config_json:JSON.stringify(item)};
+    }
+    if(sql.includes('FROM budget_natures'))
+     return {id:'N_BONUS',code:'4.01',description:'Bônus',active:1,synthetic_analytic:'ANALYTIC'};
+    throw Error('Consulta inesperada');
+   }};
+  }};
+ }};
+ const n=await resolveAutomaticNature137(db,'COMP',{id:'E1',code:'BONUS',event_type:'PROVENTO'},
+  'DESIGNER137:2026-10#2');
+ assert.equal(n.nature_id,'N_BONUS');
+ await assert.rejects(()=>resolveAutomaticNature137(db,'COMP',{id:'E1',code:'BONUS',event_type:'DESCONTO'},
+  'DESIGNER137:2026-10#2'),/classificação/);
 });
