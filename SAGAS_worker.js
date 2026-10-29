@@ -9771,7 +9771,9 @@ async function payrollMonthlyEmployeeCalc35(employee, movements, rules, dependen
   const automated=await payrollMonthlyChecked139('CALCULAR_EVENTOS_AUTOMATICOS',
     ()=>calculateAutomaticMonthly137({
       db,companyId,period:competence,items:automatic137,
-      salaryCents:salary,paidCents:paid,manualCodes:movements.map(m=>m.event_code)
+      salaryCents:salary,paidCents:paid,manualCodes:movements.map(m=>m.event_code),
+      baseInssCents:baseInss,baseIrrfCents:baseIrrf,baseFgtsCents:baseFgts,
+      grossCents:earnings
     }));
   for(const item of automated){
     if(item.line_type==='PROVENTO'){
@@ -9982,8 +9984,12 @@ function payrollMonthlyTechnical139(err,stage){
   console.warn('PAYROLL_AUTOMATIC_VALIDATION_140',{stage,code});
   const safeMessage=String(err.message||'');
   const safeCode=/^Falha na fórmula automática do evento ([A-Z0-9_-]{1,30})\. Confira os parâmetros e a vigência\.$/i.exec(safeMessage);
-  const safe=safeCode?
-    'Não foi possível calcular o evento '+safeCode[1]+'. Confira a fórmula e sua vigência.':
+  const eventCode=/^[A-Z0-9_]{2,30}$/.test(String(err.event_code||''))?err.event_code:null;
+  const baseName=/^[A-Z0-9_]{2,40}$/.test(String(err.base_name||''))?err.base_name:null;
+  const safe=code==='AUTO_FORMULA_REFERENCE'&&eventCode&&baseName?
+    'O evento '+eventCode+' usa a base '+baseName+
+      ', indisponível nesta etapa. Confira se a fórmula corresponde à folha mensal.':
+    safeCode?'Não foi possível calcular o evento '+safeCode[1]+'. Confira a fórmula e sua vigência.':
     'Há um evento automático que não pode ser calculado para esta competência. Confira fórmula, vigência, incidências e lançamentos duplicados.';
   return new HttpError(409,safe+' Etapa: '+stage+'. Código: '+code+'.',
     code,{stage});
