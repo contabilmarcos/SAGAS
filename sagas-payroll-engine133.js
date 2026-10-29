@@ -187,9 +187,15 @@ export async function simulateEnvelope133({db,envelope,employeeSalaryCents,confi
   cost_center_code:envelope.cost_center_code||null,
   legacy,computed,events:rows,provisions:provisionRows,problems,ready:!problems.length};
 }
-export async function payrollEnginePreview133({env,companyId,auth,request,runId,d}){
+export async function payrollEnginePreview133({env,companyId,auth,request,runId,source,d}){
  await d.requirePermission(env,auth.user.id,companyId,'payroll.read');
- const detail=await d.runDetail(runId);
+ const detail=source?{
+   run:{id:null,competence_id:source.prep.competence.id,
+     competence:source.prep.competence.competence,
+     payment_date:source.prep.payment_date||null,
+     status:'PREVIEW_UNSTORED',source_fingerprint:source.fingerprint},
+   envelopes:source.items
+ }:await d.runDetail(runId);
  if(!detail?.run?.competence||!Array.isArray(detail.envelopes))
   throw new d.HttpError(409,'Folha sem envelopes verificaveis.','SOURCE_MISSING');
  const period=detail.run.competence;
@@ -262,5 +268,5 @@ export async function payrollEnginePreview133({env,companyId,auth,request,runId,
   provision_count:provisions.length,totals,envelopes,problems,
   configuration_revisions:configs.map(v=>({code:v.config.code,revision:v.formula_version,
    nature_id:v.config.nature_id,formula_id:v.config.formula_id||null})),
-  message:'Previa comparativa da folha ja calculada pelo motor antigo. Simula formulas configuradas, encargos e provisoes; nao substitui envelopes, bases oficiais, nem gera lancamentos financeiros ou contabeis.'};
+  message:'Previa comparativa das bases produzidas pelo motor anterior. Simula formulas configuradas, encargos e provisoes; nao substitui envelopes, bases oficiais, nem gera lancamentos financeiros ou contabeis.'};
 }
