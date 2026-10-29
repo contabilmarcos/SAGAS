@@ -46,6 +46,7 @@ import { payrollCompetenceReopen125 } from './sagas-payroll-reopen125.js';
 import { payrollDesigner127 } from './sagas-payroll-designer127.js';
 import { provisionCatalog132 } from './sagas-payroll-provision-catalog132.js';
 import { payrollFormulas129,formulaSnapshot129,ensureFormulaSchema129 } from './sagas-payroll-formulas129.js';
+import { payrollEnginePreview133 } from './sagas-payroll-engine133.js';
 import { payrollProvisionAccounting44 } from './sagas-payroll-provisions44.js';
 // SAGAS Worker v96 - Registro auditável do envelope próprio VACATION de férias | cumulativo desde v49
 // ===== utils.js =====
@@ -11368,6 +11369,28 @@ async function route(request, env) {
       year:url.searchParams.get('year'),phase:url.searchParams.get('phase'),
       d:{HttpError,requirePermission,ensureSchemaRevision,audit,uuid,
        hash:payrollProcessingSnapshotHash28,taxes:payrollTaxHistoricalWithDependents}
+    }));
+  }
+  // v133: conferir novo motor contra os envelopes reais, sem gravar ou alterar
+  // folhas fechadas. Inclui formulas, encargos e provisoes por competencia.
+  p=routeMatch(path,'/api/payroll/monthly-runs/:id/engine-preview');
+  if(p&&method==='GET'){
+    await ensureSchemaRevision(env,'payroll-calculation-foundation',1,()=>ensurePayrollCalculationFoundation34(env));
+    await payrollDesigner127('sql-variables',{env,companyId,auth,request,
+      d:{HttpError,requirePermission,ensureSchemaRevision,audit,uuid}});
+    await ensureSchemaRevision(env,'payroll-formulas129',1,()=>ensureFormulaSchema129(env));
+    await provisionCatalog132('list',{env,companyId,auth,request,
+      d:{HttpError,requirePermission,ensureSchemaRevision,audit,uuid}});
+    await ensureSchemaRevision(env,'payroll-employee-history',1,()=>ensurePayrollEmployeeRecordsSchema(env));
+    return ok(await payrollEnginePreview133({
+      env,companyId,auth,request,runId:p.id,
+      d:{HttpError,requirePermission,
+        runDetail:id=>payrollMonthlyRunDetail35(env,companyId,id),
+        employerRead:competence=>payrollEmployer40('read',{
+          env,companyId,auth,request,competence,
+          d:{HttpError,requirePermission,ensureSchemaRevision,audit,uuid}
+        }).then(x=>x.settings)
+      }
     }));
   }
   // v106: roteiro completo de fechamento de folha em uma consulta.
