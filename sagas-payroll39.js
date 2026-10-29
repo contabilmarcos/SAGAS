@@ -1,4 +1,5 @@
 import { planNatureDefaults126 } from './sagas-payroll-ledger126.js';
+import {resolveAutomaticNature137} from './sagas-payroll-monthly137.js';
 // SAGAS Folha v126: eventos com D/C unilaterais e liquido credor por centro de custo.
 // Mantém integrações existentes, não reaproveita mapeamentos antigos de contas fixas.
 const AUTO_EVENTS38 = [
@@ -190,7 +191,17 @@ export async function payrollFinance39(action,c) {
       // nesta etapa. Valores puramente demonstrativos não geram partidas.
       if(line.line_type==='INFORMATIVO'&&line.event_code!=='FGTS_PATRONAL')continue;
       if(!amount)continue;
-      const cfg=mapById.get(event.id);
+      let cfg=mapById.get(event.id);
+      // Eventos calculados pelo cadastro novo usam a natureza fixada na
+      // revisão gravada no próprio envelope, não mapeamento legado editável.
+      if(String(line.rule_version||'').startsWith('DESIGNER137:')){
+        try{cfg=await resolveAutomaticNature137(env.DB,companyId,event,line.rule_version);}
+        catch(e){
+          block('NATUREZA_AUTOMATICA_INVALIDA',
+            'Evento '+event.code+' / '+(envp.employee_code||envp.employee_id)+': '+String(e?.message||e).slice(0,220));
+          continue;
+        }
+      }
       if(!cfg||!cfg.active||cfg.synthetic_analytic!=='ANALYTIC'){
         block('EVENTO_SEM_NATUREZA','Configure a natureza do evento '+event.code+' — '+event.name+'.');continue;
       }
