@@ -31,6 +31,26 @@ async function open(runId,source=null){
    '<td>'+moneyCents(totals.estimated_provisions_cents)+'</td>'+
    '</tr></tbody></table></div>'+
    '<p class="help">*Líquido simulado substitui apenas INSS empregado e IRRF configurados no envelope antigo. Outros eventos são comparados, mas não incorporados ao líquido. Nada foi gravado.</p>';
+  const accounting=data.provision_accounting||{};
+  const accountLines=(accounting.lines||[]).map(x=>'<tr>'+
+   '<td>'+h(x.cost_center_code||'')+'</td><td>'+h(x.provision_code||'')+'</td>'+
+   '<td>'+h(x.nature_code||'')+'</td><td>'+h(x.side||'')+'</td>'+
+   '<td>'+h(x.account_code||'')+' · '+h(x.account_name||'')+'</td>'+
+   '<td>'+moneyCents(x.amount_cents)+'</td></tr>').join('');
+  const accountHtml='<div class="section-title">Prévia contábil das provisões por centro de custo</div>'+
+   '<p class="help"><b>Somente conferência.</b> Partidas estimadas conforme os defaults da natureza orçamentária. Nenhum lançamento ou título foi criado.</p>'+
+   '<div class="table-wrap"><table class="table"><thead><tr>'+
+   '<th>Provisões estimadas</th><th>Mapeadas</th><th>Débitos</th><th>Créditos</th></tr></thead><tbody><tr>'+
+   '<td>'+moneyCents(accounting.expected_cents)+'</td>'+
+   '<td>'+moneyCents(accounting.mapped_cents)+'</td>'+
+   '<td>'+moneyCents(accounting.debit_cents)+'</td>'+
+   '<td>'+moneyCents(accounting.credit_cents)+'</td></tr></tbody></table></div>'+
+   '<div class="table-wrap" style="max-height:260px;overflow:auto"><table class="table"><thead><tr>'+
+   '<th>Centro de custo</th><th>Provisão</th><th>Natureza</th><th>D/C</th><th>Conta contábil</th><th>Valor</th>'+
+   '</tr></thead><tbody>'+(accountLines||'<tr><td colspan="6">Nenhuma partida mapeada.</td></tr>')+
+   '</tbody></table></div>'+
+   ((accounting.problems||[]).length?'<details><summary>'+accounting.problems.length+
+   ' pendência(s) contábil(is)</summary><ul>'+problemRows(accounting.problems)+'</ul></details>':'');
   const employeeRows=envelopes.map((e,i)=>'<tr>'+
    '<td>'+h(e.employee_code||'—')+'</td><td>'+h(e.employee_name||'')+'</td>'+
    '<td>'+h(e.cost_center_code||'Não definido')+'</td>'+
@@ -39,7 +59,7 @@ async function open(runId,source=null){
    '<td><button type="button" class="btn secondary sm" data-engine133-person="'+i+'">Ver eventos e provisões</button></td></tr>').join('');
   $('#engine133Content').innerHTML=
    '<p class="help"><b>Prévia de conferência, não é folha fechada.</b> Valores do cálculo antigo não foram alterados. Fórmulas novas ainda não estão homologadas para lançamentos contábeis, títulos ou pagamento.</p>'+
-   totalsHtml+
+   totalsHtml+accountHtml+
    '<div class="section-title">Funcionários por centro de custo</div>'+
    '<div class="table-wrap" style="max-height:320px;overflow:auto"><table class="table"><thead><tr>'+
    '<th>ID</th><th>Funcionário</th><th>Centro de custo</th>'+
