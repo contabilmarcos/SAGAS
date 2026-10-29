@@ -106,7 +106,7 @@ export async function calculateAutomaticMonthly137({db,companyId,period,items,sa
     result=simulateEvent127(source,{...context,quantidade:30});
    }
   }catch(e){if(e?.code)throw e;throw err137('AUTO_FORMULA_ERROR',
-   'Falha no cálculo automático de '+code+': '+String(e?.message||e).slice(0,200));}
+   'Falha na fórmula automática do evento '+code+'. Confira os parâmetros e a vigência.');}
   const amount=Number(result.amount_cents);
   if(!money137(amount))throw err137('AUTO_AMOUNT_INVALID','Valor automático inválido para '+code+'.');
   if(amount===0)continue;
