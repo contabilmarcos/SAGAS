@@ -55,6 +55,9 @@ function params133(envelope,salaryCents,settings){
  if(paid===null)throw Error('Salario-base historico nao identificado.');
  const c={
   SALARIO_CONTRATUAL:salaryCents===null?undefined:money133(salaryCents),
+  // Estimativas para provisoes: media de variaveis nao comprovada no envelope.
+  SALARIO_REFERENCIA_13:salaryCents===null?undefined:money133(salaryCents),
+  REMUNERACAO_FERIAS:salaryCents===null?undefined:money133(salaryCents),
   SALARIO_BASE:money133(paid),
   BASE_INSS:money133(baseInss),BASE_IRRF:money133(baseIrrf),
   BASE_FGTS:money133(baseFgts),
@@ -105,6 +108,11 @@ export async function simulateEnvelope133({db,envelope,employeeSalaryCents,confi
   cost_center_id:envelope.cost_center_id,events:rows,provisions:provisionRows,problems,
   ready:false};}
  const {context,legacy,bases}=snapshot;
+ // O snapshot mensal nao contem bases definitivas de medias de ferias/13.
+ const usesEstimatedReference=provisions.some(p=>p.config.active&&
+  /:(SALARIO_REFERENCIA_13|REMUNERACAO_FERIAS)\b/i.test(p.config.formula_sql||''));
+ if(usesEstimatedReference)issue('AVERAGE_REFERENCE_NOT_VALIDATED',
+   '13o ou ferias usam salario contratual como referencia provisoria; conferir medias, avos e historico antes de constituir.');
  let currentInss=legacy.oldInss,currentIrrf=legacy.oldIrrf;
  let discount=legacy.discount;
  const ordered=[...configs].sort((a,b)=>rank133(a.config)-rank133(b.config)||a.config.code.localeCompare(b.config.code));
@@ -231,6 +239,8 @@ export async function payrollEnginePreview133({env,companyId,auth,request,runId,
   const config=JSON.parse(v.config_json);
   if(v.provision_active&&config.active)provisions.push({config,revision:v.revision});
  }
+ if(configs.length>80||provisions.length>30||detail.envelopes.length>100)
+  throw new d.HttpError(409,'A conferencia aceita ate 80 eventos, 30 provisoes e 100 funcionarios por chamada.','PREVIEW_LIMIT');
  const periodStart=period+'-01';
  const histories=(await env.DB.prepare(
   "SELECT employee_id,salary_cents,effective_from FROM payroll_salary_history WHERE company_id=? AND effective_from<=? ORDER BY employee_id,effective_from DESC LIMIT 5001")
