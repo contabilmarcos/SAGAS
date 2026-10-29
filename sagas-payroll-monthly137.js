@@ -12,7 +12,40 @@ const excluded137=new Set([
  'FALTA_INJUSTIFICADA','ATRASO_MINUTOS','DSR_DESCONTO',
  'LICENCA_NAO_REMUNERADA','LICENCA_REMUNERADA','DOENCA_EMPRESA_15'
 ]);
-const formulaVars137=new Set(['SALARIO_CONTRATUAL','SALARIO_BASE']);
+// Bases mensais calculadas e verificadas no motor oficial antes do desconto
+// do INSS/IRRF. Não tratar TOTAL_DESCONTOS como líquido de tributos.
+const formulaVars137=new Set([
+ 'SALARIO_CONTRATUAL','SALARIO_BASE','BASE_INSS','BASE_IRRF','BASE_FGTS',
+ 'PROVENTOS_TRIBUTAVEIS','TOTAL_PROVENTOS'
+]);
+const specialBases137=new Set([
+ 'SALARIO_REFERENCIA_13','AVOS_13','REMUNERACAO_FERIAS','VALOR_FERIAS',
+ 'DIAS_FERIAS','BASE_INSS_FERIAS','BASE_IRRF_FERIAS','BASE_FGTS_FERIAS',
+ 'BASE_INSS_13','BASE_IRRF_13','BASE_FGTS_13','TOTAL_PROVENTOS_RESCISAO',
+ 'TOTAL_DESCONTOS_RESCISAO'
+]);
+const specialMethods137=new Set([
+ 'DECIMO_TERCEIRO_AVOS','FERIAS_DIAS','TERCO_FERIAS','LIQUIDO_RESCISAO'
+]);
+// Estas fórmulas pertencem aos respectivos processos de férias, 13º e rescisão.
+// Ativação AUTOMATICO no designer NÃO significa execução em todas as competências.
+function specialScope137(cfg,linked){
+ for(const source of [cfg,linked].filter(Boolean)){
+  if(specialMethods137.has(source.calculation)||specialBases137.has(source.base))return true;
+  const sql=String(source.sql_query||'');
+  const names=[...sql.matchAll(/:([A-Za-z][A-Za-z0-9_]*)/g)]
+   .map(v=>v[1].toUpperCase());
+  if(names.some(v=>specialBases137.has(v)))return true;
+ }
+ return false;
+}
+function monthlyReference137(code,name){
+ const e=err137('AUTO_FORMULA_REFERENCE',
+  'Base '+name+' indisponível no evento '+code+' durante o cálculo mensal.');
+ e.event_code=code;
+ e.base_name=name;
+ return e;
+}
 const err137=(code,message)=>Object.assign(new Error(message),{code});
 const validInc137=i=>i&&['inss','irrf','fgts'].every(k=>['SIM','NAO'].includes(i[k]));
 const settings137=(cfg,ver)=>{
@@ -51,7 +84,9 @@ export async function loadAutomaticMonthly137(db,companyId,period){
    continue;
   if(codes.has(cfg.code))throw err137('AUTO_EVENT_DUPLICATE','Evento automático com código repetido: '+cfg.code+'.');
   codes.add(cfg.code);
-  settings137(cfg,v);
+  // Retenções de INSS/IRRF são apuradas uma única vez pelo cálculo tributário.
+  // Não duplicar mesmo que tenham sido cadastradas com outro código.
+  if(cfg.system==='RETENCAO'||specialScope137(cfg,null))continue;
   if(cfg.code!==v.code)throw err137('AUTO_CODE_MISMATCH','Código de evento mudou entre cadastro e versão: '+v.code+'.');
   // A versão da fórmula compartilhada também faz parte da fotografia oficial.
   let linked_source=null,linked_version=null;
@@ -67,18 +102,34 @@ export async function loadAutomaticMonthly137(db,companyId,period){
    });
    linked_version=snap.version.effective_from+'#'+snap.version.revision;
   }
+  if(specialScope137(cfg,linked_source))continue;
+  settings137(cfg,v);
   selected.push({event_id:v.event_id,config:cfg,effective_from:v.effective_from,revision:Number(v.revision),
    linked_source,linked_version});
  }
  if(selected.length>50)throw err137('AUTO_EVENT_LIMIT','Mais de cinquenta eventos automáticos. Divida o processamento.');
  return selected.sort((a,b)=>a.config.code.localeCompare(b.config.code));
 }
-export async function calculateAutomaticMonthly137({db,companyId,period,items,salaryCents,paidCents,manualCodes}){
+export async function calculateAutomaticMonthly137({
+ db,companyId,period,items,salaryCents,paidCents,manualCodes,
+ baseInssCents,baseIrrfCents,baseFgtsCents,grossCents
+}){
  if(!Array.isArray(items)||!items.length)return [];
  if(![salaryCents,paidCents].every(money137))
   throw err137('AUTO_BASE_INVALID','Salário-base histórico inválido para eventos automáticos.');
  const manual=new Set(manualCodes||[]);
+ // Valores reais obtidos DEPOIS dos eventos manuais, faltas e afastamentos.
+ // São fotografias pré-eventos automáticos: ordem alfabética não altera a base.
  const context={SALARIO_CONTRATUAL:salaryCents/100,SALARIO_BASE:paidCents/100};
+ for(const [key,cents] of [
+  ['BASE_INSS',baseInssCents],['BASE_IRRF',baseIrrfCents],
+  ['BASE_FGTS',baseFgtsCents],['TOTAL_PROVENTOS',grossCents],
+  ['PROVENTOS_TRIBUTAVEIS',baseIrrfCents]
+ ]){
+  if(cents===undefined||cents===null)continue;
+  if(!money137(cents))throw err137('AUTO_BASE_INVALID','Base '+key+' inválida para a folha.');
+  context[key]=cents/100;
+ }
  const out=[];
  for(const item of items){
   const cfg=item.config,code=cfg.code;
@@ -96,13 +147,15 @@ export async function calculateAutomaticMonthly137({db,companyId,period,items,sa
   try{
    if(source.calculation==='SQL_PERSONALIZADO'){
     const compiled=compilePayrollSql128(source.sql_query);
-    if(compiled.variables.some(v=>!formulaVars137.has(v)))
-     throw err137('AUTO_FORMULA_REFERENCE',
-      'Fórmula de '+code+' utiliza base dinâmica ou não comprovada; use SALARIO_CONTRATUAL ou SALARIO_BASE.');
+    for(const name of compiled.variables){
+     if(!formulaVars137.has(name)||!Object.prototype.hasOwnProperty.call(context,name))
+      throw monthlyReference137(code,name);
+    }
     result=await evaluatePayrollSql128(db,source.sql_query,context);
    }else{
-    if(source.calculation==='PERCENTUAL_BASE'&&!formulaVars137.has(source.base))
-     throw err137('AUTO_FORMULA_REFERENCE','Base de '+code+' não comprovada para o cálculo oficial.');
+    if(source.calculation==='PERCENTUAL_BASE'&&
+      (!formulaVars137.has(source.base)||!Object.prototype.hasOwnProperty.call(context,source.base)))
+      throw monthlyReference137(code,String(source.base||'NÃO_INFORMADA'));
     result=simulateEvent127(source,{...context,quantidade:30});
    }
   }catch(e){if(e?.code)throw e;throw err137('AUTO_FORMULA_ERROR',
