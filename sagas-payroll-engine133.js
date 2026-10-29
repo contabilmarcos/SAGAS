@@ -336,13 +336,26 @@ export async function payrollEnginePreview133({env,companyId,auth,request,runId,
   message:'Nenhum evento automatico configurado no novo motor para '+period+'.'});
  if(!settings)problems.push({code:'EMPLOYER_SETTINGS_MISSING',
   message:'Parametros patronais nao configurados nesta competencia.'});
- // v134: resolve defaults contabeis por centro de custo sem criar diario nem titulo.
- const provisionAccounting=await previewProvisionAccounting134({db:env.DB,companyId,envelopes});
+ // Pré-conferências complementares jamais devem impedir a leitura da projeção.
+ // Falhas de consulta ou schema tornam os próprios mapeamentos indisponíveis,
+ // não são tratadas como partidas válidas e nunca autorizam postagem.
+ const safeAccounting=async(kind,execute)=>{
+  try{return await execute();}
+  catch(e){
+   const message=String(e?.message||e).slice(0,240);
+   return {kind,read_only:true,official:false,ready_for_posting:false,
+    mapping_complete:false,balanced:false,lines:[],
+    problems:[{code:'ACCOUNTING_PREVIEW_UNAVAILABLE',
+     message:'Não foi possível conferir as naturezas e contas: '+message}]};
+  }
+ };
+ const provisionAccounting=await safeAccounting('PROVISION_ACCOUNTING_PREVIEW_134',
+  ()=>previewProvisionAccounting134({db:env.DB,companyId,envelopes}));
  problems.push(...provisionAccounting.problems);
- // v136: natureza por evento, encargos e credito do líquido por CC; somente SELECT.
- const projectedLedger=await previewPayrollLedger136({
-  db:env.DB,companyId,sourceEnvelopes:detail.envelopes,envelopes,configs
- });
+ const projectedLedger=await safeAccounting('PAYROLL_LEDGER_PREVIEW_136',
+  ()=>previewPayrollLedger136({
+   db:env.DB,companyId,sourceEnvelopes:detail.envelopes,envelopes,configs
+  }));
  problems.push(...projectedLedger.problems);
  return {kind:'PAYROLL_ENGINE_COMPARISON_133',read_only:true,official:false,
   ready_for_closure:false,ready_for_posting:false,run:detail.run,
