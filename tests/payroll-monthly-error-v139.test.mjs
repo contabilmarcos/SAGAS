@@ -74,3 +74,12 @@ test('as operações individuais do funcionário apresentam etapa detalhada',()=
    'CALCULAR_EVENTOS_AUTOMATICOS','CALCULAR_INSS_IRRF_FGTS'])
   assert.ok(source.includes("'"+step+"'"),'Etapa de cálculo não diferenciada: '+step);
 });
+
+test('falha de fórmula mostra somente código validado do evento, sem SQL',()=>{
+ const error=Object.assign(new Error('Falha na fórmula automática do evento GRATIFICACAO. Confira os parâmetros e a vigência.'),{code:'AUTO_FORMULA_ERROR'});
+ const result=payrollMonthlyTechnical139(error,'CALCULAR_EVENTOS_AUTOMATICOS');
+ assert.equal(result.status,409);
+ assert.equal(result.code,'AUTO_FORMULA_ERROR');
+ assert.match(result.message,/GRATIFICACAO/);
+ assert.doesNotMatch(result.message,/SELECT|CPF|senha/);
+});
