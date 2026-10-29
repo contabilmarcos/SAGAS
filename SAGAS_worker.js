@@ -45,6 +45,7 @@ import { payrollLiveAudit124 } from './sagas-payroll-live-audit124.js';
 import { payrollCompetenceReopen125 } from './sagas-payroll-reopen125.js';
 import { payrollDesigner127,schema127 } from './sagas-payroll-designer127.js';
 import {loadAutomaticMonthly137,calculateAutomaticMonthly137} from './sagas-payroll-monthly137.js';
+import {payrollBasicHistory138} from './sagas-payroll-basic-history138.js';
 import { provisionCatalog132 } from './sagas-payroll-provision-catalog132.js';
 import { payrollFormulas129,formulaSnapshot129,ensureFormulaSchema129 } from './sagas-payroll-formulas129.js';
 import { payrollEnginePreview133 } from './sagas-payroll-engine133.js';
@@ -9521,9 +9522,12 @@ async function payrollMonthlyPreparation34(env,companyId,competenceId,paymentDat
   await ensureSchemaRevision(env,'payroll-admission-proration46',1,()=>payrollAdmissionSchema46(env));
   const prorationSettings=await payrollAdmissionRead46(env,companyId,period.competence);
   await payrollAdmissionHistory46(env,companyId,candidates,first,last,history,HttpError);
+  // Histórico informado tem prioridade; sem ele, o cadastro básico é suficiente.
+  const fallback138=payrollBasicHistory138(candidates,history,first);
   await ensureSchemaRevision(env,'payroll-salary-change47',1,()=>payrollSalarySchema47(env));
   const salarySettings=await payrollSalaryRead47(env,companyId,period.competence);
   const salaryMode=salarySettings?.mode||'RM_NEXT_MONTH';
+  const admissionMode=prorationSettings?.mode||'CALENDAR';
   const salaryChangesByEmployee=await payrollSalaryHistory47(env,companyId,candidates,history,first,last,HttpError);
   await ensureSchemaRevision(env,'payroll-absence48',1,()=>payrollAbsenceSchema48(env));
   const absenceSnapshot=await payrollAbsenceSnapshot48(env,companyId,period.competence,{HttpError});
@@ -9570,6 +9574,10 @@ async function payrollMonthlyPreparation34(env,companyId,competenceId,paymentDat
     const salary=history.salary.get(emp.id)?.[0]||null;
     const schedule=history.schedule.get(emp.id)?.[0]||null;
     const functional=history.functional.get(emp.id)?.[0]||null;
+    const fallback=fallback138.get(emp.id)||{};
+    if(fallback.salary)note('SALARIO_CADASTRO','Sem histórico salarial específico; utilizando salário do cadastro do funcionário. Confira a remuneração em competências antigas.');
+    if(fallback.schedule)note('JORNADA_PADRAO','Sem jornada histórica; referência padrão de 220 horas mensais utilizada apenas no cálculo simples. Verbas por hora exigem jornada informada.');
+    if(fallback.functional)note('SITUACAO_CADASTRO','Sem histórico funcional; situação inferida do cadastro atual. Confirme a elegibilidade em competências retroativas.');
     const changedSalary=salaryChangesByEmployee.get(emp.id)||[];
     const otherChanges=[...(history.changesSchedule.get(emp.id)||[]),...(history.changesFunctional.get(emp.id)||[])];
     const occurrences=history.occurrences.get(emp.id)||[];
@@ -9599,18 +9607,19 @@ async function payrollMonthlyPreparation34(env,companyId,competenceId,paymentDat
       try{await validateCostCenterForEntry(env,companyId,emp.cost_center_id)}
       catch(_){add('CENTRO_CUSTO_INVALIDO','Centro de custo inativo, sintético ou de outra empresa.');}
     }
-    if(!emp.active && !functional)add('SITUACAO_INATIVA','Funcionario inativo sem historico funcional que comprove o vinculo na competencia.');
-    if(!functional)add('HISTORICO_FUNCIONAL','Cadastre a situacao funcional com vigencia anterior ou igual ao inicio da competencia.');
-    else if(functional.situation!=='ATIVO')add('SITUACAO_FUNCIONAL','Situacao funcional na competencia: '+functional.situation+'. Exige processamento especifico.');
-    if(!salary||!Number.isSafeInteger(salary.salary_cents)||salary.salary_cents<=0)
-      add('HISTORICO_SALARIAL','Cadastre um salario historico positivo vigente no inicio da competencia.');
-    if(!schedule||!Number.isSafeInteger(schedule.monthly_hours_milli)||schedule.monthly_hours_milli<=0)
-      add('JORNADA','Cadastre uma jornada mensal valida vigente no inicio da competencia.');
+    if(functional?.situation!=='ATIVO')
+      add('SITUACAO_FUNCIONAL','Funcionário sem situação ativa na competência; confira o cadastro e eventual desligamento.');
+    if(!salary||!Number.isSafeInteger(Number(salary.salary_cents))||Number(salary.salary_cents)<=0)
+      add('SALARIO_CADASTRO_INVALIDO','Informe salário positivo no cadastro do funcionário ou no histórico salarial.');
+    if(!schedule||!Number.isSafeInteger(Number(schedule.monthly_hours_milli))||Number(schedule.monthly_hours_milli)<=0)
+      add('JORNADA_INVALIDA','Jornada mensal inválida; confira o cadastro ou a jornada histórica.');
+    if(fallback.schedule&&events.some(ev=>ev.unit==='HORAS'))
+      add('JORNADA_EVENTO_HORAS','Evento por horas exige a jornada real do funcionário; registre somente neste caso.');
     if(emp.admission_date>first){
-      if(!prorationSettings?.mode)add('PARAMETRO_ADMISSAO','Configure o método de salário proporcional na admissão da empresa antes do cálculo.');
-      else if(prorationSettings.mode==='COMMERCIAL_30'&&Number(emp.admission_date.slice(8,10))===31)
+      if(admissionMode==='COMMERCIAL_30'&&Number(emp.admission_date.slice(8,10))===31)
         add('ADMISSAO_DIA_31','Admissão no dia 31 com mês comercial exige tratamento específico; consulte o departamento pessoal.');
-      else note('ADMISSAO_PROPORCIONAL','Salário proporcional por '+(prorationSettings.mode==='COMMERCIAL_30'?'30 dias comerciais':'dias efetivos do mês')+'.');
+      else note('ADMISSAO_PROPORCIONAL','Salário proporcional por '+(admissionMode==='COMMERCIAL_30'?'30 dias comerciais':'dias efetivos do mês')+'.');
+      if(!prorationSettings?.mode)note('PARAMETRO_ADMISSAO_PADRAO','Sem parâmetro específico; aplicada a proporcionalidade pelos dias do calendário.');
     }
     if(otherChanges.length)add('ALTERACAO_FUNCIONAL_OU_JORNADA','Mudança de jornada ou situação no mês ainda exige processamento específico.');
     if(changedSalary.length){
@@ -9642,7 +9651,7 @@ async function payrollMonthlyPreparation34(env,companyId,competenceId,paymentDat
     }
     if((history.dependents.get(emp.id)||[]).some(x=>Number(x.irrf_eligible)===1))
       note('DEPENDENTES','Revise a elegibilidade e comprovacao dos dependentes para o IRRF.');
-    if(!events.length)note('SEM_EVENTOS','Sem lancamentos variaveis; considerar o salario do historico na etapa de calculo.');
+    if(!events.length)note('SEM_EVENTOS','Sem lançamentos variáveis; calcular o salário-base cadastrado, respeitando eventual histórico existente.');
     items.push({employee_id:emp.id,employee_code:emp.employee_code||null,
       cost_center_id:emp.cost_center_id||null,cost_center_code:emp.cost_center_code||null,
       employee_name:emp.name,admission_date:emp.admission_date,
@@ -9656,7 +9665,7 @@ async function payrollMonthlyPreparation34(env,companyId,competenceId,paymentDat
   }
   const totalBlockers=items.reduce((n,x)=>n+x.blocker_count,0)+common.length;
   return {kind:'PREPARACAO_MENSAL_ETAPA_34',competence:period,payment_date:payment,
-    proration_settings:prorationSettings?{effective_from:prorationSettings.effective_from,revision:prorationSettings.revision,mode:prorationSettings.mode}:null,
+    proration_settings:prorationSettings?{effective_from:prorationSettings.effective_from,revision:prorationSettings.revision,mode:prorationSettings.mode}:{mode:'CALENDAR',default:true},
     salary_change_settings:salarySettings?{effective_from:salarySettings.effective_from,revision:salarySettings.revision,mode:salarySettings.mode}:{mode:'RM_NEXT_MONTH',default:true},
     first_date:first,last_date:last,employees:items,employee_count:items.length,
     complete_employee_count:common.length?0:items.filter(x=>x.blocker_count===0).length,
@@ -9836,6 +9845,7 @@ async function payrollMonthlySource35(env,companyId,competenceId,paymentDate){
   const dependents=new Map((depResult.results||[]).map(x=>[x.employee_id,Number(x.total)]));
   const history=await payrollEmployeeHistoricalContext(env,companyId,prep.first_date,prep.last_date);
   await payrollAdmissionHistory46(env,companyId,employees,prep.first_date,prep.last_date,history,HttpError);
+  payrollBasicHistory138(employees,history,prep.first_date);
   const changedSalary=await payrollSalaryHistory47(env,companyId,employees,history,prep.first_date,prep.last_date,HttpError);
   const attendance=await payrollAbsenceSnapshot48(env,companyId,prep.competence.competence,{HttpError});
   const leave=await payrollLeaveSnapshot49(env,companyId,prep.competence.competence,{HttpError});
@@ -9863,7 +9873,7 @@ async function payrollMonthlySource35(env,companyId,competenceId,paymentDate){
   for(const emp of employees){
     const salary=history.salary.get(emp.employee_id)?.[0]||null;
     const schedule=history.schedule.get(emp.employee_id)?.[0]||null;
-    if(!salary||!schedule)throw new HttpError(409,'Historico de salario e jornada foi alterado durante a preparacao.','SOURCE_CHANGED');
+    if(!salary||!schedule)throw new HttpError(409,'Salário ou jornada indisponível na preparação da folha. Confira o cadastro básico do funcionário.','SOURCE_CHANGED');
     const count=dependents.get(emp.employee_id)||0;
     const relevant=movements.filter(m=>m.employee_id===emp.employee_id);
     const staged=vacation100.byEmployee.get(emp.employee_id);
@@ -9874,7 +9884,7 @@ async function payrollMonthlySource35(env,companyId,competenceId,paymentDate){
     const calculated=staged?{...staged,employee_code:emp.employee_code,employee_name:emp.employee_name}:
       await payrollMonthlyEmployeeCalc35({...emp,salary_cents:salary.salary_cents,
       monthly_hours_milli:schedule.monthly_hours_milli},relevant,rules,count,
-      prep.competence.competence,paymentDate,prep.proration_settings?.mode||null,
+      prep.competence.competence,paymentDate,prep.proration_settings?.mode||'CALENDAR',
       prep.salary_change_settings?.mode||'RM_NEXT_MONTH',changedSalary.get(emp.employee_id)||[],
       attendance.get(emp.employee_id)||null,leave.get(emp.employee_id)||null,
       automatic137,env.DB,companyId);
