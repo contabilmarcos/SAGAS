@@ -33,6 +33,7 @@ on:
       - 'tests/payroll-monthly-v137.test.mjs'
       - 'tests/payroll-monthly-worker-v137.test.mjs'
       - 'tests/payroll-basic-history-v138.test.mjs'
+      - 'tests/payroll-monthly-error-v139.test.mjs'
       - 'sagas-payroll-formulas129-ui.js'
       - 'tests/payroll-formulas-v129.test.mjs'
       - 'tests/payroll-models-v130.test.mjs'
@@ -177,7 +178,8 @@ jobs:
             tests/payroll-ledger-v136.test.mjs \
             tests/payroll-monthly-v137.test.mjs \
             tests/payroll-monthly-worker-v137.test.mjs \
-            tests/payroll-basic-history-v138.test.mjs
+            tests/payroll-basic-history-v138.test.mjs \
+            tests/payroll-monthly-error-v139.test.mjs
 
       - name: Validar configuração e gerar Wrangler temporário
         env:
