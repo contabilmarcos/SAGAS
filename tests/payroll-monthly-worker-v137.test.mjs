@@ -20,11 +20,12 @@ const tax=(base,irrf,fgts)=>{
 // apenas no teste. Nunca acessa o D1 ou grava lançamentos.
 const fn=new Function('calculateAutomaticMonthly137','payrollSalaryAmount47',
  'payrollAbsenceAmounts48','payrollLeaveAmounts49','payrollTaxHistoricalWithDependents',
- 'HttpError','centsToMoney','payrollExprCents','payrollAdmissionSalary46',
+ 'HttpError','centsToMoney','payrollExprCents','payrollAdmissionSalary46','payrollMonthlyChecked139',
  fragment+';return payrollMonthlyEmployeeCalc35')(
   calculateAutomaticMonthly137,salary,attendance,attendance,tax,H,
   cents=>(cents/100).toFixed(2),()=>{throw Error('Fórmula manual não esperada');},
-  ()=>{throw Error('Admissão não esperada')}
+  ()=>{throw Error('Admissão não esperada')},
+  async (stage,callback)=>await callback()
  );
 const employee={employee_id:'E1',employee_code:'00001',employee_name:'Exemplo',cost_center_id:'CC1',
  salary_cents:300000,monthly_hours_milli:220000,admission_date:'2026-01-01'};
