@@ -43,7 +43,9 @@ export async function projectPayroll135({envelope,legacy,bases,context,configs,s
  const ctx=()=>({...context,BASE_INSS:money135(baseInss),
   BASE_IRRF:money135(baseIrrf),BASE_FGTS:money135(baseFgts),
   TOTAL_PROVENTOS:money135(gross),TOTAL_DESCONTOS:money135(discount),
-  PROVENTOS_TRIBUTAVEIS:money135(gross)});
+  // O envelope anterior não fornece uma composição auditável de rendimentos
+  // tributáveis para fórmulas arbitrárias. Evitar usar o bruto como substituto.
+  PROVENTOS_TRIBUTAVEIS:undefined});
  const save=(cfg,status,value,old,reason=null)=>rows.push({
   code:cfg.code,name:cfg.name,category:cfg.category,status,
   amount_cents:value,legacy_cents:old,
@@ -54,6 +56,25 @@ export async function projectPayroll135({envelope,legacy,bases,context,configs,s
   const r=await calculate(cfg,ctx());
   if(!monetary135(r?.amount_cents))throw Error('Resultado monetário inválido.');
   return Number(r.amount_cents);
+ }
+ // A fórmula de salário-base é conferida, mas o seu recálculo exige reprocessar
+ // dias, histórico salarial, férias e frequência no motor oficial.
+ const salaryCfg=selected.get('SALARIO_BASE');
+ if(salaryCfg){
+  const salaryLines=byCode.get('SALARIO_BASE')||[];
+  if(salaryLines.length!==1){
+   issue('SALARY_SOURCE_INVALID','Salário-base histórico não possui linha única verificável.');
+  }else{
+   try{
+    const amount=await calculateSafe(salaryCfg.config);
+    if(amount!==Number(salaryLines[0].amount_cents))
+     issue('SALARY_RECALC_NOT_APPLIED','SALARIO_BASE diverge da folha; não pode substituir remuneração antes da apuração de dias e vigências.');
+    save(salaryCfg.config,'COMPARADO',amount,Number(salaryLines[0].amount_cents),'Salário-base ainda é o do envelope original');
+   }catch(e){
+    issue('SALARY_FORMULA_FAILED','SALARIO_BASE: '+String(e?.message||e).slice(0,200));
+    save(salaryCfg.config,'PENDENTE',null,Number(salaryLines[0].amount_cents),'Fórmula não calculada');
+   }
+  }
  }
  // Só o salário-base original pode ser considerado comprovado neste comparador.
  // Reajustes, férias, afastamentos e médias não são inferidos por fórmulas genéricas.
