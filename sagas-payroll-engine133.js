@@ -4,6 +4,7 @@
 import {simulateEvent127} from './sagas-payroll-designer127.js';
 import {formulaSnapshot129} from './sagas-payroll-formulas129.js';
 import {compilePayrollSql128,evaluatePayrollSql128} from './sagas-payroll-sql128.js';
+import {previewProvisionAccounting134} from './sagas-payroll-engine134.js';
 
 const cents133=value=>{
  const n=Number(value);
@@ -283,10 +284,14 @@ export async function payrollEnginePreview133({env,companyId,auth,request,runId,
   message:'Nenhum evento automatico configurado no novo motor para '+period+'.'});
  if(!settings)problems.push({code:'EMPLOYER_SETTINGS_MISSING',
   message:'Parametros patronais nao configurados nesta competencia.'});
+ // v134: resolve defaults contabeis por centro de custo sem criar diario nem titulo.
+ const provisionAccounting=await previewProvisionAccounting134({db:env.DB,companyId,envelopes});
+ problems.push(...provisionAccounting.problems);
  return {kind:'PAYROLL_ENGINE_COMPARISON_133',read_only:true,official:false,
   ready_for_closure:false,ready_for_posting:false,run:detail.run,
   employee_count:envelopes.length,event_count:configs.length,
   provision_count:provisions.length,totals,envelopes,problems,
+  provision_accounting:provisionAccounting,
   configuration_revisions:configs.map(v=>({code:v.config.code,revision:v.formula_version,
    nature_id:v.config.nature_id,formula_id:v.config.formula_id||null})),
   message:'Previa comparativa das bases produzidas pelo motor anterior. Simula formulas configuradas, encargos e provisoes; nao substitui envelopes, bases oficiais, nem gera lancamentos financeiros ou contabeis.'};
