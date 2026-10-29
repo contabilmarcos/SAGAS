@@ -59,7 +59,7 @@ async function open(runId,source=null){
    '<td><button type="button" class="btn secondary sm" data-engine133-person="'+i+'">Ver eventos e provisões</button></td></tr>').join('');
   $('#engine133Content').innerHTML=
    '<p class="help"><b>Prévia de conferência, não é folha fechada.</b> Valores do cálculo antigo não foram alterados. Fórmulas novas ainda não estão homologadas para lançamentos contábeis, títulos ou pagamento.</p>'+
-   totalsHtml+accountHtml+
+   totalsHtml+(data.provision_accounting?accountHtml:'')+
    '<div class="section-title">Funcionários por centro de custo</div>'+
    '<div class="table-wrap" style="max-height:320px;overflow:auto"><table class="table"><thead><tr>'+
    '<th>ID</th><th>Funcionário</th><th>Centro de custo</th>'+
