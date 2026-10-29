@@ -136,6 +136,31 @@ function assemble141(runs){
    employee_count:x.report.employees.length,posted:!!x.posting,
    totals:x.report.totals})),event_definitions:C141.map(([code,name,category])=>({code,name,category}))};
 }
+// Controle cronológico das estimativas por competência. Não presume baixas de férias
+// ou 13º e não altera o livro de provisões já existente no SAGAS.
+async function provisionHistory141(env,company,month,cc){
+ const codes=keys141.filter(k=>k.startsWith('PROV_'));
+ const fields=codes.map(k=>
+  "SUM(COALESCE(CAST(json_extract(r.report_json, '$.totals."+k+"') AS INTEGER),0)) AS "+k);
+ const where=cc==='all'?'':' AND r.cost_center_id=?';
+ const sql="SELECT r.competence,"+fields.join(',')+
+  " FROM payroll_simple_runs141 r WHERE r.company_id=? AND r.competence<=?"+where+
+  " AND r.revision=(SELECT MAX(z.revision) FROM payroll_simple_runs141 z"+
+  " WHERE z.company_id=r.company_id AND z.competence=r.competence AND z.cost_center_id=r.cost_center_id)"+
+  " GROUP BY r.competence ORDER BY r.competence LIMIT 241";
+ const rows=(await env.DB.prepare(sql).bind(...(cc==='all'?[company,month]:[company,month,cc])).all()).results||[];
+ if(rows.length>240)throw Error('Histórico mensal superior a 240 competências.');
+ let accumulated=0;
+ return rows.map(row=>{
+  const totals=Object.fromEntries(codes.map(k=>[k,Number(row[k]||0)]));
+  const accrued=Object.values(totals).reduce((a,b)=>a+b,0);
+  if(!money141(accrued))throw Error('Total de provisão inválido.');
+  accumulated+=accrued;
+  if(!money141(accumulated))throw Error('Provisão acumulada excedeu limite seguro.');
+  return {competence:row.competence,totals,
+   accrued_cents:accrued,cumulative_estimate_cents:accumulated};
+ });
+}
 async function mapping141(env,company,cc){
  const r=(await env.DB.prepare("SELECT event_code,debit_account_id,credit_account_id FROM payroll_simple_accounts141 WHERE company_id=? AND cost_center_id=?").bind(company,cc).all()).results||[];
  return Object.fromEntries(r.map(x=>[x.event_code,x]));
@@ -212,7 +237,9 @@ export async function payrollSimple141(action,c){
  if(action==='report'){
   const runs=await read141(env,companyId,month,cc);
   for(const r of runs)r.posting=await env.DB.prepare("SELECT batch_id,entry_id FROM payroll_simple_postings141 WHERE company_id=? AND run_id=?").bind(companyId,r.id).first();
-  return {competence:month,cost_center_id:cc,...assemble141(runs)};
+  return {competence:month,cost_center_id:cc,...assemble141(runs),
+   provision_history:await provisionHistory141(env,companyId,month,cc),
+   provision_notice:'Histórico de provisões estimadas sem baixas; não corresponde necessariamente ao saldo oficial do passivo.'};
  }
  if(cc==='all')fail141(d,'SELECT_CENTER','Selecione um centro de custo específico para contabilizar.');
  const latest=(await read141(env,companyId,month,cc))[0];
