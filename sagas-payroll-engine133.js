@@ -6,6 +6,7 @@ import {formulaSnapshot129} from './sagas-payroll-formulas129.js';
 import {compilePayrollSql128,evaluatePayrollSql128} from './sagas-payroll-sql128.js';
 import {previewProvisionAccounting134} from './sagas-payroll-engine134.js';
 import {projectPayroll135} from './sagas-payroll-projection135.js';
+import {previewPayrollLedger136} from './sagas-payroll-ledger136.js';
 
 const cents133=value=>{
  const n=Number(value);
@@ -338,12 +339,18 @@ export async function payrollEnginePreview133({env,companyId,auth,request,runId,
  // v134: resolve defaults contabeis por centro de custo sem criar diario nem titulo.
  const provisionAccounting=await previewProvisionAccounting134({db:env.DB,companyId,envelopes});
  problems.push(...provisionAccounting.problems);
+ // v136: natureza por evento, encargos e credito do líquido por CC; somente SELECT.
+ const projectedLedger=await previewPayrollLedger136({
+  db:env.DB,companyId,sourceEnvelopes:detail.envelopes,envelopes,configs
+ });
+ problems.push(...projectedLedger.problems);
  return {kind:'PAYROLL_ENGINE_COMPARISON_133',read_only:true,official:false,
   ready_for_closure:false,ready_for_posting:false,run:detail.run,
   employee_count:envelopes.length,event_count:configs.length,
   provision_count:provisions.length,totals,envelopes,problems,
   provision_accounting:provisionAccounting,
+  projected_ledger:projectedLedger,
   configuration_revisions:configs.map(v=>({code:v.config.code,revision:v.formula_version,
    nature_id:v.config.nature_id,formula_id:v.config.formula_id||null})),
-  message:'Prévia parametrizada v135: projeta proventos, descontos, bases e encargos a partir do envelope anterior; não substitui a folha, não homologa incidências ou médias, não constitui provisões e não gera financeiro ou diário contábil.'};
+  message:'Conferência parametrizada v135/v136: simula proventos, descontos, bases e partidas por natureza, conta e centro de custo. Não altera o cálculo original, não homologa incidências, médias ou provisões e não grava diário nem financeiro.'};
 }
