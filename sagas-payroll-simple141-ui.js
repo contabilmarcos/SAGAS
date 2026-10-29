@@ -27,7 +27,7 @@
  };
  const bindFilters=()=>{
   const month=document.getElementById('s141month'),cc=document.getElementById('s141cc'),pay=document.getElementById('s141payment');
-  if(month)month.onchange=()=>{state.competence=month.value; if(!state.payment_date)state.payment_date=state.competence+'-01';render(S.page);};
+  if(month)month.onchange=()=>{state.competence=month.value;state.payment_date='';render(S.page);};
   if(cc)cc.onchange=()=>{state.cost_center_id=cc.value;render(S.page)};
   if(pay)pay.onchange=()=>state.payment_date=pay.value;
  };
@@ -59,10 +59,14 @@
   if(!pages.has(page))return;
   if(state.company!==S.companyId){state.company=S.companyId;state.competence='';state.cost_center_id='all';state.setup=null;}
   state.setup=await api('/api/payroll/simple141/setup');
+  if(!state.competence||!state.setup.months.some(x=>x.competence===state.competence))
+    state.competence=state.setup.months[0]?.competence||'';
   if(!state.setup.months.length){document.getElementById('content').innerHTML=
    '<div class="empty"><b>Abra uma competência</b>Vá em Folha → Competências e abra o mês para calcular.</div>';return;}
-  if(!state.payment_date||!state.payment_date.startsWith(state.competence))
-   state.payment_date=state.competence+'-'+new Date(Date.UTC(Number(state.competence.slice(0,4)),Number(state.competence.slice(5,7)),0)).getUTCDate();
+  if(!state.payment_date||!state.payment_date.startsWith(state.competence)){
+   const year=Number(state.competence.slice(0,4)),month=Number(state.competence.slice(5,7));
+   state.payment_date=state.competence+'-'+String(new Date(Date.UTC(year,month,0)).getUTCDate()).padStart(2,'0');
+  }
   if(page==='payroll-simple-calculate'){
    document.getElementById('content').innerHTML=title('Calcular folha','Somente salário-base e descontos legais, por centro de custo ou todos. Histórico de frequência não é obrigatório.')+
    fields()+'<div style="padding-bottom:18px"><button class="btn primary" id="s141calc">Calcular folha</button> '+
