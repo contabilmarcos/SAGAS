@@ -1,7 +1,7 @@
 // SAGAS v137 — ativa eventos automáticos do cadastro parametrizado na folha mensal oficial.
 // Conserva INSS/IRRF/FGTS do motor tributário histórico e os movimentos de férias.
 // Somente proventos simples e descontos sem reflexos tributários são integrados aqui.
-import {simulateEvent127} from './sagas-payroll-designer127.js';
+import {simulateEvent127,normalizeEvent127} from './sagas-payroll-designer127.js';
 import {compilePayrollSql128,evaluatePayrollSql128} from './sagas-payroll-sql128.js';
 import {formulaSnapshot129} from './sagas-payroll-formulas129.js';
 
@@ -60,7 +60,11 @@ export async function loadAutomaticMonthly137(db,companyId,period){
    const snap=await formulaSnapshot129({DB:db},companyId,cfg.formula_id,period);
    if(!snap?.formula?.active||!snap?.version?.source)
     throw err137('AUTO_FORMULA_INACTIVE','Fórmula de '+cfg.code+' sem versão ativa.');
-   linked_source=snap.version.source;
+   // O catálogo de fórmulas armazena valores de edição em reais;
+   // normalizar antes do cálculo oficial para obter fixed_cents e bandas.
+   linked_source=normalizeEvent127(snap.version.source,{
+    HttpError:class extends Error{constructor(status,message,code){super(message);this.status=status;this.code=code;}}
+   });
    linked_version=snap.version.effective_from+'#'+snap.version.revision;
   }
   selected.push({event_id:v.event_id,config:cfg,effective_from:v.effective_from,revision:Number(v.revision),
