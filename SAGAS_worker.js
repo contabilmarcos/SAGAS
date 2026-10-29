@@ -5113,8 +5113,19 @@ async function buildFinancialPaymentAccountingLines(env,companyId,{eventId,cashA
   const cashCents=grossCents+interest-Number(discountCents||0)-Number(advanceCents||0);
   if(cashCents<0) throw new HttpError(400,'Desconto e adiantamento não podem superar o valor do título somado aos juros.','INVALID_PAYMENT_VALUES');
   const ctx={grossCents,cashCents,discountCents:Number(discountCents||0),advanceCents:Number(advanceCents||0),interestCents:interest,supplierType};
+  // O CC de origem da folha simplificada acompanha a baixa financeira.
+  let payrollCenter=null;
+  if(payable.source_type==='PAYROLL_MONTHLY'){
+    const links=await env.DB.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='payroll_simple_payables141'").first();
+    if(links){
+      const link=await env.DB.prepare('SELECT cost_center_id FROM payroll_simple_payables141 WHERE company_id=? AND payable_id=?').bind(companyId,payable.id).first();
+      payrollCenter=link?.cost_center_id||null;
+    }
+  }
   const lines=[];
   for(const item of event.items){
+    if(payrollCenter&&item.cost_center_id&&item.cost_center_id!==payrollCenter)
+      throw new HttpError(409,'O centro de custo do evento de baixa diverge da folha de origem.','PAYROLL_PAYMENT_CENTER_MISMATCH');
     const amount=evalFinancialPaymentFormula(item.formula,ctx);
     if(amount===0&&!event.allow_zero) continue;
     if(amount<0) throw new HttpError(409,'O Evento Contábil gerou valor negativo.','INVALID_ACCOUNTING_AMOUNT');
@@ -5129,7 +5140,7 @@ async function buildFinancialPaymentAccountingLines(env,companyId,{eventId,cashA
     let historyPattern=String(item.history_complement||'').trim();
     if(item.history_template_id&&!historyPattern) historyPattern=financialDefaultHistoryPattern(item.formula);
     lines.push({
-      side:item.side,account_id:accountId,amount:centsToMoney(amount),branch_id:item.branch_id||null,cost_center_id:item.cost_center_id||null,
+      side:item.side,account_id:accountId,amount:centsToMoney(amount),branch_id:item.branch_id||null,cost_center_id:payrollCenter||item.cost_center_id||null,
       history_template_id:item.history_template_id||null,
       history_complement:financialHistoryTokens(historyPattern,{paymentDate,payableNumber:payable.number,supplierName:payable.supplier_name,documentNumber:payable.document_number})
     });
@@ -12288,12 +12299,16 @@ async function route(request, env) {
   // Fluxo simplificado da folha — separado de lançamentos manuais e folhas históricas.
   if(path.startsWith('/api/payroll/simple141/')){
     const action=path.slice('/api/payroll/simple141/'.length);
-    const actions={setup:'GET',calculate:'POST',report:'GET',accounting:'GET',mapping:'POST',post:'POST'};
+    const actions={setup:'GET',calculate:'POST',report:'GET',accounting:'GET',mapping:'POST',post:'POST',finance:'POST',provisions:'POST'};
     if(Object.hasOwn(actions,action)&&method===actions[action]){
       // O cálculo simples precisa dos IDs e centros do cadastro, mas não de
       // históricos salariais, férias, licenças nem movimentos variáveis.
       await ensureSchemaRevision(env,'payroll-employee-numbers',1,()=>ensurePayrollEmployeeNumbersSchema(env));
       await ensureSchemaRevision(env,'payroll-employee-cost-center39',1,()=>ensurePayrollCostCenter39(env));
+      await ensureSchemaRevision(env,'purchasing',1,async()=>{
+        await ensurePurchasingSchema(env);await ensurePurchaseIntegrationSchema(env);await ensureRmPurchasingSchema(env);
+      });
+      await ensureSchemaRevision(env,'payroll-provision-ledger43',1,()=>ensureProvisionLedger43(env));
       const body=method==='POST'?await readJson(request):{};
       return ok(await payrollSimple141(action,{env,companyId,auth,request,body,
         competence:url.searchParams.get('competence'),
