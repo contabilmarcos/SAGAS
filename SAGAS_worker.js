@@ -9692,12 +9692,14 @@ async function payrollMonthlyEmployeeCalc35(employee, movements, rules, dependen
   if(salary===0)throw new HttpError(409,'Salario historico zerado.','CALCULATION_BLOCKED');
   const hours=Number(employee.monthly_hours_milli);
   if(!Number.isSafeInteger(hours)||hours<=0)throw new HttpError(409,'Jornada mensal ausente.','CALCULATION_BLOCKED');
-  const computedPay=payrollSalaryAmount47(salary,employee.admission_date,competence,prorationMode,
-    salaryMode,salaryChanges,payrollAdmissionSalary46,HttpError);
+  const computedPay=await payrollMonthlyChecked139('CALCULAR_SALARIO',
+    ()=>payrollSalaryAmount47(salary,employee.admission_date,competence,prorationMode,
+      salaryMode,salaryChanges,payrollAdmissionSalary46,HttpError));
   const paid=computedPay.salary_cents;
   let earnings=paid,manualDiscounts=0,baseInss=paid,baseIrrf=paid,baseFgts=paid;
   const lines=[{event_id:null,event_code:'SALARIO_BASE',event_name:'Salario mensal',
     line_type:'PROVENTO',amount_cents:paid,reference_text:computedPay.reference_text,rule_version:null}];
+  await payrollMonthlyChecked139('CALCULAR_EVENTOS_MANUAIS',async()=>{
   for(const mov of movements){
     const rule=rules.get(mov.event_id);
     if(!rule||[rule.inss,rule.irrf,rule.fgts].some(x=>!['SIM','NAO'].includes(x)))
@@ -9741,8 +9743,10 @@ async function payrollMonthlyEmployeeCalc35(employee, movements, rules, dependen
       reference_text:mov.unit==='VALOR'?'Valor informado':mov.unit+': '+(mov.quantity_milli/1000),
       rule_version:rule.effective_from+'#'+rule.revision});
   }
+  });
   // Frequência: descontos automáticos com classificação documental e DSR explícito.
-  const abs=payrollAbsenceAmounts48(salary,hours,competence,attendance,salaryChanges,salaryMode,{HttpError});
+  const abs=await payrollMonthlyChecked139('CALCULAR_FREQUENCIA',
+    ()=>payrollAbsenceAmounts48(salary,hours,competence,attendance,salaryChanges,salaryMode,{HttpError}));
   if(abs.discount_cents>paid)throw new HttpError(409,'Descontos de faltas, atrasos e DSR excedem o salário devido no período.','ABSENCE_EXCEEDS_PAY');
   for(const x of abs.entries){
     manualDiscounts+=x.amount_cents;
@@ -9751,8 +9755,9 @@ async function payrollMonthlyEmployeeCalc35(employee, movements, rules, dependen
       line_type:'DESCONTO',amount_cents:x.amount_cents,reference_text:x.reference_text,rule_version:'FREQUENCIA48'});
   }
   // Licenças: classificações gravadas e fotografia histórica; sem inferir INSS.
-  const leaveAmounts=payrollLeaveAmounts49(salary,paid,competence,leave,attendance,salaryChanges,
-    salaryMode,employee.admission_date,movements,{HttpError});
+  const leaveAmounts=await payrollMonthlyChecked139('CALCULAR_AFASTAMENTOS',
+    ()=>payrollLeaveAmounts49(salary,paid,competence,leave,attendance,salaryChanges,
+      salaryMode,employee.admission_date,movements,{HttpError}));
   if(abs.discount_cents+leaveAmounts.discount_cents>paid)
     throw new HttpError(409,'Descontos de frequência e licença excedem o salário do período.','LEAVE_EXCEEDS_PAY');
   for(const x of leaveAmounts.entries){
@@ -9763,10 +9768,11 @@ async function payrollMonthlyEmployeeCalc35(employee, movements, rules, dependen
     lines.push({event_id:null,event_code:x.event_code,event_name:x.event_name,
       line_type:x.line_type,amount_cents:x.amount_cents,reference_text:x.reference_text,rule_version:'LICENCA49'});
   }
-  const automated=await calculateAutomaticMonthly137({
-    db,companyId,period:competence,items:automatic137,
-    salaryCents:salary,paidCents:paid,manualCodes:movements.map(m=>m.event_code)
-  });
+  const automated=await payrollMonthlyChecked139('CALCULAR_EVENTOS_AUTOMATICOS',
+    ()=>calculateAutomaticMonthly137({
+      db,companyId,period:competence,items:automatic137,
+      salaryCents:salary,paidCents:paid,manualCodes:movements.map(m=>m.event_code)
+    }));
   for(const item of automated){
     if(item.line_type==='PROVENTO'){
       earnings+=item.amount_cents;
@@ -9781,7 +9787,8 @@ async function payrollMonthlyEmployeeCalc35(employee, movements, rules, dependen
   for(const [n,v] of Object.entries({earnings,manualDiscounts,baseInss,baseIrrf,baseFgts}))moneySafe(v,n);
   // Para o caso mensal padrao, INSS do segurado incide sobre o total da base
   // contribuinte e IRRF sobre rendimentos tributaveis no mes de pagamento.
-  const tax=payrollTaxHistoricalWithDependents(baseInss,baseIrrf,baseFgts,competence,paymentDate,dependents);
+  const tax=await payrollMonthlyChecked139('CALCULAR_INSS_IRRF_FGTS',
+    ()=>payrollTaxHistoricalWithDependents(baseInss,baseIrrf,baseFgts,competence,paymentDate,dependents));
   const discounts=manualDiscounts+tax.inss_cents+tax.irrf_cents;
   if(discounts>earnings)throw new HttpError(409,'Descontos excedem os proventos do funcionario.','CALCULATION_BLOCKED');
   lines.push({event_id:null,event_code:'INSS_EMP',event_name:'INSS empregado',line_type:'DESCONTO',
@@ -9968,6 +9975,18 @@ async function payrollMonthlyRuns35(env,companyId,competenceId){
 // funcionários, credenciais nem instruções SQL ao navegador.
 function payrollMonthlyTechnical139(err,stage){
  if(err instanceof HttpError)return err;
+ // Erros do motor parametrizável são validações de cadastro, não falhas 500.
+ // O texto destes erros é construído pelo próprio sistema; não repassar SQL ou stack.
+ if(/^AUTO_[A-Z0-9_]+$/.test(String(err?.code||''))){
+  const code=String(err.code);
+  console.warn('PAYROLL_AUTOMATIC_VALIDATION_140',{stage,code});
+  const safe=['AUTO_EVENT_MANUAL_DUPLICATE','AUTO_FORMULA_UNSUPPORTED','AUTO_FORMULA_REFERENCE',
+   'AUTO_FORMULA_INACTIVE','AUTO_BASE_INVALID','AUTO_AMOUNT_INVALID','AUTO_FORMULA_ERROR'].includes(code)?
+    'Há um evento automático que não pode ser calculado para esta competência. Confira sua fórmula, vigência, incidências e possíveis lançamentos duplicados.':
+    'Confira a configuração dos eventos automáticos desta competência.';
+  return new HttpError(409,safe+' Etapa: '+stage+'. Código: '+code+'.',
+    code,{stage});
+ }
  const raw=String(err?.message||err);
  const schema=/no such (table|column):\s*(?:(?:main)\.)?([A-Za-z][A-Za-z0-9_]*)/i.exec(raw);
  const binding=/incorrect number of bindings|too many sql variables|bind parameters|wrong number of bindings/i.test(raw);
