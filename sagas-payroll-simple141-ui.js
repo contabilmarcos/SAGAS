@@ -106,7 +106,7 @@
     const el=document.getElementById('s141result');
     try{
      const r=await api141('report');
-     if(!r.employee_count){el.innerHTML='<p class="muted">Nenhuma folha calculada para o filtro selecionado.</p>';return;}
+     if(!r.employee_count){el.innerHTML='<p class="muted">Nenhuma folha ativa para o filtro selecionado. Se desfez a contabilização, recalcule a folha.</p>';return;}
      const provRows=(r.provision_history||[]).map(h=>{
       const f=Number(h.totals.PROV_FERIAS||0)+Number(h.totals.PROV_TERCO||0);
       const special=Number(h.accrued_cents||0)-Number(h.totals.PROV_13||0)-f;
@@ -150,13 +150,22 @@
       ['finance','provisions'].map(kind=>'<button class="btn secondary" data-s141integrate="'+kind+'" '+
        (r.integrations.some(x=>x.kind===kind)?'disabled':'')+'>'+
        (kind==='finance'?'Gerar títulos de salário líquido':'Constituir férias, terço e 13º')+
-       (r.integrations.some(x=>x.kind===kind)?' — concluído':'')+'</button> ').join('');
+       (r.integrations.some(x=>x.kind===kind)?' — concluído':'')+'</button> ').join('')+
+      '<div style="margin-top:16px"><button class="btn secondary" id="s141undo">Desfazer contabilização e liberar recálculo</button></div>';
+     document.getElementById('s141undo').onclick=openUndo;
      target.querySelectorAll('[data-s141integrate]').forEach(btn=>btn.onclick=async()=>{
       btn.disabled=true;
       try{await api141(btn.dataset.s141integrate,{competence:state.competence,cost_center_id:state.cost_center_id});
        toast('Integração concluída.');await loadAccounting();
       }catch(err){btn.disabled=false;toast(err.message,'error')}
      });return;}
+   if(r.reversal){
+    target.innerHTML='<p class="badge yellow">Contabilização desfeita — recálculo necessário</p>'+
+     '<p>O lote anterior e o lançamento anulado foram preservados no histórico.</p>'+
+     '<p>Motivo: '+e(r.reversal.reason)+'</p>'+
+     '<button class="btn primary" id="s141recalculate">Ir para calcular folha</button>';
+    document.getElementById('s141recalculate').onclick=()=>nav('payroll-simple-calculate');return;
+   }
    const rows=r.events.filter(x=>x.amount_cents>0).map(x=>{
     const nature=state.setup.natures.find(a=>a.id===x.nature_id);
     return '<tr><td>'+e(x.code)+'</td><td>'+e(x.name)+'</td><td>'+cur(x.amount_cents)+'</td>'+
@@ -190,6 +199,33 @@
    const button=document.getElementById('s141post');
    button.onclick=openPosting;
   }catch(err){target.innerHTML='<p class="badge red">'+e(err.message)+'</p>'}
+ }
+ async function openUndo(){
+  const competence=state.competence,cost_center_id=state.cost_center_id;
+  try{
+   const preview=await api141('undo-preview');
+   openModal('Desfazer contabilização da folha','Confira os documentos vinculados antes de confirmar.',
+    '<form id="s141undoForm" class="stack">'+
+    '<p>Lote '+e(preview.batch_code||preview.batch_id)+'. Títulos em aberto a cancelar: <b>'+e(preview.payable_count)+
+    '</b>. Constituições de provisões a retirar: <b>'+e(preview.provision_count)+'</b>.</p>'+
+    '<p>O lançamento será anulado e o histórico preservado. Depois, recalcule a folha e use outro número de lote para contabilizar a nova revisão.</p>'+
+    (preview.problems.length?'<p class="badge red">'+preview.problems.map(x=>e(x.message)).join('<br>')+'</p>':'')+
+    (preview.can_undo?'<label class="field"><span>Motivo do desfazimento</span><textarea name="reason" required maxlength="1000"></textarea></label>'+
+    '<label class="field"><span>Digite DESFAZER para confirmar</span><input name="confirmation" required pattern="DESFAZER" autocomplete="off"></label>':'')+
+    '<div class="form-actions"><button class="btn secondary" type="button" id="s141undoCancel">Cancelar</button>'+
+    (preview.can_undo?'<button class="btn primary" id="s141undoConfirm" type="submit">Confirmar desfazimento</button>':'')+'</div></form>');
+   document.getElementById('s141undoCancel').onclick=closeModal;
+   document.getElementById('s141undoForm').onsubmit=async ev=>{
+    ev.preventDefault();if(!preview.can_undo)return;
+    const button=document.getElementById('s141undoConfirm');if(button.disabled)return;
+    const fd=new FormData(ev.currentTarget);button.disabled=true;
+    try{
+     await api141('undo',{competence,cost_center_id,run_id:preview.run_id,entry_id:preview.entry_id,
+      reason:String(fd.get('reason')||'').trim(),confirmation:String(fd.get('confirmation')||'').trim()});
+     closeModal();toast('Contabilização desfeita. Recalcule a folha antes de contabilizar novamente.');await loadAccounting();
+    }catch(err){button.disabled=false;toast(err.message,'error')}
+   };
+  }catch(err){toast(err.message,'error')}
  }
  function openPosting(){
   const competence=state.competence,cost_center_id=state.cost_center_id;

@@ -17,9 +17,9 @@ function fixture(){
  CREATE TABLE payroll_competences(id TEXT,company_id TEXT,competence TEXT,status TEXT);
  CREATE TABLE accounting_periods(id TEXT,company_id TEXT,code TEXT,status TEXT,start_date TEXT,end_date TEXT,closed_until TEXT);
  CREATE TABLE journal_batches(id TEXT PRIMARY KEY,company_id TEXT,period_id TEXT,code TEXT,description TEXT,start_date TEXT,end_date TEXT,status TEXT,created_by TEXT,cover_mode TEXT,cover_amount_cents INTEGER,UNIQUE(company_id,code));
- CREATE TABLE journal_entries(id TEXT PRIMARY KEY,company_id TEXT,batch_id TEXT,branch_id TEXT,entry_date TEXT,document_number TEXT,description TEXT,source_module TEXT,source_reference TEXT,status TEXT,total_debit_cents INTEGER,total_credit_cents INTEGER,created_by TEXT,posted_by TEXT,posted_at TEXT);
+ CREATE TABLE journal_entries(id TEXT PRIMARY KEY,company_id TEXT,batch_id TEXT,branch_id TEXT,entry_date TEXT,document_number TEXT,description TEXT,source_module TEXT,source_reference TEXT,status TEXT,total_debit_cents INTEGER,total_credit_cents INTEGER,created_by TEXT,posted_by TEXT,posted_at TEXT,official_status TEXT DEFAULT 'PENDING',edited_at TEXT,voided_by TEXT,voided_at TEXT,void_reason TEXT,updated_at TEXT);
  CREATE TABLE journal_lines(id TEXT PRIMARY KEY,company_id TEXT,entry_id TEXT,line_no INTEGER,account_id TEXT,side TEXT,amount_cents INTEGER,branch_id TEXT,cost_center_id TEXT,history_template_id TEXT,history_complement TEXT,document_number TEXT);
- CREATE TABLE financial_payables(id TEXT PRIMARY KEY,company_id TEXT,number TEXT,supplier_id TEXT,source_type TEXT,source_id TEXT,issue_date TEXT,due_date TEXT,document_number TEXT,description TEXT,amount_cents INTEGER,balance_cents INTEGER,status TEXT,created_by TEXT,UNIQUE(company_id,source_type,source_id));
+ CREATE TABLE financial_payables(id TEXT PRIMARY KEY,company_id TEXT,number TEXT,supplier_id TEXT,source_type TEXT,source_id TEXT,issue_date TEXT,due_date TEXT,document_number TEXT,description TEXT,amount_cents INTEGER,balance_cents INTEGER,status TEXT,created_by TEXT,payment_journal_entry_id TEXT,updated_at TEXT,UNIQUE(company_id,source_type,source_id));
  CREATE TABLE payroll_employees(id TEXT PRIMARY KEY,company_id TEXT,name TEXT,cost_center_id TEXT);
  CREATE TABLE payroll_employee_numbers(employee_id TEXT,company_id TEXT,number INTEGER);
  INSERT INTO cost_centers VALUES('cc','company','001','Produção',1),('other','company','002','Admin',1);
@@ -32,6 +32,7 @@ function fixture(){
  ('c','company','net','C','payable',100,NULL,NULL,NULL,'Líquido',''),
  ('pd','company','provision','D','expense',100,NULL,NULL,NULL,'Provisão',''),
  ('pc','company','provision','C','payable',100,NULL,NULL,NULL,'Provisão','');
+ INSERT INTO payroll_competences VALUES('competence','company','2026-01','OPEN');
  INSERT INTO accounting_periods VALUES('period','company','2026','OPEN','2026-01-01','2026-12-31',NULL);`);
  let seq=0;const initialized=new Set(),permissions=[];
  const d={HttpError,uuid:()=>`id${++seq}`,audit:async()=>{},requirePermission:async(...args)=>permissions.push(args.at(-1)),
@@ -310,4 +311,177 @@ test('clicar em contabilizar abre formulário; só a confirmação envia os dado
  await form.onsubmit({preventDefault(){},currentTarget:form});
  assert.equal(closed,2);assert.equal(requests[1].batch_code,'78');assert.equal(requests[1].batch_description,'Salários janeiro');
  assert.equal(requests[1].competence,'2026-01');assert.equal(requests[1].cost_center_id,'cc');
+});
+
+async function undoRequest(f){
+ const p=await f.call('undo-preview');
+ return {run_id:p.run_id,entry_id:p.entry_id,reason:'Corrigir dados do funcionário',confirmation:'DESFAZER'};
+}
+test('desfazimento anula o diário, preserva lote e histórico e exige nova revisão',async()=>{
+ const f=fixture();await f.seed();const posted=await f.call('post');
+ const request=await undoRequest(f);
+ assert.equal((await f.call('undo-preview')).can_undo,true);
+ const result=await f.call('undo',request);assert.equal(result.undone,true);
+ assert.equal(f.sql.prepare('SELECT status FROM journal_entries').get().status,'VOID');
+ assert.ok(f.sql.prepare('SELECT COUNT(*) n FROM journal_lines').get().n>0);
+ assert.equal(f.sql.prepare('SELECT COUNT(*) n FROM journal_batches').get().n,1);
+ assert.equal(f.sql.prepare('SELECT COUNT(*) n FROM payroll_simple_postings141').get().n,0);
+ const archive=f.sql.prepare('SELECT * FROM payroll_simple_reversals141').get();
+ assert.equal(archive.reason,request.reason);assert.equal(JSON.parse(archive.snapshot_json).entry.id,posted.entry_id);
+ assert.equal((await f.call('undo',request)).reused,true);
+ await assert.rejects(f.call('post',{batch_code:'78'}),e=>e.code==='RUN_REVERSED');
+ assert.ok((await f.call('accounting')).reversal);
+ const report=await f.call('report');assert.equal(report.employee_count,0);assert.equal(report.centers[0].reversed,true);assert.deepEqual(report.provision_history,[]);
+ assert.ok(f.permissions.includes('accounting.entry.void'));
+});
+test('desfazimento cancela títulos abertos e arquiva constituições não utilizadas',async()=>{
+ const f=fixture();await f.seed();await f.call('post');await f.call('finance');await f.call('provisions');
+ const request=await undoRequest(f),preview=await f.call('undo-preview');
+ assert.equal(preview.payable_count,1);assert.equal(preview.provision_count,3);
+ await f.call('undo',request);
+ const title=f.sql.prepare('SELECT * FROM financial_payables').get();
+ assert.equal(title.status,'CANCELLED');assert.equal(title.balance_cents,0);
+ assert.equal(f.sql.prepare('SELECT COUNT(*) n FROM payroll_provision_movements43').get().n,0);
+ assert.equal(f.sql.prepare('SELECT COUNT(*) n FROM payroll_simple_integrations141').get().n,0);
+ const history=JSON.parse(f.sql.prepare('SELECT snapshot_json FROM payroll_simple_reversals141').get().snapshot_json);
+ assert.equal(history.payables[0].id,title.id);assert.equal(history.movements.length,3);
+ // Recalcular usa o caminho real de cálculo e gera revisão nova.
+ f.sql.exec(`ALTER TABLE payroll_employees ADD COLUMN active INTEGER DEFAULT 1;
+ ALTER TABLE payroll_employees ADD COLUMN admission_date TEXT DEFAULT '2020-01-01';
+ ALTER TABLE payroll_employees ADD COLUMN salary_cents INTEGER DEFAULT 10000;
+ CREATE TABLE payroll_employer_settings40(company_id TEXT,effective_from TEXT,revision INTEGER,cpp_due TEXT,rat_due TEXT,thirds_due TEXT,pis_due TEXT);
+ INSERT INTO payroll_employer_settings40 VALUES('company','2020-01',1,'NAO','NAO','NAO','NAO');`);
+ f.base.d.tax=()=>({inss_cents:0,irrf_cents:0,fgts_cents:0});
+ const calculated=await f.call('calculate',{payment_date:'2026-02-05'});
+ assert.equal(calculated.results[0].revision,2);assert.notEqual(calculated.results[0].run_id,'run');
+ for(const code of ['PROV_FGTS_13','PROV_FGTS_FERIAS'])await f.call('mapping',{event_code:code,nature_id:'provision'});
+ await f.call('post',{batch_code:'78'});await f.call('finance');await f.call('provisions');
+ assert.equal(f.sql.prepare("SELECT COUNT(*) n FROM financial_payables WHERE status='OPEN'").get().n,1);
+ assert.equal(f.sql.prepare("SELECT COUNT(*) n FROM financial_payables WHERE status='CANCELLED'").get().n,1);
+ assert.equal(f.sql.prepare('SELECT COUNT(*) n FROM payroll_provision_movements43').get().n,3);
+ assert.equal(f.sql.prepare("SELECT COUNT(*) n FROM journal_entries WHERE status='POSTED'").get().n,1);
+});
+test('pagamento, baixa de provisão, período fechado e Lote 0 bloqueiam sem mutação',async()=>{
+ const cases=[
+  ["UPDATE journal_entries SET official_status='INTEGRATED'",'ENTRY_IN_OFFICIAL_BATCH'],
+  ["UPDATE journal_entries SET edited_at='2026-01-31'",'ENTRY_CHANGED'],
+  ["UPDATE journal_batches SET status='LOCKED'",'BATCH_CLOSED'],
+  ["UPDATE accounting_periods SET status='CLOSED'",'PERIOD_CLOSED'],
+  ["UPDATE accounting_periods SET closed_until='2026-01-31'",'PERIOD_CLOSED'],
+  ["UPDATE payroll_competences SET status='LOCKED'",'PAYROLL_PERIOD_CLOSED'],
+  ["UPDATE financial_payables SET status='PAID',balance_cents=0",'PAYABLE_NOT_OPEN'],
+  ["UPDATE financial_payables SET payment_journal_entry_id='payment-entry'",'PAYABLE_NOT_OPEN'],
+  ["INSERT INTO payroll_provision_movements43(id,company_id,employee_id,cost_center_id,component,movement_kind,competence,amount_cents,origin_key,document_ref,created_by) VALUES('use','company','employee','cc','FERIAS','USE','2026-01',-100,'test-use','Documento','user')",'PROVISION_USED'],
+  ["CREATE TABLE payroll_provision_posted_movements45(company_id TEXT,movement_id TEXT); INSERT INTO payroll_provision_posted_movements45 SELECT company_id,id FROM payroll_provision_movements43 LIMIT 1",'PROVISION_LINKED']
+ ];
+ for(const [change,code] of cases){
+  const f=fixture();await f.seed();await f.call('post');await f.call('finance');await f.call('provisions');
+  const request=await undoRequest(f);f.sql.exec(change);
+  const preview=await f.call('undo-preview');assert.equal(preview.can_undo,false,code);
+  await assert.rejects(f.call('undo',request),e=>e.code===code,code);
+  assert.equal(f.sql.prepare('SELECT status FROM journal_entries').get().status,'POSTED');
+  assert.equal(f.sql.prepare('SELECT COUNT(*) n FROM payroll_simple_postings141').get().n,1);
+  assert.equal(f.sql.prepare('SELECT COUNT(*) n FROM payroll_simple_reversals141').get().n,0);
+ }
+});
+test('motivo, confirmação, revisão e permissões são obrigatórios',async()=>{
+ const f=fixture();await f.seed();await f.call('post');const request=await undoRequest(f);
+ for(const body of [{reason:''},{reason:'a'.repeat(1001)},{confirmation:''}])
+  await assert.rejects(f.call('undo',{...request,...body}),e=>e.code==='UNDO_CONFIRMATION_REQUIRED');
+ await assert.rejects(f.call('undo',{...request,entry_id:'other'}),e=>e.code==='STALE_UNDO');
+ const permission=f.base.d.requirePermission;
+ f.base.d.requirePermission=async(...args)=>{if(args.at(-1)==='accounting.entry.void')throw new HttpError(403,'Sem permissão','FORBIDDEN');return permission(...args);};
+ await assert.rejects(f.call('undo',request),e=>e.code==='FORBIDDEN');
+ assert.equal(f.sql.prepare('SELECT COUNT(*) n FROM payroll_simple_reversals141').get().n,0);
+});
+test('falha SQL reverte diário, títulos, provisões e marcador de desfazimento',async()=>{
+ const f=fixture();await f.seed();await f.call('post');await f.call('finance');await f.call('provisions');const request=await undoRequest(f);
+ f.sql.exec("CREATE TRIGGER reject_unpost BEFORE DELETE ON payroll_simple_postings141 BEGIN SELECT RAISE(ABORT,'undo failure'); END");
+ await assert.rejects(f.call('undo',request),/undo failure/);
+ assert.equal(f.sql.prepare('SELECT status FROM journal_entries').get().status,'POSTED');
+ assert.equal(f.sql.prepare('SELECT status FROM financial_payables').get().status,'OPEN');
+ assert.equal(f.sql.prepare('SELECT COUNT(*) n FROM payroll_provision_movements43').get().n,3);
+ assert.equal(f.sql.prepare('SELECT COUNT(*) n FROM payroll_simple_reversals141').get().n,0);
+ assert.equal(f.sql.prepare('SELECT COUNT(*) n FROM payroll_simple_operation_guards141').get().n,0);
+});
+test('baixa concorrente entre prévia e gravação bloqueia a transação inteira',async()=>{
+ const f=fixture();await f.seed();await f.call('post');await f.call('finance');const request=await undoRequest(f);
+ const batch=f.DB.batch.bind(f.DB);
+ f.DB.batch=async statements=>{
+  f.sql.exec("UPDATE financial_payables SET status='PAID',balance_cents=0");
+  return batch(statements);
+ };
+ await assert.rejects(f.call('undo',request),e=>e.code==='PAYROLL_STATE_CHANGED');
+ assert.equal(f.sql.prepare('SELECT status FROM journal_entries').get().status,'POSTED');
+ assert.equal(f.sql.prepare('SELECT status FROM financial_payables').get().status,'PAID');
+ assert.equal(f.sql.prepare('SELECT COUNT(*) n FROM payroll_simple_reversals141').get().n,0);
+});
+test('tela mostra prévia, exige confirmação e direciona para recálculo após desfazer',async()=>{
+ const elements=new Map(),messages=[],requests=[],navigation=[];let modal,undone=false,closed=0;
+ const element=id=>{if(!elements.has(id))elements.set(id,{innerHTML:'',disabled:false,querySelectorAll:()=>[],click(){return this.onclick?.();}});return elements.get(id);};
+ const setup={months:[{competence:'2026-01'}],centers:[{id:'cc',code:'001',name:'Produção'}],natures:[]};
+ const api=async(path,options={})=>{
+  if(path.endsWith('/setup'))return setup;
+  if(path.includes('/undo-preview?'))return {run_id:'run',entry_id:'entry',batch_id:'batch',batch_code:'77',can_undo:true,problems:[],payable_count:1,provision_count:3};
+  if(path.endsWith('/undo')){requests.push(options.body);undone=true;return {undone:true};}
+  return undone?{posted:null,reversal:{reason:'Corrigir salário'}}:{posted:{batch_id:'batch',entry_id:'entry',batch_code:'77'},integrations:[]};
+ };
+ const window={};
+ runInNewContext(readFileSync(new URL('../sagas-payroll-simple141-ui.js',import.meta.url),'utf8'),{
+  window,api,S:{companyId:'company',page:'payroll-simple-accounting'},esc:x=>x,money:x=>String(x),toast:x=>messages.push(x),nav:x=>navigation.push(x),
+  document:{getElementById:element},openModal:(title,help,html)=>{modal={title,html};},closeModal:()=>closed++,
+  FormData:class{constructor(form){this.values=form.values;}get(key){return this.values[key];}}
+ });
+ await window.SAGAS_SIMPLE141.render('payroll-simple-accounting');await new Promise(resolve=>setImmediate(resolve));
+ await element('s141undo').click();assert.equal(requests.length,0);
+ assert.match(modal.html,/Motivo do desfazimento/);assert.match(modal.html,/DESFAZER/);assert.match(modal.html,/<b>3<\/b>/);
+ element('s141undoCancel').click();assert.equal(closed,1);assert.equal(requests.length,0);
+ await element('s141undo').click();const form=element('s141undoForm');form.values={reason:'Corrigir salário',confirmation:'DESFAZER'};
+ await form.onsubmit({preventDefault(){},currentTarget:form});
+ assert.equal(requests.length,1);assert.equal(requests[0].run_id,'run');assert.equal(requests[0].entry_id,'entry');
+ assert.equal(requests[0].competence,'2026-01');assert.equal(closed,2);
+ assert.match(element('s141result').innerHTML,/recálculo necessário/);
+ element('s141recalculate').click();assert.deepEqual(navigation,['payroll-simple-calculate']);
+});
+test('gerar financeiro com vínculo desfeito entre leitura e gravação não cria títulos',async()=>{
+ const f=fixture();await f.seed();await f.call('post');
+ const batch=f.DB.batch.bind(f.DB);
+ f.DB.batch=async statements=>{f.sql.exec('DELETE FROM payroll_simple_postings141');return batch(statements);};
+ await assert.rejects(f.call('finance'),e=>e.code==='PAYROLL_STATE_CHANGED');
+ assert.equal(f.sql.prepare('SELECT COUNT(*) n FROM financial_payables').get().n,0);
+ assert.equal(f.sql.prepare('SELECT COUNT(*) n FROM payroll_simple_integrations141').get().n,0);
+});
+test('manutenção genérica bloqueia editar, excluir e anular lançamentos da folha simplificada',async()=>{
+ const f=fixture();await f.seed();const posted=await f.call('post');
+ const worker=readFileSync(new URL('../SAGAS_worker.js',import.meta.url),'utf8');
+ const code=worker.slice(worker.indexOf('async function assertEntryCanBeMaintained'),worker.indexOf('async function updateEntry('));
+ // Somente a função de validação é necessária para a proteção de edição.
+ const validation=code.slice(0,code.indexOf('\nasync function',1));
+ const check=runInNewContext(validation+';assertEntryCanBeMaintained',{HttpError});
+ await assert.rejects(check(f.base.env,'company',{source_module:'PAYROLL_SIMPLE'},'editado'),e=>e.code==='PAYROLL_LINK_LOCKED');
+ const common={HttpError,requirePermission:async()=>{},ensureEntryMaintenanceSchema:async()=>{},entrySnapshot:async()=>({source_module:'PAYROLL_SIMPLE'})};
+ for(const [name,next,args] of [['deleteEntry','async function buildInternalPostedEntry',[f.base.env,null,f.base.auth,'company',posted.entry_id]],['voidEntry','// ===== worker.js =====',[f.base.env,null,f.base.auth,'company',posted.entry_id,'Motivo']]]){
+  const start=worker.indexOf('async function '+name+'('),end=worker.indexOf(next,start);
+  const fn=runInNewContext(worker.slice(start,end)+';'+name,common);
+  await assert.rejects(fn(...args),e=>e.code==='PAYROLL_LINK_LOCKED');
+ }
+ assert.equal(f.sql.prepare('SELECT status FROM journal_entries').get().status,'POSTED');
+});
+
+import {guardedBatch141,reversalSchema141} from '../sagas-payroll-reversal141.js';
+test('pagamento iniciado antes do desfazimento não pode pagar título cancelado depois',async()=>{
+ const f=fixture();await f.seed();await f.call('post');await f.call('finance');const request=await undoRequest(f);
+ const title=f.sql.prepare('SELECT * FROM financial_payables').get();
+ const worker=readFileSync(new URL('../SAGAS_worker.js',import.meta.url),'utf8');
+ const code=worker.slice(worker.indexOf('async function payFinancialPayable('),worker.indexOf('async function cancelFinancialPayable('));
+ const pay=runInNewContext(code+';payFinancialPayable',{
+  HttpError,guardedBatch141,reversalSchema141,uuid:f.base.d.uuid,requirePermission:async()=>{},ensureSchemaRevision:f.base.d.ensureSchemaRevision,
+  getFinancialPayable:async()=>title,isoDate:x=>x,cleanText:x=>x,required:x=>x,moneyToCents:()=>0,
+  getFinancialCashAccount:async()=>({active:1}),assertCompanyEntity:async()=>({status:'OPEN'}),
+  buildFinancialPaymentAccountingLines:async()=>({lines:[]}),
+  buildInternalPostedEntry:async()=>{await f.call('undo',request);return {entryId:'payment',stmts:[]};},audit:async()=>{}
+ });
+ await assert.rejects(pay(f.base.env,null,f.base.auth,'company',title.id,{payment_date:'2026-02-05',cash_account_id:'bank',accounting_event_id:'event',accounting_batch_id:'batch'}),e=>e.code==='PAYROLL_STATE_CHANGED');
+ assert.equal(f.sql.prepare('SELECT status FROM financial_payables').get().status,'CANCELLED');
+ assert.equal(f.sql.prepare('SELECT status FROM journal_entries').get().status,'VOID');
 });

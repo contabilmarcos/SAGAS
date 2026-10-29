@@ -19,6 +19,7 @@ on:
       - 'sagas-payroll-monthly137.js'
       - 'sagas-payroll-basic-history138.js'
       - 'sagas-payroll-simple141.js'
+      - 'sagas-payroll-reversal141.js'
       - 'sagas-payroll-simple141-ui.js'
       - 'sagas-payroll-engine133-ui.js'
       - 'tests/payroll-engine-v133.test.mjs'
@@ -65,6 +66,7 @@ jobs:
           node --check sagas-payroll-monthly137.js
           node --check sagas-payroll-basic-history138.js
           node --check sagas-payroll-simple141.js
+          node --check sagas-payroll-reversal141.js
           node --check sagas-payroll-simple141-ui.js
           node --check sagas-payroll-engine133-ui.js
           node --check sagas-payroll-formulas129-ui.js

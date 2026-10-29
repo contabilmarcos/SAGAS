@@ -13,6 +13,16 @@ O cálculo continua usando salário-base, admissão e centro de custo, sem event
 
 Os documentos de cada integração e seu marcador são gravados na mesma transação. Falhas não deixam títulos ou constituições parciais. Folhas contabilizadas não podem ser recalculadas. Títulos mensais legados existentes na competência bloqueiam nova geração para o funcionário.
 
+## Desfazer contabilização e recalcular
+
+Em **Contabilização da folha**, selecione a competência e o centro de custo e clique em **Desfazer contabilização e liberar recálculo**. A prévia apresenta o lote, os títulos e as constituições vinculados, além de qualquer impedimento. Informe o motivo e digite **DESFAZER** para confirmar. A operação exige gestão da folha e permissão para anular lançamentos; se houver títulos, também exige gestão de contas a pagar.
+
+O sistema anula o lançamento, cancela os títulos vinculados ainda integralmente em aberto e retira do livro operacional as constituições dessa revisão que ainda não foram utilizadas. Tudo acontece em uma única transação, com nova verificação dos vínculos no momento da gravação. A revisão calculada, o lote, as partidas anuladas e os títulos cancelados ficam preservados; uma fotografia registra as provisões retiradas, os documentos anteriores, o motivo e o responsável. As revisões desfeitas não compõem os totais ativos nem o acumulado estimado do relatório. A configuração das naturezas é mantida.
+
+O desfazimento é bloqueado se houver título pago, cancelado ou com baixa vinculada; provisão com baixa na competência, movimentos posteriores ou outra contabilização; lançamento editado fora da folha ou integrado ao Lote 0; lote bloqueado; competência da folha fechada; ou período contábil que não permita manutenção. Primeiro regularize essas dependências pelos fluxos existentes. Não há estorno automático de pagamentos nem de lançamentos no Lote 0. A edição, exclusão e anulação isoladas do lançamento da folha ficam bloqueadas no módulo contábil.
+
+Depois de desfazer, use **Ir para calcular folha**, corrija os cadastros e calcule novamente. É criada uma nova revisão; a anterior não pode ser contabilizada outra vez. Contabilize a nova revisão usando **outro número de lote**, pois o lote antigo continua no histórico. Só então gere novamente os títulos e constituições. Os títulos cancelados anteriores permanecem identificáveis e não impedem a nova geração. Repetir a mesma confirmação não duplica o desfazimento.
+
 ## Compatibilidade e limites
 
 - As naturezas ficam separadas por competência e centro de custo. Na atualização, os planos históricos contabilizados preservam as naturezas efetivamente usadas; o cadastro antigo, compartilhado entre meses, é preservado no último mês calculado de cada centro. Não se atribuem parâmetros a competências antigas sem histórico disponível. Se o mês imediatamente anterior não tiver configuração, o sistema informa isso, sem buscar outro mês ou centro.
