@@ -113,3 +113,27 @@ export async function calculateAutomaticMonthly137({db,companyId,period,items,sa
  }
  return out;
 }
+
+export async function resolveAutomaticNature137(db,companyId,event,ruleVersion){
+ const ref=String(ruleVersion||'');
+ if(!ref.startsWith('DESIGNER137:'))return null;
+ const match=/^DESIGNER137:(20\d{2}-(?:0[1-9]|1[0-2]))#([1-9]\d*)$/.exec(ref);
+ if(!match)throw err137('AUTO_RULE_VERSION','Versão contábil do evento automático inválida.');
+ const version=await db.prepare(
+  'SELECT config_json FROM payroll_designer_config127 WHERE company_id=? AND event_id=? AND effective_from=? AND revision=?'
+ ).bind(companyId,event.id,match[1],Number(match[2])).first();
+ if(!version)throw err137('AUTO_RULE_MISSING','Regra original do evento automático não encontrada: '+event.code);
+ let cfg;
+ try{cfg=JSON.parse(version.config_json);}catch(_){
+  throw err137('AUTO_RULE_INVALID','Regra original do evento automático foi danificada.');
+ }
+ if(cfg.code!==event.code||cfg.category!==event.event_type||!cfg.nature_id)
+  throw err137('AUTO_RULE_MISMATCH','Natureza ou classificação não confere com a versão do evento '+event.code+'.');
+ const n=await db.prepare(
+  "SELECT id,code,description,active,synthetic_analytic FROM budget_natures WHERE company_id=? AND id=?"
+ ).bind(companyId,cfg.nature_id).first();
+ if(!n||Number(n.active)!==1||n.synthetic_analytic!=='ANALYTIC')
+  throw err137('AUTO_NATURE_INVALID','Natureza contábil original do evento '+event.code+' não é válida.');
+ return {nature_id:n.id,nature_code:n.code,nature_description:n.description,
+  active:n.active,synthetic_analytic:n.synthetic_analytic};
+}
