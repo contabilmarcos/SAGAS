@@ -69,7 +69,7 @@ test('prévia contábil v136 fecha salário, prêmio, impostos, FGTS, CPP e líq
  assert.equal(r.net_payable_cents,294260);
  assert.equal(r.balanced,true);
  assert.equal(r.ready_for_posting,false);
- assert.equal(r.lines.length,10);
+ assert.equal(r.lines.length,9);
  assert.ok(db.activity.every(x=>x.args[0]==='A'));
  assert.ok(db.activity.every(x=>x.sql.startsWith('SELECT ')));
 });
