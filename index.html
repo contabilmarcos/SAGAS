@@ -714,12 +714,13 @@ function payrollMonthlyCalcResults35(data){
     <p class="help"><b>Totais:</b> Proventos ${payroll35Money(x.earnings_cents)} · Descontos ${payroll35Money(x.deductions_cents)} · Líquido ${payroll35Money(x.net_cents)} · FGTS informativo ${payroll35Money(x.fgts_cents)}.</p>
     <div class="section-title">Totais por centro de custo</div>
     <div class="table-wrap"><table class="table"><thead><tr><th>Centro de custo</th><th>Funcionários</th><th>Proventos</th><th>Descontos</th><th>Líquido</th></tr></thead><tbody>${centerRows}</tbody></table></div>
-    <div class="toolbar"><button type="button" class="btn primary sm" id="payroll36Conference">Conferir / fechar folha</button> <button type="button" class="btn secondary sm" id="payroll106Closing">Fechamento integrado</button></div>
+    <div class="toolbar"><button type="button" class="btn primary sm" id="payroll36Conference">Conferir / fechar folha</button> <button type="button" class="btn secondary sm" id="payroll106Closing">Fechamento integrado</button> <button type="button" class="btn secondary sm" id="payroll133Preview">Conferir novas fórmulas e provisões</button></div>
     <p class="help">Conferencia interna e fechamento nao geram pagamentos nem contabilizacao. O holerite nao comprova deposito.</p>`;
   $$('[data-payroll35-detail]',target).forEach(btn=>btn.onclick=()=>payrollMonthlyDetail35(Number(btn.dataset.payroll35Detail)));
   $$('[data-payroll36-receipt]',target).forEach(btn=>btn.onclick=()=>{const emp=data.envelopes[Number(btn.dataset.payroll36Receipt)];if(emp)payroll36OpenReceipt(r.id,emp.employee_id)});
   if($('#payroll36Conference'))$('#payroll36Conference').onclick=()=>payroll36ConferenceScreen(r.id).catch(err=>toast(err.message,'error'));
   if($('#payroll106Closing'))$('#payroll106Closing').onclick=()=>payrollMonthlyClosing106(r.id).catch(err=>toast(err.message,'error'));
+  if($('#payroll133Preview'))$('#payroll133Preview').onclick=()=>window.SAGAS_ENGINE133.open(r.id).catch(err=>toast(err.message,'error'));
 }
 async function payrollMonthlyClosing106(runId){
  const data=await api('/api/payroll/monthly-runs/'+encodeURIComponent(runId)+'/closing-audit');
@@ -7171,6 +7172,7 @@ setInterval(()=>checkSessionAccess(),180000);
 <script src="sagas-payroll-designer127-ui.js"></script>
 <script src="sagas-payroll-formulas129-ui.js"></script>
 <script src="sagas-payroll-provision-catalog132-ui.js"></script>
+<script src="sagas-payroll-engine133-ui.js"></script>
 <script src="sagas-payroll-provisions43-ui.js"></script>
 <script src="sagas-payroll-provisions44-ui.js"></script>
 <script src="sagas-payroll-provisions45-ui.js"></script>
