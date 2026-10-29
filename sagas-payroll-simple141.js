@@ -159,7 +159,12 @@ export async function payrollSimple141(action,c){
   if(!date141(payment))fail141(d,'DATE_INVALID','Informe a data efetiva de pagamento.',400);
   const cperiod=await env.DB.prepare('SELECT status FROM payroll_competences WHERE company_id=? AND competence=?').bind(companyId,month).first();
   if(!cperiod||cperiod.status!=='OPEN')fail141(d,'PERIOD_NOT_OPEN','Abra a competência da folha antes do cálculo simplificado.');
-  const s=await env.DB.prepare("SELECT * FROM payroll_employer_settings40 WHERE company_id=? AND effective_from<=? ORDER BY effective_from DESC,revision DESC LIMIT 1").bind(companyId,month).first();
+  let s=null;
+  try{
+   s=await env.DB.prepare("SELECT * FROM payroll_employer_settings40 WHERE company_id=? AND effective_from<=? ORDER BY effective_from DESC,revision DESC LIMIT 1").bind(companyId,month).first();
+  }catch(err){
+   if(!/no such table:\s*(?:main\.)?payroll_employer_settings40/i.test(String(err?.message||err)))throw err;
+  }
   if(!s)fail141(d,'EMPLOYER_MISSING','Configure INSS patronal, terceiros, RAT/FAP e PIS (devidos ou dispensados) antes de calcular.');
   for(const k of ['cpp','rat','thirds','pis'])if(!['SIM','NAO'].includes(s[k+'_due']))
    fail141(d,'EMPLOYER_INVALID','Confira se '+k.toUpperCase()+' é devido ou dispensado.');
@@ -239,8 +244,18 @@ export async function payrollSimple141(action,c){
    plan,posted,run_id:latest.id};
  }
  if(action==='post'){
+  await d.requirePermission(env,auth.user.id,companyId,'accounting.batch.manage');
+  await d.requirePermission(env,auth.user.id,companyId,'accounting.entry.create');
   if(posted)return {posted:true,reused:true,batch_id:posted.batch_id,entry_id:posted.entry_id};
   if(!plan.balanced)fail141(d,'UNBALANCED_OR_UNMAPPED','Configure os débitos e créditos de todos os eventos e confira o equilíbrio antes de contabilizar.');
+  // Impedir que uma conta excluída, inativa ou alterada após o mapeamento
+  // entre em lote oficial sem validação no momento da postagem.
+  const accountIds=[...new Set(plan.lines.map(x=>x.account_id))];
+  for(const id of accountIds){
+   const account=await env.DB.prepare('SELECT id FROM accounts WHERE company_id=? AND id=? AND active=1 AND analytic=1')
+    .bind(companyId,id).first();
+   if(!account)fail141(d,'ACCOUNT_INACTIVE','O mapeamento utiliza uma conta inativa ou inválida. Revise as contas do evento.');
+  }
   const date=last141(month);
   const periods=(await env.DB.prepare("SELECT id,code,status,start_date,end_date,closed_until FROM accounting_periods WHERE company_id=? AND start_date<=? AND end_date>=?").bind(companyId,date,date).all()).results||[];
   const eligible=periods.filter(p=>p.status!=='LOCKED'&&p.status!=='CLOSED'&&(!p.closed_until||p.closed_until<date));
