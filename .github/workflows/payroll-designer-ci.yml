@@ -26,6 +26,7 @@ on:
       - 'tests/payroll-monthly-v137.test.mjs'
       - 'tests/payroll-monthly-worker-v137.test.mjs'
       - 'tests/payroll-basic-history-v138.test.mjs'
+      - 'tests/payroll-monthly-error-v139.test.mjs'
       - 'sagas-payroll-formulas129-ui.js'
       - 'tests/payroll-formulas-v129.test.mjs'
       - 'tests/payroll-models-v130.test.mjs'
@@ -64,7 +65,7 @@ jobs:
           node --check sagas-payroll-designer127-ui.js
           node --check SAGAS_worker.js
       - name: Testar regra de eventos parametrizados (sem consultar D1 real)
-        run: node --test tests/payroll-designer-v127.test.mjs tests/payroll-sql-v128.test.mjs tests/payroll-formulas-v129.test.mjs tests/payroll-models-v130.test.mjs tests/payroll-event-save-ui-v131.test.mjs tests/payroll-provision-catalog-v132.test.mjs tests/payroll-engine-v133.test.mjs tests/payroll-engine-v134.test.mjs tests/payroll-projection-v135.test.mjs tests/payroll-ledger-v136.test.mjs tests/payroll-monthly-v137.test.mjs tests/payroll-monthly-worker-v137.test.mjs tests/payroll-basic-history-v138.test.mjs
+        run: node --test tests/payroll-designer-v127.test.mjs tests/payroll-sql-v128.test.mjs tests/payroll-formulas-v129.test.mjs tests/payroll-models-v130.test.mjs tests/payroll-event-save-ui-v131.test.mjs tests/payroll-provision-catalog-v132.test.mjs tests/payroll-engine-v133.test.mjs tests/payroll-engine-v134.test.mjs tests/payroll-projection-v135.test.mjs tests/payroll-ledger-v136.test.mjs tests/payroll-monthly-v137.test.mjs tests/payroll-monthly-worker-v137.test.mjs tests/payroll-basic-history-v138.test.mjs tests/payroll-monthly-error-v139.test.mjs
       - name: Validar script inline do index
         run: |
           node --input-type=module <<'NODE'
