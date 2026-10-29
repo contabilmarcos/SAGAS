@@ -42,6 +42,31 @@ async function open(runId,source=null){
    '<td>'+ (projectedValid?moneyCents(totals.projected_fgts_cents):'—')+'</td>'+
    '<td>'+ (projectedValid?moneyCents(totals.projected_employer_cents):'—')+'</td>'+
    '<td>'+h(totals.projection_invalid_count||0)+'</td></tr></tbody></table></div>';
+  const ledger=data.projected_ledger||null;
+  const ledgerLines=(ledger?.lines||[]).slice(0,300).map(x=>'<tr>'+
+   '<td>'+h(x.cost_center_code||'')+'</td><td>'+h(x.event_code||'')+'</td>'+
+   '<td>'+h(x.nature_code||'')+'</td><td>'+h(x.side||'')+'</td>'+
+   '<td>'+h(x.account_code||'')+' · '+h(x.account_name||'')+'</td>'+
+   '<td>'+moneyCents(x.amount_cents)+'</td></tr>').join('');
+  const ledgerHtml=ledger?
+   '<div class="section-title">Conferência contábil do novo motor</div>'+
+   '<p class="help"><b>Prévia sem postagem.</b> Partidas por natureza orçamentária e centro de custo, incluindo salário líquido a pagar. O equilíbrio de débito e crédito não constitui autorização para integrar.</p>'+
+   '<div class="table-wrap"><table class="table"><thead><tr>'+
+   '<th>Débitos</th><th>Créditos</th><th>Líquido a pagar (projetado)</th><th>Conferência</th></tr></thead><tbody><tr>'+
+   '<td>'+moneyCents(ledger.debit_cents)+'</td>'+
+   '<td>'+moneyCents(ledger.credit_cents)+'</td>'+
+   '<td>'+moneyCents(ledger.net_payable_cents)+'</td>'+
+   '<td>'+(ledger.balanced?'Partidas equilibradas (não homologadas)':'Com pendências')+'</td>'+
+   '</tr></tbody></table></div>'+
+   '<div class="table-wrap" style="max-height:290px;overflow:auto"><table class="table"><thead><tr>'+
+   '<th>Centro de custo</th><th>Evento</th><th>Natureza</th><th>D/C</th><th>Conta contábil</th><th>Valor</th>'+
+   '</tr></thead><tbody>'+
+   (ledgerLines||'<tr><td colspan="6">Nenhuma partida projetada.</td></tr>')+
+   '</tbody></table></div>'+
+   ((ledger.lines||[]).length>300?'<p class="help">Exibidas somente as primeiras 300 partidas.</p>':'')+
+   ((ledger.problems||[]).length?'<details><summary>'+
+     ledger.problems.length+' pendência(s) no diário projetado</summary><ul>'+
+     problemRows(ledger.problems)+'</ul></details>':''):'';
   const accounting=data.provision_accounting||{};
   const accountLines=(accounting.lines||[]).map(x=>'<tr>'+
    '<td>'+h(x.cost_center_code||'')+'</td><td>'+h(x.provision_code||'')+'</td>'+
@@ -70,7 +95,7 @@ async function open(runId,source=null){
    '<td><button type="button" class="btn secondary sm" data-engine133-person="'+i+'">Ver eventos e provisões</button></td></tr>').join('');
   $('#engine133Content').innerHTML=
    '<p class="help"><b>Prévia de conferência, não é folha fechada.</b> Valores do cálculo antigo não foram alterados. Fórmulas novas ainda não estão homologadas para lançamentos contábeis, títulos ou pagamento.</p>'+
-   totalsHtml+projectedHtml+(data.provision_accounting?accountHtml:'')+
+   totalsHtml+projectedHtml+ledgerHtml+(data.provision_accounting?accountHtml:'')+
    '<div class="section-title">Funcionários por centro de custo</div>'+
    '<div class="table-wrap" style="max-height:320px;overflow:auto"><table class="table"><thead><tr>'+
    '<th>ID</th><th>Funcionário</th><th>Centro de custo</th>'+
