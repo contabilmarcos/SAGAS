@@ -107,10 +107,23 @@
     try{
      const r=await api141('report');
      if(!r.employee_count){el.innerHTML='<p class="muted">Nenhuma folha calculada para o filtro selecionado.</p>';return;}
+     const provRows=(r.provision_history||[]).map(h=>{
+      const f=Number(h.totals.PROV_FERIAS||0)+Number(h.totals.PROV_TERCO||0);
+      const special=Number(h.accrued_cents||0)-Number(h.totals.PROV_13||0)-f;
+      return '<tr><td>'+e(h.competence.slice(5,7)+'/'+h.competence.slice(0,4))+'</td>'+
+       '<td>'+cur(h.totals.PROV_13)+'</td><td>'+cur(f)+'</td>'+
+       '<td>'+cur(special)+'</td><td>'+cur(h.accrued_cents)+'</td>'+
+       '<td>'+cur(h.cumulative_estimate_cents)+'</td></tr>';
+     }).join('');
+     const provTable='<div class="table-wrap"><table class="table"><thead><tr>'+
+      '<th>Competência</th><th>13º</th><th>Férias + terço</th><th>Encargos estimados</th>'+
+      '<th>Total do mês</th><th>Acumulado sem baixas</th></tr></thead><tbody>'+
+      provRows+'</tbody></table></div>';
      el.innerHTML='<p><b>'+e(r.employee_count)+' funcionário(s)</b> · '+e(r.run_count)+' centro(s) de custo</p>'+
       '<div class="section-title">Resumo geral de eventos</div>'+sumTable(r.totals)+
       '<div class="section-title">Detalhamento individual</div>'+indivTable(r.employees)+
-      '<p class="muted">Provisões são estimativas mensais; conferir regras de férias e 13º antes de utilizar contabilmente.</p>';
+      '<div class="section-title">Controle de provisões mensais</div>'+provTable+
+      '<p class="muted">'+e(r.provision_notice||'Provisões mensais estimadas, sem baixas.')+'</p>';
     }catch(err){el.textContent=err.message;toast(err.message,'error')}
    };
    document.getElementById('s141query').click();return;
