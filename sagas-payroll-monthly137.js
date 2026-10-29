@@ -53,7 +53,18 @@ export async function loadAutomaticMonthly137(db,companyId,period){
   codes.add(cfg.code);
   settings137(cfg,v);
   if(cfg.code!==v.code)throw err137('AUTO_CODE_MISMATCH','Código de evento mudou entre cadastro e versão: '+v.code+'.');
-  selected.push({event_id:v.event_id,config:cfg,effective_from:v.effective_from,revision:Number(v.revision)});
+  // A versão da fórmula compartilhada também faz parte da fotografia oficial.
+  let linked_source=null,linked_version=null;
+  if(cfg.calculation==='FORMULA_CADASTRADA'){
+   if(!cfg.formula_id)throw err137('AUTO_FORMULA_MISSING','Fórmula não cadastrada no evento '+cfg.code+'.');
+   const snap=await formulaSnapshot129({DB:db},companyId,cfg.formula_id,period);
+   if(!snap?.formula?.active||!snap?.version?.source)
+    throw err137('AUTO_FORMULA_INACTIVE','Fórmula de '+cfg.code+' sem versão ativa.');
+   linked_source=snap.version.source;
+   linked_version=snap.version.effective_from+'#'+snap.version.revision;
+  }
+  selected.push({event_id:v.event_id,config:cfg,effective_from:v.effective_from,revision:Number(v.revision),
+   linked_source,linked_version});
  }
  if(selected.length>50)throw err137('AUTO_EVENT_LIMIT','Mais de cinquenta eventos automáticos. Divida o processamento.');
  return selected.sort((a,b)=>a.config.code.localeCompare(b.config.code));
@@ -71,10 +82,9 @@ export async function calculateAutomaticMonthly137({db,companyId,period,items,sa
    'O evento '+code+' está lançado manualmente e configurado como automático. Retire uma das origens.');
   let source=cfg;
   if(cfg.calculation==='FORMULA_CADASTRADA'){
-   const linked=await formulaSnapshot129({DB:db},companyId,cfg.formula_id,period);
-   if(!linked?.formula?.active||!linked?.version?.source)
+   if(!item.linked_source)
     throw err137('AUTO_FORMULA_INACTIVE','Fórmula de '+code+' não possui versão ativa na competência.');
-   source=linked.version.source;
+   source=item.linked_source;
   }
   if(!['VALOR_FIXO','PERCENTUAL_BASE','SQL_PERSONALIZADO'].includes(source.calculation))
    throw err137('AUTO_FORMULA_UNSUPPORTED','Fórmula de '+code+' não é suportada no cálculo mensal oficial.');
