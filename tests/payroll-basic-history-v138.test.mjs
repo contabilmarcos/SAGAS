@@ -51,6 +51,8 @@ test('preparação e cálculo usam fallback; dados especiais continuam com bloqu
  const src=worker.slice(worker.indexOf('async function payrollMonthlySource35('),
   worker.indexOf('async function payrollMonthlyRunDetail35('));
  assert.match(prep,/payrollBasicHistory138\(candidates,history,first\)/);
+ assert.match(prep,/salary_cents:emp\.salary_cents,position_id:emp\.position_id,active:emp\.active/);
+ assert.match(src,/payrollBasicHistory138\(employees,history,prep\.first_date\)/);
  assert.match(src,/payrollBasicHistory138\(employees,history,prep\.first_date\)/);
  assert.doesNotMatch(prep,/add\('HISTORICO_(?:SALARIAL|FUNCIONAL)'/);
  assert.match(prep,/JORNADA_EVENTO_HORAS/);
