@@ -5,6 +5,7 @@ import {simulateEvent127} from './sagas-payroll-designer127.js';
 import {formulaSnapshot129} from './sagas-payroll-formulas129.js';
 import {compilePayrollSql128,evaluatePayrollSql128} from './sagas-payroll-sql128.js';
 import {previewProvisionAccounting134} from './sagas-payroll-engine134.js';
+import {projectPayroll135} from './sagas-payroll-projection135.js';
 
 const cents133=value=>{
  const n=Number(value);
@@ -112,7 +113,7 @@ async function calc133(db,cfg,context,formulaResolver){
  values.quantidade=values.QUANTIDADE;
  return simulateEvent127(effective,values);
 }
-export async function simulateEnvelope133({db,envelope,employeeSalaryCents,configs,provisions,settings,resolveFormula}){
+export async function simulateEnvelope133({db,envelope,employeeSalaryCents,configs,provisions,settings,resolveFormula,historicalIncidences=new Map()}){
  const rows=[],provisionRows=[],problems=[];
  const employee=envelope.employee_code||envelope.employee_name||envelope.employee_id;
  const issue=(code,message)=>problems.push({code,message,employee});
@@ -123,6 +124,7 @@ export async function simulateEnvelope133({db,envelope,employeeSalaryCents,confi
   cost_center_id:envelope.cost_center_id,events:rows,provisions:provisionRows,problems,
   ready:false};}
  const {context,legacy,bases}=snapshot;
+ const sourceContext={...context};
  // O snapshot mensal nao contem bases definitivas de medias de ferias/13.
  const usesEstimatedReference=provisions.some(p=>p.config.active&&
   /:(SALARIO_REFERENCIA_13|REMUNERACAO_FERIAS)\b/i.test(p.config.formula_sql||''));
@@ -216,10 +218,16 @@ export async function simulateEnvelope133({db,envelope,employeeSalaryCents,confi
   }
   pending=remaining;
  }
+ // v135: projeção independente de eventos não oficiais sobre a fonte legada.
+ const projected=await projectPayroll135({
+  envelope,legacy,bases,context:sourceContext,configs,settings,
+  historicalIncidences,calculate:(cfg,values)=>calc133(db,cfg,values,resolveFormula)
+ });
+ for(const p of projected.problems)issue(p.code,p.message);
  return {employee_id:envelope.employee_id,employee_code:envelope.employee_code,
   employee_name:envelope.employee_name,cost_center_id:envelope.cost_center_id,
   cost_center_code:envelope.cost_center_code||null,
-  legacy,computed,events:rows,provisions:provisionRows,problems,ready:!problems.length};
+  legacy,computed,projected,events:rows,provisions:provisionRows,problems,ready:!problems.length};
 }
 export async function payrollEnginePreview133({env,companyId,auth,request,runId,source,d}){
  await d.requirePermission(env,auth.user.id,companyId,'payroll.read');
@@ -263,6 +271,26 @@ export async function payrollEnginePreview133({env,companyId,auth,request,runId,
  if(histories.length>5000)throw new d.HttpError(409,'Historico salarial excede o limite.','LIMIT');
  const salaries=new Map();
  for(const s of histories)if(!salaries.has(s.employee_id))salaries.set(s.employee_id,cents133(s.salary_cents));
+ // v135: origem das incidências dos eventos existentes no envelope antigo.
+ // A versão precisa coincidir exatamente com o identificador armazenado na linha.
+ const configuredCodes=new Set(configs.filter(x=>['PROVENTO','DESCONTO'].includes(x.config.category)&&
+  !['SALARIO_BASE','INSS_EMP','IRRF_EMP'].includes(x.config.code)).map(x=>x.config.code));
+ const neededCodes=[...new Set(detail.envelopes.flatMap(e=>(e.lines||[])
+   .filter(l=>configuredCodes.has(l.event_code)).map(l=>l.event_code)))];
+ const historicalIncidences=new Map();
+ if(neededCodes.length){
+  const sql="SELECT ev.code AS event_code,r.effective_from,r.revision,r.inss,r.irrf,r.fgts "+
+   "FROM payroll_event_rule_versions r JOIN payroll_events ev "+
+   "ON ev.company_id=r.company_id AND ev.id=r.event_id "+
+   "WHERE r.company_id=? AND ev.code IN ("+neededCodes.map(()=>'?').join(',')+
+   ") AND r.effective_from<=? ORDER BY ev.code,r.effective_from DESC,r.revision DESC LIMIT 2501";
+  const history=(await env.DB.prepare(sql).bind(companyId,...neededCodes,period).all()).results||[];
+  if(history.length>2500)throw new d.HttpError(409,'Histórico de incidências excede o limite da conferência.','INCIDENCE_HISTORY_LIMIT');
+  for(const row of history){
+   historicalIncidences.set(row.event_code+'|'+row.effective_from+'#'+row.revision,
+    {inss:row.inss,irrf:row.irrf,fgts:row.fgts});
+  }
+ }
  const settings=await d.employerRead(period);
  const cache=new Map();
  const resolveFormula=async id=>{
@@ -278,17 +306,26 @@ export async function payrollEnginePreview133({env,companyId,auth,request,runId,
  for(const envelope of detail.envelopes){
   const result=await simulateEnvelope133({
    db:env.DB,envelope,employeeSalaryCents:salaries.get(envelope.employee_id)??null,
-   configs,provisions,settings,resolveFormula
+   configs,provisions,settings,resolveFormula,historicalIncidences
   });
   envelopes.push(result);
   problems.push(...result.problems);
  }
  const totals={gross_cents:0,legacy_net_cents:0,simulated_net_cents:0,
+  projected_gross_cents:0,projected_net_cents:0,projected_fgts_cents:0,
+  projected_employer_cents:0,projection_invalid_count:0,
   estimated_employer_cents:0,estimated_provisions_cents:0};
  for(const v of envelopes){
   totals.gross_cents+=v.computed?.gross_cents||0;
   totals.legacy_net_cents+=v.legacy?.net||0;
   totals.simulated_net_cents+=v.computed?.net_cents||0;
+  if(v.projected?.net_cents===null||v.projected===undefined)totals.projection_invalid_count++;
+  else{
+   totals.projected_gross_cents+=v.projected.gross_cents;
+   totals.projected_net_cents+=v.projected.net_cents;
+   totals.projected_fgts_cents+=v.projected.fgts_cents;
+   totals.projected_employer_cents+=v.projected.employer_cents;
+  }
   totals.estimated_employer_cents+=v.events.filter(x=>x.status==='CALCULADO'&&x.category==='ENCARGO')
    .reduce((n,x)=>n+x.amount_cents,0);
   totals.estimated_provisions_cents+=v.provisions.filter(x=>x.status==='ESTIMADO')
@@ -308,5 +345,5 @@ export async function payrollEnginePreview133({env,companyId,auth,request,runId,
   provision_accounting:provisionAccounting,
   configuration_revisions:configs.map(v=>({code:v.config.code,revision:v.formula_version,
    nature_id:v.config.nature_id,formula_id:v.config.formula_id||null})),
-  message:'Previa comparativa das bases produzidas pelo motor anterior. Simula formulas configuradas, encargos e provisoes; nao substitui envelopes, bases oficiais, nem gera lancamentos financeiros ou contabeis.'};
+  message:'Prévia parametrizada v135: projeta proventos, descontos, bases e encargos a partir do envelope anterior; não substitui a folha, não homologa incidências ou médias, não constitui provisões e não gera financeiro ou diário contábil.'};
 }
