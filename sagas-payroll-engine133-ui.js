@@ -6,12 +6,15 @@ const moneyCents=n=>(Number(n||0)/100).toLocaleString('pt-BR',{style:'currency',
 function problemRows(problems){
  return (problems||[]).map(p=>'<li><strong>'+h(p.code)+'</strong>: '+h(p.message)+'</li>').join('');
 }
-async function open(runId){
- if(!runId)throw Error('Selecione um processamento mensal antes de conferir o novo motor.');
+async function open(runId,source=null){
+ if(!runId&&!source)throw Error('Selecione um processamento mensal antes de conferir o novo motor.');
  openModal('Novo motor: conferência integrada','Eventos, descontos, encargos e provisões configuradas confrontados com o processamento mensal existente.',
   '<p class="help" id="engine133Status">Consultando fórmulas e valores por funcionário...</p><div id="engine133Content"></div>',true);
  try{
-  const data=await api('/api/payroll/monthly-runs/'+encodeURIComponent(runId)+'/engine-preview');
+  const endpoint=source?'/api/payroll/monthly-engine-preview?competence_id='+
+   encodeURIComponent(source.competenceId)+'&payment_date='+encodeURIComponent(source.paymentDate):
+   '/api/payroll/monthly-runs/'+encodeURIComponent(runId)+'/engine-preview';
+  const data=await api(endpoint);
   const totals=data.totals||{};
   const envelopes=data.envelopes||[];
   const problems=data.problems||[];
@@ -76,5 +79,7 @@ async function open(runId){
   toast(e.message,'error');
  }
 }
-window.SAGAS_ENGINE133={open};
+window.SAGAS_ENGINE133={open,
+ openSource:(competenceId,paymentDate)=>open(null,{competenceId,paymentDate})
+};
 })();
