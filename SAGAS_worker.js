@@ -46,6 +46,7 @@ import { payrollCompetenceReopen125 } from './sagas-payroll-reopen125.js';
 import { payrollDesigner127,schema127 } from './sagas-payroll-designer127.js';
 import {loadAutomaticMonthly137,calculateAutomaticMonthly137} from './sagas-payroll-monthly137.js';
 import {payrollBasicHistory138} from './sagas-payroll-basic-history138.js';
+import {payrollSimple141} from './sagas-payroll-simple141.js';
 import { provisionCatalog132 } from './sagas-payroll-provision-catalog132.js';
 import { payrollFormulas129,formulaSnapshot129,ensureFormulaSchema129 } from './sagas-payroll-formulas129.js';
 import { payrollEnginePreview133 } from './sagas-payroll-engine133.js';
@@ -12284,6 +12285,19 @@ async function route(request, env) {
       d:{HttpError,requirePermission,audit},
       body:method==='POST'?await readJson(request):null
     }));
+  // Fluxo simplificado da folha — separado de lançamentos manuais e folhas históricas.
+  if(path.startsWith('/api/payroll/simple141/')){
+    const action=path.slice('/api/payroll/simple141/'.length);
+    const actions={setup:'GET',calculate:'POST',report:'GET',accounting:'GET',mapping:'POST',post:'POST'};
+    if(Object.hasOwn(actions,action)&&method===actions[action]){
+      const body=method==='POST'?await readJson(request):{};
+      return ok(await payrollSimple141(action,{env,companyId,auth,request,body,
+        competence:url.searchParams.get('competence'),
+        cost_center_id:url.searchParams.get('cost_center_id'),
+        d:{HttpError,requirePermission,ensureSchemaRevision,uuid,audit,
+          tax:payrollTaxHistoricalWithDependents,createBatch}}));
+    }
+  }
   // Folha — operação inicial; sempre antes das rotas genéricas :kind.
   if(path==='/api/payroll/competences'){
     if(method==='GET'){
