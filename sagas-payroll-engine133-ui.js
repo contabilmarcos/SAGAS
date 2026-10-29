@@ -3,6 +3,7 @@
 'use strict';
 const h=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;','"':'&quot;',"'":'&#39;'}[c]));
 const moneyCents=n=>(Number(n||0)/100).toLocaleString('pt-BR',{style:'currency',currency:'BRL'});
+const moneyOrDash=n=>n===null||n===undefined?'—':moneyCents(n);
 function problemRows(problems){
  return (problems||[]).map(p=>'<li><strong>'+h(p.code)+'</strong>: '+h(p.message)+'</li>').join('');
 }
@@ -31,6 +32,16 @@ async function open(runId,source=null){
    '<td>'+moneyCents(totals.estimated_provisions_cents)+'</td>'+
    '</tr></tbody></table></div>'+
    '<p class="help">*Líquido simulado substitui apenas INSS empregado e IRRF configurados no envelope antigo. Outros eventos são comparados, mas não incorporados ao líquido. Nada foi gravado.</p>';
+  const projectedValid=Number(totals.projection_invalid_count||0)===0&&envelopes.length>0;
+  const projectedHtml='<div class="section-title">Novo motor — valores projetados (v135)</div>'+
+   '<p class="help"><b>Não homologado e não contabilizado.</b> A projeção aplica eventos parametrizados sobre o envelope original, com conferência de incidências. Não equivale ao processamento oficial da folha nem à prévia de provisões legadas.</p>'+
+   '<div class="table-wrap"><table class="table"><thead><tr>'+
+   '<th>Bruto projetado</th><th>Líquido projetado</th><th>FGTS projetado</th><th>Encargos projetados</th><th>Funcionários sem projeção</th></tr></thead><tbody><tr>'+
+   '<td>'+ (projectedValid?moneyCents(totals.projected_gross_cents):'—')+'</td>'+
+   '<td>'+ (projectedValid?moneyCents(totals.projected_net_cents):'—')+'</td>'+
+   '<td>'+ (projectedValid?moneyCents(totals.projected_fgts_cents):'—')+'</td>'+
+   '<td>'+ (projectedValid?moneyCents(totals.projected_employer_cents):'—')+'</td>'+
+   '<td>'+h(totals.projection_invalid_count||0)+'</td></tr></tbody></table></div>';
   const accounting=data.provision_accounting||{};
   const accountLines=(accounting.lines||[]).map(x=>'<tr>'+
    '<td>'+h(x.cost_center_code||'')+'</td><td>'+h(x.provision_code||'')+'</td>'+
@@ -54,16 +65,16 @@ async function open(runId,source=null){
   const employeeRows=envelopes.map((e,i)=>'<tr>'+
    '<td>'+h(e.employee_code||'—')+'</td><td>'+h(e.employee_name||'')+'</td>'+
    '<td>'+h(e.cost_center_code||'Não definido')+'</td>'+
-   '<td>'+moneyCents(e.legacy?.net)+'</td><td>'+moneyCents(e.computed?.net_cents)+'</td>'+
+   '<td>'+moneyCents(e.legacy?.net)+'</td><td>'+moneyOrDash(e.projected?.net_cents)+'</td>'+
    '<td>'+(e.problems?.length?'<span class="badge gray">'+e.problems.length+' pendência(s)</span>':'Conferido na simulação')+'</td>'+
    '<td><button type="button" class="btn secondary sm" data-engine133-person="'+i+'">Ver eventos e provisões</button></td></tr>').join('');
   $('#engine133Content').innerHTML=
    '<p class="help"><b>Prévia de conferência, não é folha fechada.</b> Valores do cálculo antigo não foram alterados. Fórmulas novas ainda não estão homologadas para lançamentos contábeis, títulos ou pagamento.</p>'+
-   totalsHtml+(data.provision_accounting?accountHtml:'')+
+   totalsHtml+projectedHtml+(data.provision_accounting?accountHtml:'')+
    '<div class="section-title">Funcionários por centro de custo</div>'+
    '<div class="table-wrap" style="max-height:320px;overflow:auto"><table class="table"><thead><tr>'+
    '<th>ID</th><th>Funcionário</th><th>Centro de custo</th>'+
-   '<th>Líquido anterior</th><th>Líquido calculado</th><th>Pendências</th><th>Ações</th>'+
+   '<th>Líquido anterior</th><th>Líquido projetado</th><th>Pendências</th><th>Ações</th>'+
    '</tr></thead><tbody>'+employeeRows+'</tbody></table></div>'+
    '<div class="section-title">Pendências e regras a conferir</div>'+
    (problems.length?'<details><summary>'+problems.length+' pendência(s) por funcionário</summary><ul>'+
@@ -76,12 +87,26 @@ async function open(runId,source=null){
    const rows=(e.events||[]).map(x=>'<tr><td>'+h(x.code)+'</td><td>'+h(x.category)+'</td>'+
     '<td>'+h(x.status)+'</td><td>'+moneyCents(x.amount_cents)+'</td>'+
     '<td>'+moneyCents(x.legacy_cents)+'</td><td>'+h(x.formula||'')+'</td></tr>').join('');
+   const projectedRows=(e.projected?.events||[]).map(x=>'<tr>'+
+    '<td>'+h(x.code)+'</td><td>'+h(x.category)+'</td><td>'+h(x.status)+'</td>'+
+    '<td>'+moneyOrDash(x.legacy_cents)+'</td><td>'+moneyOrDash(x.amount_cents)+'</td>'+
+    '<td>'+h(x.reason||'')+'</td></tr>').join('');
    const provisionRows=(e.provisions||[]).map(x=>'<tr><td>'+h(x.code)+'</td>'+
     '<td>'+h(x.status)+'</td><td>'+moneyCents(x.amount_cents)+'</td>'+
     '<td>'+h(x.nature_id||'—')+'</td></tr>').join('');
    const target=$('#engine133Details');
    target.innerHTML='<div class="section-title">'+h(e.employee_code||'')+' · '+h(e.employee_name||'')+'</div>'+
     '<p class="help">Valores da conferência vinculados a '+h(e.cost_center_code||'sem centro de custo')+'.</p>'+
+    '<div class="section-title">Novo motor — projeção de eventos e bases</div>'+
+    '<p class="help">Base INSS: '+moneyOrDash(e.projected?.base_inss_cents)+
+    ' · Base estimada IRRF: '+moneyOrDash(e.projected?.base_irrf_estimated_cents)+
+    ' · Base FGTS: '+moneyOrDash(e.projected?.base_fgts_cents)+
+    ' · Bruto: '+moneyOrDash(e.projected?.gross_cents)+
+    ' · Líquido: '+moneyOrDash(e.projected?.net_cents)+'</p>'+
+    '<div class="table-wrap"><table class="table"><thead><tr><th>Evento</th><th>Classificação</th>'+
+    '<th>Status</th><th>Antigo</th><th>Projetado</th><th>Motivo</th></tr></thead><tbody>'+
+    (projectedRows||'<tr><td colspan="6">Nenhum evento projetado.</td></tr>')+
+    '</tbody></table></div>'+
     '<div class="section-title">Eventos configurados</div>'+
     '<div class="table-wrap"><table class="table"><thead><tr><th>Evento</th><th>Classificação</th><th>Resultado</th>'+
     '<th>Simulado</th><th>Motor antigo</th><th>Versão</th></tr></thead><tbody>'+
