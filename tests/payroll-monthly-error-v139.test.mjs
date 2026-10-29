@@ -58,3 +58,19 @@ test('a etapa de preparação aponta separadamente cadastros, frequência e lan�
   'CONSULTAR_FREQUENCIA','LER_LANCAMENTOS','LER_PARAMETROS_EVENTOS'])
   assert.ok(segment.includes("'"+stage+"'"),'Etapa ausente: '+stage);
 });
+
+test('evento automático inválido retorna pendência específica em vez de erro 500',()=>{
+ const error=Object.assign(new Error('Fórmula automática inválida'),{code:'AUTO_FORMULA_ERROR'});
+ const result=payrollMonthlyTechnical139(error,'CALCULAR_EVENTOS_AUTOMATICOS');
+ assert.equal(result.status,409);
+ assert.equal(result.code,'AUTO_FORMULA_ERROR');
+ assert.match(result.message,/CALCULAR_EVENTOS_AUTOMATICOS/);
+});
+test('as operações individuais do funcionário apresentam etapa detalhada',()=>{
+ const source=worker.slice(worker.indexOf('async function payrollMonthlyEmployeeCalc35('),
+   worker.indexOf('async function payrollMonthlySource35('));
+ for(const step of ['CALCULAR_SALARIO','CALCULAR_EVENTOS_MANUAIS',
+   'CALCULAR_FREQUENCIA','CALCULAR_AFASTAMENTOS',
+   'CALCULAR_EVENTOS_AUTOMATICOS','CALCULAR_INSS_IRRF_FGTS'])
+  assert.ok(source.includes("'"+step+"'"),'Etapa de cálculo não diferenciada: '+step);
+});
