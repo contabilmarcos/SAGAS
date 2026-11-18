@@ -10785,6 +10785,47 @@ async function route(request, env) {
     return ok(await deleteUserViewFilter(env,companyId,auth.user.id,p.id));
   }
 
+  if (method==="GET" && path==="/api/accounting/balancete-lines") {
+    await requirePermission(env,auth.user.id,companyId,"accounting.entry.read");
+    const year=url.searchParams.get("year");
+    const params=[companyId];
+    let yearSql="";
+    if (year && /^\d{4}$/.test(year)) {
+      yearSql=" AND substr(je.entry_date, 1, 4) = ?";
+      params.push(year);
+    }
+    const { results }=await env.DB.prepare(`
+      SELECT
+        jl.id AS line_id,
+        jl.entry_id,
+        je.entry_date,
+        je.document_number AS entry_doc,
+        je.description AS entry_desc,
+        jb.code AS batch_code,
+        jl.side,
+        jl.amount_cents,
+        jl.document_number AS line_doc,
+        jl.history_complement,
+        ht.description AS history_template_desc,
+        a.code AS account_code,
+        a.reduced_code,
+        a.name AS account_name,
+        cc.code AS cc_code,
+        cc.name AS cc_name
+      FROM journal_lines jl
+      JOIN journal_entries je ON je.id = jl.entry_id AND je.company_id = jl.company_id
+      LEFT JOIN journal_batches jb ON jb.id = je.batch_id AND jb.company_id = je.company_id
+      JOIN accounts a ON a.id = jl.account_id AND a.company_id = jl.company_id
+      LEFT JOIN cost_centers cc ON cc.id = jl.cost_center_id AND cc.company_id = jl.company_id
+      LEFT JOIN history_templates ht ON ht.id = jl.history_template_id AND ht.company_id = jl.company_id
+      WHERE jl.company_id = ?
+        AND je.status = 'POSTED'
+        ${yearSql}
+      ORDER BY je.entry_date ASC, je.created_at ASC, jl.line_no ASC
+    `).bind(...params).all();
+    return ok({lines:results||[]});
+  }
+
   if (method==="GET" && path==="/api/journal-entries") {
     await requirePermission(env,auth.user.id,companyId,"accounting.entry.read");
     let filterDefinition=null;
